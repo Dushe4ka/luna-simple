@@ -13,18 +13,24 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langgraph.types import Command
 from rich.console import Console
 
+from luna.subagents import subagent_summaries
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
+from luna.ui.turn import close_turn, open_turn, tool_line
 
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "show this help",
     "/tools": "list the agent's tools",
+    "/agents": "list available subagents",
     "/model": "show the active model",
     "/provider": "show the active provider",
+    "/reload": "rebuild the agent with the current config (skills, MCP, subagents)",
     "/new": "start a fresh conversation thread",
     "/clear": "clear the screen",
     "/exit": "leave Luna (also /quit, Ctrl-D)",
 }
+
+_RELOAD_MARKER = "Run /reload"
 
 
 def _new_thread_id() -> str:
@@ -46,9 +52,24 @@ def collect_decisions(
 
 
 def _iter_interrupts(chunk: object):
-    """Yield Interrupt objects from an ``updates``/``values`` stream chunk."""
     if isinstance(chunk, dict) and "__interrupt__" in chunk:
         yield from chunk["__interrupt__"]
+
+
+def _report_tools(chunk: dict, console: Console, seen: set[str]) -> bool:
+    """Print tool lines; return True if a tool asked for /reload."""
+    reload_requested = False
+    for update in chunk.values():
+        if not isinstance(update, dict):
+            continue
+        for msg in update.get("messages", []) or []:
+            if isinstance(msg, ToolMessage) and msg.tool_call_id not in seen:
+                seen.add(msg.tool_call_id)
+                body = str(msg.content) if msg.content else ""
+                tool_line(console, msg.name or "tool", body.splitlines()[0][:120])
+                if msg.name in ("manage_mcp", "manage_skills") and _RELOAD_MARKER in body:
+                    reload_requested = True
+    return reload_requested
 
 
 def _stream_turn(
@@ -57,11 +78,13 @@ def _stream_turn(
     config: dict,
     console: Console,
     input_fn: Callable[[str], str],
-) -> str:
-    """Run one user turn to completion, handling any approval interrupts."""
+) -> tuple[str, bool]:
+    """Run one user turn to completion. Returns ``(final_text, reload_requested)``."""
     parts: list[str] = []
     seen_tools: set[str] = set()
+    reload_requested = False
 
+    open_turn(console)
     while True:
         interrupts: list = []
         for mode, chunk in agent.stream(
@@ -78,7 +101,7 @@ def _stream_turn(
                         console.print(text, end="", soft_wrap=True)
             elif mode == "updates":
                 interrupts.extend(_iter_interrupts(chunk))
-                _report_tools(chunk, console, seen_tools)
+                reload_requested |= _report_tools(chunk, console, seen_tools)
 
         if not interrupts:
             state = agent.get_state(config)
@@ -90,19 +113,8 @@ def _stream_turn(
         resume = collect_decisions(console, interrupts[0].value, input_fn=input_fn)
         payload = Command(resume=resume)
 
-    console.print()
-    return "".join(parts).strip()
-
-
-def _report_tools(chunk: dict, console: Console, seen: set[str]) -> None:
-    for update in chunk.values():
-        if not isinstance(update, dict):
-            continue
-        for msg in update.get("messages", []) or []:
-            if isinstance(msg, ToolMessage) and msg.tool_call_id not in seen:
-                seen.add(msg.tool_call_id)
-                summary = str(msg.content).splitlines()[0][:120] if msg.content else ""
-                console.print(f"  [dim {PALETTE['blue']}]· {msg.name}: {summary}[/]")
+    close_turn(console)
+    return "".join(parts).strip(), reload_requested
 
 
 def run_once(
@@ -116,7 +128,8 @@ def run_once(
     """Run a single prompt and return the final assistant text."""
     config = {"configurable": {"thread_id": thread_id or _new_thread_id()}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
-    return _stream_turn(agent, payload, config, console, input_fn)
+    text, _ = _stream_turn(agent, payload, config, console, input_fn)
+    return text
 
 
 def _print_help(console: Console) -> None:
@@ -135,11 +148,19 @@ _TOOL_NAMES = (
     "execute",
     "write_todos",
     "task",
+    "manage_mcp",
+    "manage_skills",
 )
 
 
 def _list_tools(console: Console) -> None:
     console.print("  " + ", ".join(_TOOL_NAMES))
+    console.print(f"  [dim {PALETTE['blue']}](+ any MCP tools as mcp__<server>__<tool>)[/]")
+
+
+def _list_agents(console: Console) -> None:
+    for name, desc in subagent_summaries():
+        console.print(f"  [bold {PALETTE['accent']}]{name}[/] — {desc}")
 
 
 def run_repl(
@@ -147,6 +168,7 @@ def run_repl(
     *,
     console: Console,
     input_fn: Callable[[str], str] = input,
+    rebuild: Callable[[], object] | None = None,
 ) -> int:
     """Interactive loop. Returns a process exit code."""
     thread_id = _new_thread_id()
@@ -169,6 +191,9 @@ def run_repl(
         if line == "/tools":
             _list_tools(console)
             continue
+        if line == "/agents":
+            _list_agents(console)
+            continue
         if line == "/clear":
             console.clear()
             continue
@@ -176,11 +201,17 @@ def run_repl(
             thread_id = _new_thread_id()
             console.print(f"[{PALETTE['blue']}]started a new thread[/]")
             continue
+        if line == "/reload":
+            if rebuild is None:
+                console.print(f"[{PALETTE['mauve']}]/reload is not available here[/]")
+            else:
+                agent = rebuild()
+                console.print(f"[{PALETTE['blue']}]reloaded — capabilities refreshed[/]")
+            continue
         if line in ("/model", "/provider"):
-            meta = getattr(agent, "name", "luna")
             console.print(
-                f"[{PALETTE['blue']}]{line[1:]}: configured at startup "
-                f"(restart Luna with --{line[1:]} to change) · agent={meta}[/]"
+                f"[{PALETTE['blue']}]{line[1:]}: set at startup — "
+                f"restart with --{line[1:]} to change[/]"
             )
             continue
         if line.startswith("/"):
@@ -190,7 +221,10 @@ def run_repl(
         config = {"configurable": {"thread_id": thread_id}}
         payload = {"messages": [{"role": "user", "content": line}]}
         try:
-            _stream_turn(agent, payload, config, console, input_fn)
+            _, reload_requested = _stream_turn(agent, payload, config, console, input_fn)
         except KeyboardInterrupt:
             console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")
             continue
+        if reload_requested and rebuild is not None:
+            agent = rebuild()
+            console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")
