@@ -25,3 +25,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `set-key`, `unset-key`). API keys stored in `~/.config/luna/credentials.toml`
   (mode `0600`); environment variables still take precedence. First run without
   a key offers to launch the wizard. `--no-input` opts out of all prompting.
+- Extensions: `luna mcp` / `luna skills` / `luna agents` subcommands and the
+  agent-facing `manage_mcp` / `manage_skills` tools (approval-gated). MCP servers
+  in Claude-compatible `mcp.json`; Anthropic-style skills; built-in `researcher`
+  and `reviewer` subagents plus user-defined ones in `subagents.toml`. A curated
+  registry (`luna/registry.py`, extendable via `registry.toml`) resolves names.
+  `langchain-mcp-adapters` is the `luna-simple[mcp]` extra.
+- REPL: `/reload` rebuilds the agent in-session with the current config; turns
+  are framed with a `● luna` rule so user and agent text no longer blend.

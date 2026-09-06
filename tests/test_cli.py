@@ -52,6 +52,34 @@ def test_no_prompt_dispatches_repl(monkeypatch, tmp_path):
     assert calls == {"repl": 0}
 
 
+def test_mcp_add_from_registry_and_list(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    assert main(["mcp", "add", "filesystem"]) == 0
+    assert main(["mcp", "list"]) == 0
+    assert "filesystem" in capsys.readouterr().out
+
+
+def test_mcp_add_explicit_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    assert main(["mcp", "add", "custom", "--", "node", "srv.js"]) == 0
+    from luna.mcp import load_mcp_config
+
+    assert load_mcp_config(".")["custom"]["command"] == "node"
+
+
+def test_agents_list_shows_builtins(capsys):
+    assert main(["agents", "list"]) == 0
+    assert "researcher" in capsys.readouterr().out
+
+
+def test_skills_list_empty_ok(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    assert main(["skills", "list"]) == 0
+
+
 def test_setup_subcommand_dispatches_wizard(monkeypatch):
     calls = {}
     monkeypatch.setattr("luna.cli.run_setup", lambda *a, **k: calls.setdefault("setup", 0))

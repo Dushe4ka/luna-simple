@@ -34,11 +34,13 @@ deepseek = ["langchain-deepseek>=0.1"]
 openai = ["langchain-openai>=1.0"]
 google = ["langchain-google-genai>=3.0"]
 ollama = ["langchain-ollama>=1.0"]
+mcp = ["langchain-mcp-adapters>=0.3"]
 all = [
     "langchain-deepseek>=0.1",
     "langchain-openai>=1.0",
     "langchain-google-genai>=3.0",
     "langchain-ollama>=1.0",
+    "langchain-mcp-adapters>=0.3",
 ]
 dev = ["pytest>=8", "ruff>=0.6"]
 

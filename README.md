@@ -103,6 +103,31 @@ luna --provider ollama "explain this stack trace"
 You can still use a plain environment / `.env` if you prefer — see
 `.env.example`.
 
+## Extending Luna
+
+Luna can gain capabilities on request — you via the CLI, or the agent itself
+(it asks for approval, then tells you to run `/reload`).
+
+```bash
+luna mcp add github            # from the built-in registry
+luna mcp add custom -- npx -y my-mcp-server
+luna mcp list
+luna skills add pdf            # registry name
+luna skills add owner/repo/path/to/skill
+luna agents list              # built-in: researcher, reviewer
+```
+
+- **MCP servers** live in `~/.config/luna/mcp.json` (or `./.luna/mcp.json`) in
+  the standard `{"mcpServers": {...}}` format — paste entries straight from
+  Claude Desktop / Claude Code. `${ENV}` is expanded. Needs
+  `pip install "luna-simple[mcp]"`.
+- **Skills** are Anthropic Agent Skills (`<name>/SKILL.md`), installed under
+  `~/.config/luna/skills/`. `git` required.
+- **Subagents** are defined in `~/.config/luna/subagents.toml`; the agent
+  delegates to them with the `task` tool.
+- In the REPL: `/reload` activates newly added skills / MCP / subagents without
+  restarting; `/tools`, `/agents` show what's available.
+
 ## Safety
 
 Luna operates on the **real files** in your working directory and can run shell

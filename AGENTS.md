@@ -19,9 +19,14 @@ loaded as memory.
 - `luna/providers.py` — provider registry → LangChain chat model
 - `luna/prompts.py` — the Luna system prompt
 - `luna/agent.py` — `create_deep_agent` assembly (framework calls live here)
-- `luna/session.py` — streaming REPL / one-shot loop, approval handling
-- `luna/ui/` — `rich` theme, splash, console, approval prompt
-- `luna/cli.py` — argparse entry point
+- `luna/session.py` — streaming REPL / one-shot loop, approval handling, `/reload`
+- `luna/registry.py` — curated MCP-server / skill registry (+ `registry.toml`)
+- `luna/mcp.py` — `mcp.json` load/translate; MCP tool discovery
+- `luna/skills.py` — install/list/remove Anthropic-style skills
+- `luna/subagents.py` — built-in + `subagents.toml` subagents
+- `luna/extension_tools.py` — `manage_mcp` / `manage_skills` agent tools
+- `luna/ui/` — `rich` theme, splash, console, approval prompt, turn framing
+- `luna/cli.py` — argparse entry point (`setup`/`config`/`mcp`/`skills`/`agents`)
 
 ## Conventions
 

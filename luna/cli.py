@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import sys
 import uuid
 
-from luna import __version__
+from luna import __version__, mcp, skills
 from luna.agent import build_agent
 from luna.config import config_path, load_config, set_config_values
 from luna.credentials import (
@@ -19,12 +20,14 @@ from luna.credentials import (
     unset_api_key,
 )
 from luna.providers import PROVIDERS, LunaConfigError
+from luna.registry import known_mcp, known_skills, resolve_mcp
 from luna.session import run_once, run_repl
 from luna.setup_wizard import run_setup
+from luna.subagents import subagent_summaries
 from luna.ui.console import get_console
 from luna.ui.splash import render_splash
 
-_SUBCOMMANDS = {"setup", "config"}
+_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -144,6 +147,101 @@ def _run_config(argv: list[str]) -> int:
     return 2  # pragma: no cover - argparse guards this
 
 
+# --- mcp / skills / agents subcommands -------------------------------------
+
+
+def _split_ddash(argv: list[str]) -> tuple[list[str], list[str]]:
+    if "--" in argv:
+        i = argv.index("--")
+        return argv[:i], argv[i + 1 :]
+    return argv, []
+
+
+def _run_mcp(argv: list[str]) -> int:
+    console = get_console()
+    head, rest = _split_ddash(argv)
+    parser = argparse.ArgumentParser(prog="luna mcp")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list")
+    p_add = sub.add_parser("add")
+    p_add.add_argument("name")
+    p_add.add_argument("--json", dest="json_spec")
+    p_add.add_argument("--project", action="store_true")
+    p_rm = sub.add_parser("remove")
+    p_rm.add_argument("name")
+    p_rm.add_argument("--project", action="store_true")
+    p_test = sub.add_parser("test")
+    p_test.add_argument("name")
+    args = parser.parse_args(head)
+
+    if args.cmd == "list":
+        configured = ", ".join(mcp.load_mcp_config()) or "(none)"
+        console.print(f"configured: {configured}")
+        console.print(f"known:      {', '.join(known_mcp())}")
+        return 0
+    if args.cmd == "remove":
+        ok = mcp.remove_server(args.name, project=args.project)
+        console.print(f"removed {args.name!r}" if ok else f"{args.name!r} was not configured")
+        return 0
+    if args.cmd == "test":
+        configured = mcp.load_mcp_config()
+        spec = configured.get(args.name) or resolve_mcp(args.name)
+        conns = mcp.to_connections({args.name: spec})
+        tools = mcp.load_mcp_tools(conns, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        if not tools:
+            return 1
+        console.print(f"{args.name}: {', '.join(t.name for t in tools)}")
+        return 0
+    # add
+    if rest:
+        spec: dict = {"command": rest[0], "args": rest[1:]}
+    elif args.json_spec:
+        spec = json.loads(args.json_spec)
+    else:
+        spec = resolve_mcp(args.name)
+    path = mcp.add_server(args.name, spec, project=args.project)
+    console.print(f"added {args.name!r}  ->  {path}")
+    return 0
+
+
+def _run_skills(argv: list[str]) -> int:
+    console = get_console()
+    parser = argparse.ArgumentParser(prog="luna skills")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list")
+    p_add = sub.add_parser("add")
+    p_add.add_argument("source")
+    p_add.add_argument("--name")
+    p_add.add_argument("--project", action="store_true")
+    p_rm = sub.add_parser("remove")
+    p_rm.add_argument("name")
+    p_rm.add_argument("--project", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.cmd == "list":
+        rows = skills.list_skills()
+        for scope, name, desc in rows:
+            console.print(f"  {name} ({scope}) — {desc}")
+        console.print(f"known: {', '.join(known_skills())}")
+        return 0
+    if args.cmd == "remove":
+        ok = skills.remove(args.name, project=args.project)
+        console.print(f"removed {args.name!r}" if ok else f"{args.name!r} is not installed")
+        return 0
+    console.print(skills.install(args.source, name=args.name, project=args.project))
+    return 0
+
+
+def _run_agents(argv: list[str]) -> int:
+    console = get_console()
+    parser = argparse.ArgumentParser(prog="luna agents")
+    parser.add_argument("cmd", choices=["list"], nargs="?", default="list")
+    parser.parse_args(argv)
+    for name, desc in subagent_summaries():
+        console.print(f"  {name} — {desc}")
+    return 0
+
+
 # --- main -------------------------------------------------------------------
 
 
@@ -151,10 +249,15 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] in _SUBCOMMANDS:
+        handlers = {
+            "setup": lambda a: run_setup(get_console()),
+            "config": _run_config,
+            "mcp": _run_mcp,
+            "skills": _run_skills,
+            "agents": _run_agents,
+        }
         try:
-            if raw[0] == "setup":
-                return run_setup(get_console())
-            return _run_config(raw[1:])
+            return handlers[raw[0]](raw[1:])
         except LunaConfigError as exc:
             print(f"luna: {exc}", file=sys.stderr)
             return 2
