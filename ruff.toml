@@ -1,0 +1,10 @@
+line-length = 100
+target-version = "py311"
+extend-exclude = ["docs"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "W", "D"]
+ignore = ["D100", "D104", "D107", "D203", "D213"]
+
+[lint.per-file-ignores]
+"tests/*" = ["D"]
