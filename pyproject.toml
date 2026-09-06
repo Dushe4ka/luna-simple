@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "luna-simple"
 version = "0.1.0"
-description = "Luna - a simple, lightweight CLI coding agent. Observe, Understand, Plan, Act."
+description = "Luna — простой лёгкий CLI-агент для кода на deepagents. Observe, Understand, Plan, Act."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

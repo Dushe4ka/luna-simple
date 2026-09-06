@@ -2,7 +2,7 @@
 
 # 🌙 Luna
 
-**A simple, lightweight CLI coding agent.**
+**Простой лёгкий CLI-агент для работы с кодом.**
 
 `Observe · Understand · Plan · Act`
 
@@ -23,127 +23,127 @@
 
 ---
 
-Luna is a **cli coding agent** built on the
-[`deepagents`](https://github.com/langchain-ai/deepagents) framework
-(LangChain / LangGraph). It is a deliberately small analogue of
-[`pi`](https://github.com/earendil-works/pi): a unified LLM API, an agent loop,
-and a coding CLI — with a single `rich`-based REPL instead of a bespoke TUI.
+Luna — это **CLI-агент для кода** на фреймворке
+[`deepagents`](https://github.com/langchain-ai/deepagents) (LangChain / LangGraph).
+Это намеренно маленький аналог [`pi`](https://github.com/earendil-works/pi):
+единый API к моделям, агентный цикл и CLI для кодинга — с одним REPL на `rich`
+вместо собственного TUI.
 
-The accent is on **`luna-simple`**: few dependencies, one command, easy to read
-end to end.
+Акцент — на **`luna-simple`**: минимум зависимостей, одна команда, код читается
+от начала до конца.
 
-## Install
+## Установка
 
 ```bash
-# with every provider integration
+# со всеми провайдерами
 uv pip install "luna-simple[all]"
 
-# or just the default provider (Anthropic)
+# или только провайдер по умолчанию (Anthropic)
 uv pip install luna-simple
 
-# from a checkout
+# из клона репозитория
 uv venv --python 3.12 && uv pip install -e ".[dev,all]"
 ```
 
-Python **3.11+** is required.
+Требуется Python **3.11+**.
 
-## Quickstart
+## Быстрый старт
 
 ```bash
-# first run: pick a provider and paste your API key
+# первый запуск: выбрать провайдера и вставить API-ключ
 luna setup
 
-# one-shot
-luna "read pyproject.toml and tell me the entry points"
+# один запрос и выход
+luna "прочитай pyproject.toml и опиши точки входа"
 
-# interactive REPL (shows the splash)
+# интерактивный REPL (с заставкой)
 luna
 ```
 
-If you start Luna without a key configured, it offers to run `luna setup` for
-you. In the REPL: `/help`, `/tools`, `/model`, `/provider`, `/new`, `/clear`,
-`/exit`.
+Если запустить Luna без настроенного ключа, она сама предложит `luna setup`.
+В REPL: `/help`, `/tools`, `/agents`, `/model`, `/provider`, `/reload`, `/new`,
+`/clear`, `/exit`.
 
-## Setup & credentials
+## Настройка и ключи
 
-`luna setup` writes two files under `~/.config/luna/` (XDG-aware):
+`luna setup` создаёт два файла в `~/.config/luna/` (с учётом XDG):
 
-- `config.toml` — provider, model, and other preferences (safe to share)
-- `credentials.toml` — your API keys, created with mode `0600`
+- `config.toml` — провайдер, модель и прочие настройки (безопасно шарить)
+- `credentials.toml` — API-ключи, права `0600`
 
-Environment variables (`ANTHROPIC_API_KEY`, …) always override stored keys.
+Переменные окружения (`ANTHROPIC_API_KEY` и т.д.) всегда важнее сохранённых
+ключей.
 
 ```bash
-luna config path                        # where the files live
-luna config show                        # effective settings (keys masked)
+luna config path                        # где лежат файлы
+luna config show                        # эффективные настройки (ключи скрыты)
 luna config set model.provider deepseek
-luna config set-key openai              # prompts, hidden input
+luna config set-key openai              # спросит ключ скрытым вводом
 luna config unset-key openai
 ```
 
-## Providers
+## Провайдеры
 
-Luna resolves models through LangChain's `init_chat_model`. Set the matching
-API key (see `.env.example`) and select with `--provider` / `--model` or a
-config file.
+Luna создаёт модели через `init_chat_model` из LangChain. Установите нужный
+API-ключ (см. `.env.example`) и выберите провайдера флагом `--provider` /
+`--model` либо в конфиге.
 
-| Provider | `--provider` | Default model | Key | Extra |
+| Провайдер | `--provider` | Модель по умолчанию | Ключ | Extra |
 | --- | --- | --- | --- | --- |
-| Anthropic *(default)* | `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` | (included) |
+| Anthropic *(по умолчанию)* | `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` | (входит в базовую установку) |
 | DeepSeek | `deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` | `luna-simple[deepseek]` |
 | OpenAI | `openai` | `gpt-4.1` | `OPENAI_API_KEY` | `luna-simple[openai]` |
 | Google | `google` | `gemini-2.5-pro` | `GOOGLE_API_KEY` | `luna-simple[google]` |
-| Ollama | `ollama` | `qwen2.5-coder` | — (local) | `luna-simple[ollama]` |
+| Ollama | `ollama` | `qwen2.5-coder` | — (локально) | `luna-simple[ollama]` |
 
 ```bash
-luna --provider deepseek --model deepseek-reasoner "refactor utils.py"
-luna --provider ollama "explain this stack trace"
+luna --provider deepseek --model deepseek-reasoner "отрефактори utils.py"
+luna --provider ollama "объясни этот стек-трейс"
 ```
 
-You can still use a plain environment / `.env` if you prefer — see
-`.env.example`.
+Можно по-прежнему пользоваться обычным окружением / `.env` — см. `.env.example`.
 
-## Extending Luna
+## Расширение Luna
 
-Luna can gain capabilities on request — you via the CLI, or the agent itself
-(it asks for approval, then tells you to run `/reload`).
+Luna может получать новые возможности по запросу — вы через CLI, либо сам агент
+(он спрашивает подтверждение, а затем просит выполнить `/reload`).
 
 ```bash
-luna mcp add github            # from the built-in registry
+luna mcp add github            # из встроенного реестра
 luna mcp add custom -- npx -y my-mcp-server
 luna mcp list
-luna skills add pdf            # registry name
+luna skills add pdf            # имя из реестра
 luna skills add owner/repo/path/to/skill
-luna agents list              # built-in: researcher, reviewer
+luna agents list              # встроенные: researcher, reviewer
 ```
 
-- **MCP servers** live in `~/.config/luna/mcp.json` (or `./.luna/mcp.json`) in
-  the standard `{"mcpServers": {...}}` format — paste entries straight from
-  Claude Desktop / Claude Code. `${ENV}` is expanded. Needs
+- **MCP-серверы** лежат в `~/.config/luna/mcp.json` (или `./.luna/mcp.json`)
+  в стандартном формате `{"mcpServers": {...}}` — записи можно копировать прямо
+  из Claude Desktop / Claude Code. `${ENV}` подставляется. Нужен
   `pip install "luna-simple[mcp]"`.
-- **Skills** are Anthropic Agent Skills (`<name>/SKILL.md`), installed under
-  `~/.config/luna/skills/`. `git` required.
-- **Subagents** are defined in `~/.config/luna/subagents.toml`; the agent
-  delegates to them with the `task` tool.
-- In the REPL: `/reload` activates newly added skills / MCP / subagents without
-  restarting; `/tools`, `/agents` show what's available.
+- **Скилы** — это Anthropic Agent Skills (`<имя>/SKILL.md`), ставятся в
+  `~/.config/luna/skills/`. Нужен `git`.
+- **Субагенты** описываются в `~/.config/luna/subagents.toml`; агент делегирует
+  им работу инструментом `task`.
+- В REPL: `/reload` активирует добавленные скилы / MCP / субагенты без
+  перезапуска; `/tools`, `/agents` показывают, что доступно.
 
-## Safety
+## Безопасность
 
-Luna operates on the **real files** in your working directory and can run shell
-commands. Before every `write_file`, `edit_file`, `delete`, or `execute` it
-stops and asks:
+Luna работает с **реальными файлами** в текущей директории и может выполнять
+команды оболочки. Перед каждым `write_file`, `edit_file`, `delete` и `execute`
+она останавливается и спрашивает:
 
 ```
 [Enter] approve · [e] edit · [n] reject >
 ```
 
-Pass `--yolo` to disable all approval prompts.
+Флаг `--yolo` отключает все запросы подтверждения.
 
-## Configuration
+## Конфигурация
 
-Precedence (highest first): CLI flags → environment → `./.luna.toml` →
-`~/.config/luna/config.toml` → defaults.
+Приоритет (по убыванию): флаги CLI → окружение → `./.luna.toml` →
+`~/.config/luna/config.toml` → значения по умолчанию.
 
 ```toml
 # .luna.toml
@@ -159,8 +159,8 @@ temperature = 0.0
 splash = true
 ```
 
-Environment: `LUNA_PROVIDER`, `LUNA_MODEL`, `LUNA_YOLO`, `LUNA_WORKDIR`.
+Окружение: `LUNA_PROVIDER`, `LUNA_MODEL`, `LUNA_YOLO`, `LUNA_WORKDIR`.
 
-## License
+## Лицензия
 
-MIT — see [LICENSE](LICENSE).
+MIT — см. [LICENSE](LICENSE).

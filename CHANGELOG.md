@@ -1,35 +1,37 @@
 # Changelog
 
-All notable changes to Luna are documented here. The format is based on
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Все заметные изменения Luna фиксируются здесь. Формат — по
+[Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — по
+[семантическому версионированию](https://semver.org/lang/ru/).
 
-## [0.1.0] - 2026-09-06
+## [0.1.0] — 2026-09-06
 
-### Added
+### Добавлено
 
-- Lightweight CLI coding agent built on `deepagents` (`luna` / `luna-simple`).
-- Streaming `rich` REPL and one-shot mode (`luna "…"`).
-- ANSI night-sky splash screen — glowing moon with orbit ring, starfield,
-  constellations, comet, clouds, horizon and sea reflection, `L U N A` wordmark
-  and corner slogans; compact banner fallback on narrow terminals
-  (`--no-splash` to skip).
-- Five model providers via LangChain `init_chat_model`: `anthropic` (default),
-  `deepseek`, `openai`, `google`, `ollama`.
-- Layered configuration: CLI flags > environment > `./.luna.toml` >
-  `~/.config/luna/config.toml` > defaults.
-- Human-in-the-loop approval for `write_file`, `edit_file`, `delete`, and
-  `execute`; `--yolo` disables all prompts.
-- Real-filesystem backend rooted at the working directory.
-- `luna setup` wizard and `luna config` subcommands (`path`, `show`, `set`,
-  `set-key`, `unset-key`). API keys stored in `~/.config/luna/credentials.toml`
-  (mode `0600`); environment variables still take precedence. First run without
-  a key offers to launch the wizard. `--no-input` opts out of all prompting.
-- Extensions: `luna mcp` / `luna skills` / `luna agents` subcommands and the
-  agent-facing `manage_mcp` / `manage_skills` tools (approval-gated). MCP servers
-  in Claude-compatible `mcp.json`; Anthropic-style skills; built-in `researcher`
-  and `reviewer` subagents plus user-defined ones in `subagents.toml`. A curated
-  registry (`luna/registry.py`, extendable via `registry.toml`) resolves names.
-  `langchain-mcp-adapters` is the `luna-simple[mcp]` extra.
-- REPL: `/reload` rebuilds the agent in-session with the current config; turns
-  are framed with a `● luna` rule so user and agent text no longer blend.
+- Лёгкий CLI-агент для кода на `deepagents` (команды `luna` / `luna-simple`).
+- Потоковый REPL на `rich` и режим одного запроса (`luna "…"`).
+- ANSI-заставка «ночное небо» — светящаяся луна с орбитой, звёздное поле,
+  созвездия, комета, облака, линия горизонта и отражение в море, надпись
+  `L U N A` и слоганы по углам; компактный баннер для узких терминалов
+  (`--no-splash` чтобы пропустить).
+- Пять провайдеров моделей через `init_chat_model` из LangChain: `anthropic`
+  (по умолчанию), `deepseek`, `openai`, `google`, `ollama`.
+- Слоистая конфигурация: флаги CLI > окружение > `./.luna.toml` >
+  `~/.config/luna/config.toml` > значения по умолчанию.
+- Подтверждение действий человеком (human-in-the-loop) для `write_file`,
+  `edit_file`, `delete` и `execute`; `--yolo` отключает все запросы.
+- Бэкенд реальной файловой системы с корнем в рабочей директории.
+- Мастер `luna setup` и подкоманды `luna config` (`path`, `show`, `set`,
+  `set-key`, `unset-key`). API-ключи хранятся в
+  `~/.config/luna/credentials.toml` (права `0600`); переменные окружения
+  приоритетнее. Первый запуск без ключа предлагает запустить мастер.
+  `--no-input` отключает любые интерактивные запросы.
+- Расширения: подкоманды `luna mcp` / `luna skills` / `luna agents` и
+  инструменты агента `manage_mcp` / `manage_skills` (с подтверждением).
+  MCP-серверы в `mcp.json` формата Claude; скилы в стиле Anthropic; встроенные
+  субагенты `researcher` и `reviewer` плюс пользовательские в `subagents.toml`.
+  Курируемый реестр (`luna/registry.py`, расширяется через `registry.toml`)
+  разрешает имена. `langchain-mcp-adapters` — это extra `luna-simple[mcp]`.
+- REPL: `/reload` пересобирает агента в сессии с текущим конфигом; реплики
+  оформлены линией `● luna`, так что текст пользователя и агента больше не
+  сливается.

@@ -1,37 +1,37 @@
 # AGENTS.md
 
-This repository **is** Luna — a simple, lightweight CLI coding agent built on
-the `deepagents` framework. When Luna runs inside this repo, this file is
-loaded as memory.
+Этот репозиторий **и есть** Luna — простой лёгкий CLI-агент для кода на
+фреймворке `deepagents`. Когда Luna запускается внутри этого репозитория, файл
+загружается как память.
 
-## Build & test
+## Сборка и тесты
 
-- Environment: `uv venv --python 3.12 && uv pip install -e ".[dev,all]"`
-- Tests: `uv run pytest`
-- Lint: `uv run ruff check .` and `uv run ruff format --check .`
-- Run locally: `uv run luna --no-splash "…"`
+- Окружение: `uv venv --python 3.12 && uv pip install -e ".[dev,all]"`
+- Тесты: `uv run pytest`
+- Линт: `uv run ruff check .` и `uv run ruff format --check .`
+- Локальный запуск: `uv run luna --no-splash "…"`
 
-## Layout
+## Структура
 
-- `luna/config.py` — layered settings resolution into `LunaConfig`; `config.toml` writer
-- `luna/credentials.py` — API keys in `~/.config/luna/credentials.toml` (mode 0600)
-- `luna/setup_wizard.py` — the interactive `luna setup` flow
-- `luna/providers.py` — provider registry → LangChain chat model
-- `luna/prompts.py` — the Luna system prompt
-- `luna/agent.py` — `create_deep_agent` assembly (framework calls live here)
-- `luna/session.py` — streaming REPL / one-shot loop, approval handling, `/reload`
-- `luna/registry.py` — curated MCP-server / skill registry (+ `registry.toml`)
-- `luna/mcp.py` — `mcp.json` load/translate; MCP tool discovery
-- `luna/skills.py` — install/list/remove Anthropic-style skills
-- `luna/subagents.py` — built-in + `subagents.toml` subagents
-- `luna/extension_tools.py` — `manage_mcp` / `manage_skills` agent tools
-- `luna/ui/` — `rich` theme, splash, console, approval prompt, turn framing
-- `luna/cli.py` — argparse entry point (`setup`/`config`/`mcp`/`skills`/`agents`)
+- `luna/config.py` — слоистое разрешение настроек в `LunaConfig`; запись `config.toml`
+- `luna/credentials.py` — API-ключи в `~/.config/luna/credentials.toml` (права 0600)
+- `luna/setup_wizard.py` — интерактивный мастер `luna setup`
+- `luna/providers.py` — реестр провайдеров → chat-модель LangChain
+- `luna/prompts.py` — системный промпт Luna
+- `luna/agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
+- `luna/session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`
+- `luna/registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)
+- `luna/mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов
+- `luna/skills.py` — установка/список/удаление скилов в стиле Anthropic
+- `luna/subagents.py` — встроенные субагенты + из `subagents.toml`
+- `luna/extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills`
+- `luna/ui/` — тема `rich`, заставка, консоль, диалог подтверждения, оформление реплик
+- `luna/cli.py` — точка входа на argparse (`setup`/`config`/`mcp`/`skills`/`agents`)
 
-## Conventions
+## Соглашения
 
-- Python 3.11+, PEP 8 / PEP 257, `ruff` clean.
-- Keep all `deepagents` / `langgraph` imports inside `luna/agent.py` and
+- Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
+- Все импорты `deepagents` / `langgraph` держать внутри `luna/agent.py` и
   `luna/session.py`.
-- Model IDs belong in `luna/providers.py` or config, never in agent logic.
-- Tests must not hit the network — use the `FakeToolCallingModel` fixture.
+- ID моделей — в `luna/providers.py` или конфиге, никогда в логике агента.
+- Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
