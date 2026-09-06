@@ -42,7 +42,8 @@ def build_agent(
 
     """
     workdir = Path(config.workdir).resolve()
-    backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=False, inherit_env=True)
+    # virtual_mode maps the agent's "/" to workdir: real files, confined to the repo.
+    backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)
     memory = ["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else None
     return create_deep_agent(
         model=model or build_model(config.provider, config.model, config.model_kwargs),
