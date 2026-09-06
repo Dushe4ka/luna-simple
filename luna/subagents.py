@@ -7,42 +7,43 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from deepagents import SubAgent
+from deepagents.middleware import FilesystemMiddleware
 
 from luna.config import config_dir
 from luna.providers import LunaConfigError
 
+# Filesystem tools a subagent can be restricted to (deepagents FsToolName set).
 VALID_TOOLS = frozenset(
-    {
-        "ls",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "delete",
-        "glob",
-        "grep",
-        "execute",
-        "write_todos",
-    }
+    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 )
+_READ_ONLY = ["ls", "read_file", "glob", "grep"]
+
+
+def _subagent(
+    name: str, description: str, prompt: str, fs_tools: list[str] | None, model: str | None = None
+) -> SubAgent:
+    spec: dict = {"name": name, "description": description, "system_prompt": prompt}
+    if fs_tools is not None:
+        spec["middleware"] = [FilesystemMiddleware(tools=fs_tools)]
+    if model:
+        spec["model"] = model
+    return SubAgent(**spec)
+
 
 BUILTIN_SUBAGENTS: list[SubAgent] = [
-    SubAgent(
-        name="researcher",
-        description=("Investigate the codebase, docs, or a question and report back. Read-only."),
-        system_prompt=("You explore and report. You never modify files or run mutating commands."),
-        tools=["ls", "read_file", "glob", "grep"],
+    _subagent(
+        "researcher",
+        "Investigate the codebase, docs, or a question and report back. Read-only.",
+        "You explore and report. You never modify files or run mutating commands.",
+        _READ_ONLY,
     ),
-    SubAgent(
-        name="reviewer",
-        description="Review a diff or file for bugs, risks, and simplifications. Read-only.",
-        system_prompt=("You review code critically and return concrete, prioritized findings."),
-        tools=["ls", "read_file", "glob", "grep"],
+    _subagent(
+        "reviewer",
+        "Review a diff or file for bugs, risks, and simplifications. Read-only.",
+        "You review code critically and return concrete, prioritized findings.",
+        _READ_ONLY,
     ),
 ]
-
-
-def _name(agent: SubAgent) -> str:
-    return agent["name"]
 
 
 def _config_files(workdir: str, env: Mapping[str, str] | None) -> list[Path]:
@@ -78,14 +79,14 @@ def load_subagents(workdir: str = ".", *, env: Mapping[str, str] | None = None) 
                     f"subagent {name!r}: unknown tools {sorted(bad)}. "
                     f"Valid: {', '.join(sorted(VALID_TOOLS))}"
                 )
-        spec: dict = {"name": name, "description": cfg.get("description", name)}
-        if cfg.get("prompt"):
-            spec["system_prompt"] = cfg["prompt"]
-        if tools is not None:
-            spec["tools"] = list(tools)
-        if cfg.get("model"):
-            spec["model"] = cfg["model"]
-        agents = [a for a in agents if _name(a) != name] + [SubAgent(**spec)]
+        agent = _subagent(
+            name,
+            cfg.get("description", name),
+            cfg.get("prompt", f"You are the {name} subagent."),
+            list(tools) if tools is not None else None,
+            cfg.get("model"),
+        )
+        agents = [a for a in agents if a["name"] != name] + [agent]
     return agents
 
 
@@ -93,4 +94,4 @@ def subagent_summaries(
     workdir: str = ".", *, env: Mapping[str, str] | None = None
 ) -> list[tuple[str, str]]:
     """``(name, description)`` for every available subagent."""
-    return [(_name(a), a["description"]) for a in load_subagents(workdir, env=env)]
+    return [(a["name"], a["description"]) for a in load_subagents(workdir, env=env)]

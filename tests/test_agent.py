@@ -33,6 +33,21 @@ def test_interrupt_tools_cover_mutations():
     assert set(INTERRUPT_TOOLS) >= {"write_file", "edit_file", "delete", "execute"}
 
 
+def test_build_agent_wires_extensions(tmp_path, fake_model, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    from luna.agent import describe_capabilities
+
+    cfg = LunaConfig(workdir=str(tmp_path))
+    agent = build_agent(cfg, model=fake_model())
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        config={"configurable": {"thread_id": "ext"}},
+    )
+    caps = describe_capabilities(cfg)
+    assert "researcher" in caps["subagents"]
+    assert caps["tools"] >= 2  # manage_mcp + manage_skills
+
+
 def test_memory_wired_when_agents_md_present(tmp_path, fake_model):
     (tmp_path / "AGENTS.md").write_text("# project notes\n")
     cfg = LunaConfig(workdir=str(tmp_path))
