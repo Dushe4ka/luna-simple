@@ -28,10 +28,11 @@ class FakeToolCallingModel(BaseChatModel):
 
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path_factory, monkeypatch):
-    """Keep tests away from the real ~/.config/luna."""
-    home = tmp_path_factory.mktemp("xdg")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
-    return home
+    """Keep tests away from the real ~/.config/luna (env var and HOME)."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    return home / ".config"
 
 
 @pytest.fixture

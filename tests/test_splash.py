@@ -6,7 +6,8 @@ from luna.ui.splash import render_splash
 
 
 def _console(width):
-    return Console(file=io.StringIO(), width=width, force_terminal=True, color_system="truecolor")
+    # force_terminal so the scene path runs; no_color so assertions see plain text
+    return Console(file=io.StringIO(), width=width, force_terminal=True, no_color=True)
 
 
 def test_renders_at_various_widths():
@@ -18,9 +19,19 @@ def test_renders_at_various_widths():
         assert "loading modules" in out
 
 
-def test_contains_companion_line_and_slogan():
-    c = _console(100)
+def test_scene_has_wordmark_and_taglines():
+    c = _console(118)
     render_splash(c, animate=False)
     out = c.file.getvalue()
     assert "YOUR AI AGENT COMPANION" in out
-    assert "SAME MOON" in out.upper()
+    assert "INITIALIZING ..." in out
+    assert "SAME MOON" in out
+    assert "IDEAS" in out and "HUMAN" in out
+
+
+def test_compact_fallback_is_used_when_narrow():
+    c = _console(70)
+    render_splash(c, animate=False)
+    out = c.file.getvalue()
+    assert "YOUR AI AGENT COMPANION" in out
+    assert "> loading modules ..." in out

@@ -10,7 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Lightweight CLI coding agent built on `deepagents` (`luna` / `luna-simple`).
 - Streaming `rich` REPL and one-shot mode (`luna "…"`).
-- ANSI splash screen (`--no-splash` to skip).
+- ANSI night-sky splash screen — glowing moon with orbit ring, starfield,
+  constellations, comet, clouds, horizon and sea reflection, `L U N A` wordmark
+  and corner slogans; compact banner fallback on narrow terminals
+  (`--no-splash` to skip).
 - Five model providers via LangChain `init_chat_model`: `anthropic` (default),
   `deepseek`, `openai`, `google`, `ollama`.
 - Layered configuration: CLI flags > environment > `./.luna.toml` >
