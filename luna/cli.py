@@ -188,8 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
+    def _rebuild():
+        return build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+
     try:
-        agent = build_agent(config)
+        agent = _rebuild()
     except LunaConfigError as exc:
         print(f"luna: {exc}", file=sys.stderr)
         return 2
@@ -198,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         if prompt:
             run_once(agent, prompt, thread_id=uuid.uuid4().hex, console=console)
             return 0
-        return run_repl(agent, console=console)
+        return run_repl(agent, console=console, rebuild=_rebuild)
     except KeyboardInterrupt:
         console.print()
         return 130
