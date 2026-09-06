@@ -15,12 +15,31 @@ from pathlib import Path
 from luna.providers import DEFAULT_PROVIDER, PROVIDERS, LunaConfigError
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
+
+# Dotted keys accepted by ``set_config_values`` / ``luna config set``.
+_SETTABLE: dict[str, str] = {
+    "model.provider": "str",
+    "model.name": "str",
+    "agent.yolo": "bool",
+    "agent.workdir": "str",
+    "agent.temperature": "float",
+    "agent.max_tokens": "int",
+    "ui.splash": "bool",
+}
 
 
-def _user_config_path(env: Mapping[str, str]) -> Path:
+def config_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return Luna's config directory (``$XDG_CONFIG_HOME/luna`` or ``~/.config/luna``)."""
+    env = os.environ if env is None else env
     xdg = env.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "luna" / "config.toml"
+    return base / "luna"
+
+
+def config_path(env: Mapping[str, str] | None = None) -> Path:
+    """Return the path to the user config file."""
+    return config_dir(env) / "config.toml"
 
 
 @dataclass
@@ -98,7 +117,7 @@ def load_config(
     cwd_path = Path(cwd) if cwd is not None else Path.cwd()
 
     merged: dict = {}
-    _apply_toml(_load_toml(_user_config_path(env)), merged)
+    _apply_toml(_load_toml(config_path(env)), merged)
     _apply_toml(_load_toml(cwd_path / ".luna.toml"), merged)
     _apply_env(env, merged)
 
@@ -122,3 +141,77 @@ def load_config(
         max_tokens=merged.get("max_tokens"),
         extra_model_kwargs=dict(merged.get("extra_model_kwargs", {})),
     )
+
+
+def _coerce(value: str, kind: str) -> object:
+    if kind == "bool":
+        low = value.strip().lower()
+        if low in _TRUTHY:
+            return True
+        if low in _FALSY:
+            return False
+        raise LunaConfigError(f"Expected a boolean (true/false), got {value!r}.")
+    if kind == "int":
+        try:
+            return int(value)
+        except ValueError:
+            raise LunaConfigError(f"Expected an integer, got {value!r}.") from None
+    if kind == "float":
+        try:
+            return float(value)
+        except ValueError:
+            raise LunaConfigError(f"Expected a number, got {value!r}.") from None
+    return value
+
+
+def _dump_toml(data: Mapping[str, Mapping[str, object]]) -> str:
+    lines: list[str] = []
+    for section, values in data.items():
+        if not values:
+            continue
+        lines.append(f"[{section}]")
+        for key, value in values.items():
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                rendered = repr(value)
+            else:
+                escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+                rendered = f'"{escaped}"'
+            lines.append(f"{key} = {rendered}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def set_config_values(
+    updates: Mapping[str, str],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """Write ``dotted.key -> value`` pairs into the user config file.
+
+    Values arrive as strings (from the CLI) and are coerced to the type the
+    key expects. Returns the path written.
+    """
+    path = config_path(env)
+    data: dict[str, dict[str, object]] = {}
+    for section, values in _load_toml(path).items():
+        if isinstance(values, dict):
+            data[section] = dict(values)
+
+    for dotted, raw in updates.items():
+        if dotted not in _SETTABLE:
+            raise LunaConfigError(
+                f"Unknown setting {dotted!r}. Valid keys: {', '.join(_SETTABLE)}."
+            )
+        section, key = dotted.split(".", 1)
+        value = _coerce(raw, _SETTABLE[dotted])
+        if section == "model" and key == "provider" and value not in PROVIDERS:
+            raise LunaConfigError(
+                f"Unknown provider {value!r}. Choose one of: {', '.join(PROVIDERS)}."
+            )
+        data.setdefault(section, {})[key] = value
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_dump_toml(data))
+    return path

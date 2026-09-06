@@ -67,9 +67,13 @@ def build_model(
     """
     spec = _spec(provider)
     if spec.env_var and not os.environ.get(spec.env_var):
+        from luna.credentials import apply_stored_key
+
+        apply_stored_key(provider, spec.env_var)
+    if spec.env_var and not os.environ.get(spec.env_var):
         raise LunaConfigError(
-            f"{spec.env_var} is not set. Export it or add it to your .env "
-            f"(see .env.example), or pick another provider with --provider."
+            f"No API key for {spec.key}. Run 'luna setup' to configure one, "
+            f"export {spec.env_var}, or pick another provider with --provider."
         )
     from langchain.chat_models import init_chat_model
 

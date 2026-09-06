@@ -50,6 +50,9 @@ Python **3.11+** is required.
 ## Quickstart
 
 ```bash
+# first run: pick a provider and paste your API key
+luna setup
+
 # one-shot
 luna "read pyproject.toml and tell me the entry points"
 
@@ -57,7 +60,26 @@ luna "read pyproject.toml and tell me the entry points"
 luna
 ```
 
-In the REPL: `/help`, `/tools`, `/model`, `/provider`, `/new`, `/clear`, `/exit`.
+If you start Luna without a key configured, it offers to run `luna setup` for
+you. In the REPL: `/help`, `/tools`, `/model`, `/provider`, `/new`, `/clear`,
+`/exit`.
+
+## Setup & credentials
+
+`luna setup` writes two files under `~/.config/luna/` (XDG-aware):
+
+- `config.toml` — provider, model, and other preferences (safe to share)
+- `credentials.toml` — your API keys, created with mode `0600`
+
+Environment variables (`ANTHROPIC_API_KEY`, …) always override stored keys.
+
+```bash
+luna config path                        # where the files live
+luna config show                        # effective settings (keys masked)
+luna config set model.provider deepseek
+luna config set-key openai              # prompts, hidden input
+luna config unset-key openai
+```
 
 ## Providers
 
@@ -77,6 +99,9 @@ config file.
 luna --provider deepseek --model deepseek-reasoner "refactor utils.py"
 luna --provider ollama "explain this stack trace"
 ```
+
+You can still use a plain environment / `.env` if you prefer — see
+`.env.example`.
 
 ## Safety
 

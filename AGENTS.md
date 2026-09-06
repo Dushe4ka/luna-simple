@@ -13,7 +13,9 @@ loaded as memory.
 
 ## Layout
 
-- `luna/config.py` — layered settings resolution into `LunaConfig`
+- `luna/config.py` — layered settings resolution into `LunaConfig`; `config.toml` writer
+- `luna/credentials.py` — API keys in `~/.config/luna/credentials.toml` (mode 0600)
+- `luna/setup_wizard.py` — the interactive `luna setup` flow
 - `luna/providers.py` — provider registry → LangChain chat model
 - `luna/prompts.py` — the Luna system prompt
 - `luna/agent.py` — `create_deep_agent` assembly (framework calls live here)

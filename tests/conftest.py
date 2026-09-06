@@ -26,6 +26,14 @@ class FakeToolCallingModel(BaseChatModel):
         return self
 
 
+@pytest.fixture(autouse=True)
+def isolated_config_home(tmp_path_factory, monkeypatch):
+    """Keep tests away from the real ~/.config/luna."""
+    home = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    return home
+
+
 @pytest.fixture
 def fake_model():
     def _make(*messages: AIMessage) -> FakeToolCallingModel:
