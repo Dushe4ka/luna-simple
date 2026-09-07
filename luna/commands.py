@@ -162,6 +162,53 @@ def _provider(ctx: CommandContext, arg: str) -> None:
     _startup_only(ctx, "/provider")
 
 
+_COMPACT_ASK = (
+    "Summarise this whole session as a dense handoff note: the goal, decisions "
+    "made, files touched, current state, and open questions. No preamble."
+)
+
+
+def _compact(ctx: CommandContext, arg: str) -> DispatchResult:
+    old_config = {"configurable": {"thread_id": ctx.thread_id}}
+    result = ctx.agent.invoke(
+        {"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config=old_config
+    )
+    summary = ""
+    for msg in reversed(result.get("messages", [])):
+        text = getattr(msg, "content", "")
+        if getattr(msg, "type", "") == "ai" and isinstance(text, str) and text.strip():
+            summary = text.strip()
+            break
+    new_id = uuid.uuid4().hex
+    ctx.agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Continuing a compacted session. Handoff note:\n" + summary,
+                }
+            ]
+        },
+        config={"configurable": {"thread_id": new_id}},
+    )
+    if ctx.index is not None:
+        title = "compacted"
+        row = None
+        try:
+            row = next(
+                (r for r in ctx.index.list(ctx.workdir) if r.thread_id == ctx.thread_id),
+                None,
+            )
+        except Exception:  # noqa: BLE001 - index is best-effort here
+            row = None
+        if row is not None:
+            title = "compacted: " + row.title
+        ctx.index.record(new_id, ctx.workdir, title)
+        ctx.index.touch(new_id)
+    ctx.console.print(f"[{PALETTE['blue']}]compacted — new thread seeded from the summary[/]")
+    return DispatchResult(thread_id=new_id)
+
+
 _TABLE: dict[str, Callable] = {
     "/help": _help,
     "/tools": _tools,
@@ -169,6 +216,7 @@ _TABLE: dict[str, Callable] = {
     "/clear": _clear,
     "/reload": _reload,
     "/new": _new,
+    "/compact": _compact,
     "/usage": _usage,
     "/model": _model,
     "/provider": _provider,
