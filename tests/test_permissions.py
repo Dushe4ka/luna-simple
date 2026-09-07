@@ -15,6 +15,26 @@ def test_match_path_glob():
     assert rs.match("write_file", {"file_path": "app.py"}) is None
 
 
+def test_match_virtual_rooted_path():
+    # LocalShellBackend(virtual_mode=True) hands tools "/"-rooted paths.
+    rs = RuleSet(deny=["write_file:.env", "write_file:secrets/*"])
+    assert rs.match("write_file", {"file_path": "/.env"}) == "deny"
+    assert rs.match("write_file", {"file_path": "/secrets/k.txt"}) == "deny"
+    # A rule written with a leading slash must also match a relative call.
+    rs2 = RuleSet(deny=["write_file:/.env"])
+    assert rs2.match("write_file", {"file_path": ".env"}) == "deny"
+
+
+def test_load_rules_ignores_wrong_shape(tmp_path):
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "permissions.toml").write_text(
+        'allow = "not-a-list"\ndeny = [1, "write_file:.env"]\n'
+    )
+    rs = load_rules(str(tmp_path))
+    assert rs.allow == []
+    assert rs.deny == ["write_file:.env"]
+
+
 def test_deny_beats_allow():
     rs = RuleSet(allow=["execute:*"], deny=["execute:rm -rf*"])
     assert rs.match("execute", {"command": "rm -rf /"}) == "deny"

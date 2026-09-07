@@ -6,17 +6,29 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from luna.config import config_dir
 
-_FILE_TOOLS = {"write_file", "edit_file", "delete", "read_file"}
+_FILE_TOOLS = {"write_file", "edit_file", "delete", "read_file"}  # used by Task 8
+
+
+def _relpath(raw: str) -> str:
+    """Normalise a file subject/pattern to a workdir-relative POSIX path.
+
+    ``LocalShellBackend(virtual_mode=True)`` makes the agent address files with
+    ``/``-rooted virtual paths, so ``/.env`` and ``.env`` must compare equal.
+    """
+    text = str(raw)
+    if not text:
+        return ""
+    return PurePosixPath(text).as_posix().lstrip("/")
 
 
 def _subject(tool: str, args: dict) -> str:
     if tool == "execute":
         return str(args.get("command", ""))
-    return str(args.get("file_path", args.get("path", "")))
+    return _relpath(args.get("file_path", args.get("path", "")))
 
 
 @dataclass
@@ -29,7 +41,11 @@ class RuleSet:
     def _hit(self, rules: list[str], tool: str, subject: str) -> bool:
         for rule in rules:
             rtool, _, pattern = rule.partition(":")
-            if rtool == tool and fnmatch(subject, pattern):
+            if rtool != tool:
+                continue
+            if tool != "execute":
+                pattern = _relpath(pattern)  # 'write_file:/.env' == 'write_file:.env'
+            if fnmatch(subject, pattern):
                 return True
         return False
 
@@ -64,8 +80,13 @@ def load_rules(workdir: str, env: Mapping[str, str] | None = None) -> RuleSet:
     proj = _read(_project_file(workdir))
     proj = proj.get("permissions", proj)  # allow bare or [permissions] table
     for src in (user, proj):
-        rs.allow += [r for r in src.get("allow", []) if r not in rs.allow]
-        rs.deny += [r for r in src.get("deny", []) if r not in rs.deny]
+        if not isinstance(src, Mapping):
+            continue
+        for key, dest in (("allow", rs.allow), ("deny", rs.deny)):
+            values = src.get(key, [])
+            if not isinstance(values, list):
+                continue
+            dest += [r for r in values if isinstance(r, str) and r not in dest]
     return rs
 
 

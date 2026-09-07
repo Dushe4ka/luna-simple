@@ -56,9 +56,18 @@ def collect_decisions(
     for request in requests or []:
         name = request.get("action") or request.get("name")
         args = request.get("args", {}) or {}
-        if rules is not None and rules.match(name, args) == "allow":
+        verdict = rules.match(name, args) if rules is not None else None
+        if verdict == "allow":
             console.print(f"[dim]⚙ {name} · auto (rule)[/]")
             decisions.append({"type": "approve"})
+        elif verdict == "deny":
+            console.print(f"[dim]⚙ {name} · blocked (rule)[/]")
+            decisions.append(
+                {
+                    "type": "reject",
+                    "message": f"blocked by a Luna permission rule ({name})",
+                }
+            )
         else:
             decisions.append(prompt_decision(console, request, input_fn=input_fn))
 
