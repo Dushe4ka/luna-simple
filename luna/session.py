@@ -16,6 +16,7 @@ from rich.console import Console
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config import LunaConfig
+from luna.context import PinnedFiles, expand_mentions, render_pinned
 from luna.persistence import SessionIndex, make_title
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
@@ -167,6 +168,7 @@ def run_repl(
     console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
 
     session_usage = SessionUsage()
+    pinned = PinnedFiles()
     ctx = CommandContext(
         console=console,
         config=config,
@@ -176,6 +178,7 @@ def run_repl(
         workdir=workdir,
         index=index,
         usage=session_usage,
+        pinned=pinned,
     )
 
     if index is not None:
@@ -205,7 +208,10 @@ def run_repl(
                 continue
 
         turn_config = {"configurable": {"thread_id": thread_id}}
-        payload = {"messages": [{"role": "user", "content": line}]}
+        pinned_block = render_pinned(pinned, workdir)
+        expanded = expand_mentions(line, workdir)
+        content = pinned_block + "\n\n" + expanded if pinned_block else expanded
+        payload = {"messages": [{"role": "user", "content": content}]}
         try:
             _, reload_requested, turn_usage = _stream_turn(
                 agent, payload, turn_config, console, input_fn

@@ -209,6 +209,23 @@ def _compact(ctx: CommandContext, arg: str) -> DispatchResult:
     return DispatchResult(thread_id=new_id)
 
 
+def _add(ctx: CommandContext, arg: str) -> None:
+    if not arg:
+        ctx.console.print("[dim]usage: /add path ...[/]")
+        return
+    ctx.pinned.add(*arg.split())
+    ctx.console.print(f"[dim]pinned: {', '.join(ctx.pinned.paths)}[/]")
+
+
+def _drop(ctx: CommandContext, arg: str) -> None:
+    ctx.pinned.drop(*arg.split())
+    ctx.console.print(f"[dim]pinned: {', '.join(ctx.pinned.paths) or '(none)'}[/]")
+
+
+def _context(ctx: CommandContext, arg: str) -> None:
+    ctx.console.print("\n".join(f"  {p}" for p in ctx.pinned.paths) or "[dim](no pinned files)[/]")
+
+
 _TABLE: dict[str, Callable] = {
     "/help": _help,
     "/tools": _tools,
@@ -220,8 +237,10 @@ _TABLE: dict[str, Callable] = {
     "/usage": _usage,
     "/model": _model,
     "/provider": _provider,
-    # later tasks register: /sessions /resume /usage /compact /diff /undo
-    # /add /drop /context /verify /init
+    "/add": _add,
+    "/drop": _drop,
+    "/context": _context,
+    # later tasks register: /sessions /resume /diff /undo /verify /init
 }
 
 
