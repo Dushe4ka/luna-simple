@@ -13,10 +13,12 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langgraph.types import Command
 from rich.console import Console
 
+from luna import permissions
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config import LunaConfig
 from luna.context import PinnedFiles, expand_mentions, render_pinned
+from luna.permissions import load_rules
 from luna.persistence import SessionIndex, make_title
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
@@ -37,12 +39,37 @@ def collect_decisions(
     interrupt_value: dict,
     *,
     input_fn: Callable[[str], str] = input,
+    rules=None,
+    workdir=None,
 ) -> dict:
-    """Turn an interrupt payload into a ``Command(resume=...)`` argument."""
+    """Turn an interrupt payload into a ``Command(resume=...)`` argument.
+
+    ``rules`` (a :class:`~luna.permissions.RuleSet`) auto-approves any request
+    whose ``(tool, args)`` matches an ``allow`` rule. A decision carrying an
+    ``"always"`` key is persisted as a project rule and folded into ``rules``.
+    """
     requests = interrupt_value.get("action_requests")
     if requests is None and "action_request" in interrupt_value:
         requests = [interrupt_value["action_request"]]
-    decisions = [prompt_decision(console, request, input_fn=input_fn) for request in requests or []]
+
+    decisions: list[dict] = []
+    for request in requests or []:
+        name = request.get("action") or request.get("name")
+        args = request.get("args", {}) or {}
+        if rules is not None and rules.match(name, args) == "allow":
+            console.print(f"[dim]⚙ {name} · auto (rule)[/]")
+            decisions.append({"type": "approve"})
+        else:
+            decisions.append(prompt_decision(console, request, input_fn=input_fn))
+
+    for d in decisions:
+        if "always" in d:
+            if workdir is not None:
+                permissions.append_project_rule(workdir, d["always"])
+            if rules is not None and d["always"] not in rules.allow:
+                rules.allow.append(d["always"])
+            d.pop("always", None)
+
     return {"decisions": decisions}
 
 
@@ -73,6 +100,9 @@ def _stream_turn(
     config: dict,
     console: Console,
     input_fn: Callable[[str], str],
+    *,
+    rules=None,
+    workdir: str = ".",
 ) -> tuple[str, bool, TurnUsage]:
     """Run one user turn. Returns ``(final_text, reload_requested, turn_usage)``."""
     parts: list[str] = []
@@ -107,7 +137,13 @@ def _stream_turn(
             break
 
         console.print()
-        resume = collect_decisions(console, interrupts[0].value, input_fn=input_fn)
+        resume = collect_decisions(
+            console,
+            interrupts[0].value,
+            input_fn=input_fn,
+            rules=rules,
+            workdir=workdir,
+        )
         payload = Command(resume=resume)
 
     close_turn(console)
@@ -128,7 +164,15 @@ def run_once(
     thread_id = thread_id or _new_thread_id()
     config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
-    text, _, _ = _stream_turn(agent, payload, config, console, input_fn)
+    text, _, _ = _stream_turn(
+        agent,
+        payload,
+        config,
+        console,
+        input_fn,
+        rules=load_rules(workdir),
+        workdir=workdir,
+    )
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
         index.touch(thread_id)
@@ -169,6 +213,7 @@ def run_repl(
 
     session_usage = SessionUsage()
     pinned = PinnedFiles()
+    rules = load_rules(workdir)
     ctx = CommandContext(
         console=console,
         config=config,
@@ -179,6 +224,7 @@ def run_repl(
         index=index,
         usage=session_usage,
         pinned=pinned,
+        permissions=rules,
     )
 
     if index is not None:
@@ -214,7 +260,7 @@ def run_repl(
         payload = {"messages": [{"role": "user", "content": content}]}
         try:
             _, reload_requested, turn_usage = _stream_turn(
-                agent, payload, turn_config, console, input_fn
+                agent, payload, turn_config, console, input_fn, rules=rules, workdir=workdir
             )
         except KeyboardInterrupt:
             console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")

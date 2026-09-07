@@ -19,8 +19,10 @@ from luna import skills as skills_mod
 from luna import subagents as subagents_mod
 from luna.config import LunaConfig
 from luna.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
+from luna.permissions import load_rules
 from luna.prompts import LUNA_SYSTEM_PROMPT
 from luna.providers import build_model
+from luna.toolguard import tool_guard
 
 # Tools that mutate the workspace and therefore pause for approval.
 INTERRUPT_TOOLS: dict = {
@@ -63,6 +65,7 @@ def build_agent(
     memory = ["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else None
     skill_dirs, _servers, mcp_tools, subs = _extension_bits(config, on_warn)
     interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
+    rules = load_rules(str(workdir))
     return create_deep_agent(
         model=model or build_model(config.provider, config.model, config.model_kwargs),
         system_prompt=LUNA_SYSTEM_PROMPT,
@@ -72,6 +75,7 @@ def build_agent(
         skills=skill_dirs or None,
         subagents=subs or None,
         interrupt_on=interrupt_on,
+        middleware=[tool_guard(rules, str(workdir))],
         checkpointer=checkpointer or InMemorySaver(),
         name="luna",
     )
