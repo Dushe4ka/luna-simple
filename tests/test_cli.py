@@ -11,6 +11,15 @@ def test_parser_accepts_flags():
     assert ns.no_splash is True
 
 
+def test_parser_has_resume_flags():
+    ns = build_parser().parse_args(["-c"])
+    assert ns.cont is True
+    ns2 = build_parser().parse_args(["--resume"])
+    assert ns2.resume == "__list__"
+    ns3 = build_parser().parse_args(["--resume", "abc123"])
+    assert ns3.resume == "abc123"
+
+
 def test_version(capsys):
     with pytest.raises(SystemExit) as e:
         main(["--version"])

@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langgraph.types import Command
 from rich.console import Console
 
+from luna.persistence import SessionIndex, make_title
 from luna.subagents import subagent_summaries
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
@@ -124,11 +125,17 @@ def run_once(
     thread_id: str | None = None,
     console: Console,
     input_fn: Callable[[str], str] = input,
+    index: SessionIndex | None = None,
+    workdir: str = ".",
 ) -> str:
     """Run a single prompt and return the final assistant text."""
-    config = {"configurable": {"thread_id": thread_id or _new_thread_id()}}
+    thread_id = thread_id or _new_thread_id()
+    config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
     text, _ = _stream_turn(agent, payload, config, console, input_fn)
+    if index is not None:
+        index.record(thread_id, workdir, make_title(prompt))
+        index.touch(thread_id)
     return text
 
 
@@ -163,16 +170,38 @@ def _list_agents(console: Console) -> None:
         console.print(f"  [bold {PALETTE['accent']}]{name}[/] — {desc}")
 
 
+def _print_recap(agent, config, console, keep=6):
+    """Print the tail of a resumed thread's history (best effort)."""
+    try:
+        msgs = agent.get_state(config).values.get("messages", [])
+    except Exception:  # noqa: BLE001 - recap is cosmetic
+        return
+    if not msgs:
+        return
+    console.print(f"[{PALETTE['blue']}]— resuming, last {min(keep, len(msgs))} messages —[/]")
+    for m in msgs[-keep:]:
+        role = getattr(m, "type", "?")
+        text = (getattr(m, "content", "") or "")[:200]
+        if text:
+            console.print(f"[dim]{role}:[/] {text}")
+
+
 def run_repl(
     agent,
     *,
     console: Console,
     input_fn: Callable[[str], str] = input,
     rebuild: Callable[[], object] | None = None,
+    index: SessionIndex | None = None,
+    thread_id: str | None = None,
+    workdir: str = ".",
 ) -> int:
     """Interactive loop. Returns a process exit code."""
-    thread_id = _new_thread_id()
+    thread_id = thread_id or _new_thread_id()
     console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
+
+    if index is not None:
+        _print_recap(agent, {"configurable": {"thread_id": thread_id}}, console)
 
     while True:
         try:
@@ -225,6 +254,9 @@ def run_repl(
         except KeyboardInterrupt:
             console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")
             continue
+        if index is not None:
+            index.record(thread_id, workdir, make_title(line))
+            index.touch(thread_id)
         if reload_requested and rebuild is not None:
             agent = rebuild()
             console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")

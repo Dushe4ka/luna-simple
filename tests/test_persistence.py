@@ -1,7 +1,12 @@
 import time
 
-from luna.config import config_dir
+from langchain_core.messages import AIMessage
+from rich.console import Console
+
+from luna.agent import build_agent
+from luna.config import LunaConfig, config_dir
 from luna.persistence import SessionIndex, checkpointer, make_title
+from luna.session import run_once
 
 
 def test_make_title_collapses_and_truncates():
@@ -33,6 +38,24 @@ def test_index_touch_changes_order(tmp_path):
 def _db_file(saver):
     (row,) = saver.conn.execute("PRAGMA database_list").fetchall()
     return row[2]  # the resolved on-disk path of the "main" database
+
+
+def test_history_survives_rebuild(tmp_path, fake_model):
+    cp = checkpointer()
+    idx = SessionIndex()
+    cfg = LunaConfig(workdir=str(tmp_path))
+    a1 = build_agent(cfg, model=fake_model(AIMessage(content="one")), checkpointer=cp)
+    run_once(
+        a1,
+        "remember X",
+        thread_id="keep",
+        console=Console(),
+        index=idx,
+        workdir=str(tmp_path),
+    )
+    a2 = build_agent(cfg, model=fake_model(AIMessage(content="two")), checkpointer=cp)
+    state = a2.get_state({"configurable": {"thread_id": "keep"}})
+    assert any("remember X" in getattr(m, "content", "") for m in state.values["messages"])
 
 
 def test_checkpointer_shares_one_on_disk_db():

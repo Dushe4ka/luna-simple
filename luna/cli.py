@@ -59,8 +59,47 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_input",
         help="never prompt interactively (fail fast instead)",
     )
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="cont",
+        action="store_true",
+        help="resume the most recent session for this directory",
+    )
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="__list__",
+        default=None,
+        help="resume a past session (no value: pick from a list; or a thread id)",
+    )
     parser.add_argument("--version", action="version", version=f"luna {__version__}")
     return parser
+
+
+def _resolve_resume(args, index, workdir, console, interactive):
+    """Return a thread_id to resume, or None on error."""
+    if args.cont:
+        row = index.latest_for(workdir)
+        if row is None:
+            print("luna: no previous session for this directory", file=sys.stderr)
+            return None
+        return row.thread_id
+    if args.resume != "__list__":
+        return args.resume  # treat as a thread id
+    rows = index.list(workdir)
+    if not rows:
+        print("luna: no sessions recorded for this directory", file=sys.stderr)
+        return None
+    for n, r in enumerate(rows, 1):
+        console.print(f"  [{n}] {r.title}")
+    if not interactive:
+        print("luna: --resume needs a value in non-interactive mode", file=sys.stderr)
+        return None
+    choice = input("resume which? > ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(rows):
+        return rows[int(choice) - 1].thread_id
+    return choice or None
 
 
 def _overrides(args: argparse.Namespace) -> dict:
@@ -291,8 +330,22 @@ def main(argv: list[str] | None = None) -> int:
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
+    from luna.persistence import SessionIndex, checkpointer
+
+    index = SessionIndex()
+    cp = checkpointer()
+    start_thread = uuid.uuid4().hex
+
+    if args.cont or args.resume:
+        target = _resolve_resume(args, index, config.workdir, console, interactive)
+        if target is None:
+            return 2
+        start_thread = target
+
     def _rebuild():
-        return build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        return build_agent(
+            config, checkpointer=cp, on_warn=lambda m: console.print(f"[yellow]{m}[/]")
+        )
 
     try:
         agent = _rebuild()
@@ -302,9 +355,23 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if prompt:
-            run_once(agent, prompt, thread_id=uuid.uuid4().hex, console=console)
+            run_once(
+                agent,
+                prompt,
+                thread_id=start_thread,
+                console=console,
+                index=index,
+                workdir=config.workdir,
+            )
             return 0
-        return run_repl(agent, console=console, rebuild=_rebuild)
+        return run_repl(
+            agent,
+            console=console,
+            rebuild=_rebuild,
+            index=index,
+            thread_id=start_thread,
+            workdir=config.workdir,
+        )
     except KeyboardInterrupt:
         console.print()
         return 130
