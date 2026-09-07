@@ -20,6 +20,7 @@ from luna.persistence import SessionIndex, make_title
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn, tool_line
+from luna.usage import SessionUsage, TurnUsage, indicator_line
 
 __all__ = ["SLASH_COMMANDS", "collect_decisions", "run_once", "run_repl"]
 
@@ -71,11 +72,12 @@ def _stream_turn(
     config: dict,
     console: Console,
     input_fn: Callable[[str], str],
-) -> tuple[str, bool]:
-    """Run one user turn to completion. Returns ``(final_text, reload_requested)``."""
+) -> tuple[str, bool, TurnUsage]:
+    """Run one user turn. Returns ``(final_text, reload_requested, turn_usage)``."""
     parts: list[str] = []
     seen_tools: set[str] = set()
     reload_requested = False
+    turn_usage = TurnUsage()
 
     open_turn(console)
     while True:
@@ -85,6 +87,7 @@ def _stream_turn(
         ):
             if mode == "messages":
                 msg, meta = chunk
+                turn_usage.merge(getattr(msg, "usage_metadata", None))
                 if meta.get("langgraph_node") == "model" and isinstance(
                     msg, (AIMessage, AIMessageChunk)
                 ):
@@ -107,7 +110,7 @@ def _stream_turn(
         payload = Command(resume=resume)
 
     close_turn(console)
-    return "".join(parts).strip(), reload_requested
+    return "".join(parts).strip(), reload_requested, turn_usage
 
 
 def run_once(
@@ -124,7 +127,7 @@ def run_once(
     thread_id = thread_id or _new_thread_id()
     config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
-    text, _ = _stream_turn(agent, payload, config, console, input_fn)
+    text, _, _ = _stream_turn(agent, payload, config, console, input_fn)
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
         index.touch(thread_id)
@@ -160,16 +163,19 @@ def run_repl(
 ) -> int:
     """Interactive loop. Returns a process exit code."""
     thread_id = thread_id or _new_thread_id()
+    config = config or LunaConfig()
     console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
 
+    session_usage = SessionUsage()
     ctx = CommandContext(
         console=console,
-        config=config or LunaConfig(),
+        config=config,
         agent=agent,
         rebuild=rebuild,
         thread_id=thread_id,
         workdir=workdir,
         index=index,
+        usage=session_usage,
     )
 
     if index is not None:
@@ -201,10 +207,16 @@ def run_repl(
         turn_config = {"configurable": {"thread_id": thread_id}}
         payload = {"messages": [{"role": "user", "content": line}]}
         try:
-            _, reload_requested = _stream_turn(agent, payload, turn_config, console, input_fn)
+            _, reload_requested, turn_usage = _stream_turn(
+                agent, payload, turn_config, console, input_fn
+            )
         except KeyboardInterrupt:
             console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")
             continue
+        before = len(session_usage.turns)
+        session_usage.add_turn(turn_usage)
+        if len(session_usage.turns) > before:
+            console.print(f"[dim]{indicator_line(session_usage, config.provider, config.model)}[/]")
         if index is not None:
             index.record(thread_id, workdir, make_title(line))
             index.touch(thread_id)

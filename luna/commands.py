@@ -141,6 +141,17 @@ def _startup_only(ctx: CommandContext, name: str) -> None:
     )
 
 
+def _usage(ctx: CommandContext, arg: str) -> None:
+    session = ctx.usage
+    if session is None or not getattr(session, "turns", None):
+        ctx.console.print(f"[{PALETTE['blue']}]no usage recorded yet[/]")
+        return
+    in_tok, out_tok, total = session.totals
+    ctx.console.print(
+        f"  turns: {len(session.turns)}  in: {in_tok}  out: {out_tok}  total: {total}"
+    )
+
+
 def _model(ctx: CommandContext, arg: str) -> None:
     # Task 11 replaces this with real model switching.
     _startup_only(ctx, "/model")
@@ -158,6 +169,7 @@ _TABLE: dict[str, Callable] = {
     "/clear": _clear,
     "/reload": _reload,
     "/new": _new,
+    "/usage": _usage,
     "/model": _model,
     "/provider": _provider,
     # later tasks register: /sessions /resume /usage /compact /diff /undo
