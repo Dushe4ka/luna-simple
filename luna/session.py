@@ -13,23 +13,15 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langgraph.types import Command
 from rich.console import Console
 
+from luna.commands import HELP as SLASH_COMMANDS
+from luna.commands import CommandContext, dispatch
+from luna.config import LunaConfig
 from luna.persistence import SessionIndex, make_title
-from luna.subagents import subagent_summaries
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn, tool_line
 
-SLASH_COMMANDS: dict[str, str] = {
-    "/help": "show this help",
-    "/tools": "list the agent's tools",
-    "/agents": "list available subagents",
-    "/model": "show the active model",
-    "/provider": "show the active provider",
-    "/reload": "rebuild the agent with the current config (skills, MCP, subagents)",
-    "/new": "start a fresh conversation thread",
-    "/clear": "clear the screen",
-    "/exit": "leave Luna (also /quit, Ctrl-D)",
-}
+__all__ = ["SLASH_COMMANDS", "collect_decisions", "run_once", "run_repl"]
 
 _RELOAD_MARKER = "Run /reload"
 
@@ -139,37 +131,6 @@ def run_once(
     return text
 
 
-def _print_help(console: Console) -> None:
-    for name, help_text in SLASH_COMMANDS.items():
-        console.print(f"  [bold {PALETTE['peri']}]{name}[/]  {help_text}")
-
-
-_TOOL_NAMES = (
-    "ls",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "delete",
-    "glob",
-    "grep",
-    "execute",
-    "write_todos",
-    "task",
-    "manage_mcp",
-    "manage_skills",
-)
-
-
-def _list_tools(console: Console) -> None:
-    console.print("  " + ", ".join(_TOOL_NAMES))
-    console.print(f"  [dim {PALETTE['blue']}](+ any MCP tools as mcp__<server>__<tool>)[/]")
-
-
-def _list_agents(console: Console) -> None:
-    for name, desc in subagent_summaries():
-        console.print(f"  [bold {PALETTE['accent']}]{name}[/] — {desc}")
-
-
 def _print_recap(agent, config, console, keep=6):
     """Print the tail of a resumed thread's history (best effort)."""
     try:
@@ -195,10 +156,21 @@ def run_repl(
     index: SessionIndex | None = None,
     thread_id: str | None = None,
     workdir: str = ".",
+    config: LunaConfig | None = None,
 ) -> int:
     """Interactive loop. Returns a process exit code."""
     thread_id = thread_id or _new_thread_id()
     console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
+
+    ctx = CommandContext(
+        console=console,
+        config=config or LunaConfig(),
+        agent=agent,
+        rebuild=rebuild,
+        thread_id=thread_id,
+        workdir=workdir,
+        index=index,
+    )
 
     if index is not None:
         _print_recap(agent, {"configurable": {"thread_id": thread_id}}, console)
@@ -212,45 +184,24 @@ def run_repl(
 
         if not line:
             continue
-        if line in ("/exit", "/quit"):
-            return 0
-        if line == "/help":
-            _print_help(console)
-            continue
-        if line == "/tools":
-            _list_tools(console)
-            continue
-        if line == "/agents":
-            _list_agents(console)
-            continue
-        if line == "/clear":
-            console.clear()
-            continue
-        if line == "/new":
-            thread_id = _new_thread_id()
-            console.print(f"[{PALETTE['blue']}]started a new thread[/]")
-            continue
-        if line == "/reload":
-            if rebuild is None:
-                console.print(f"[{PALETTE['mauve']}]/reload is not available here[/]")
-            else:
-                agent = rebuild()
-                console.print(f"[{PALETTE['blue']}]reloaded — capabilities refreshed[/]")
-            continue
-        if line in ("/model", "/provider"):
-            console.print(
-                f"[{PALETTE['blue']}]{line[1:]}: set at startup — "
-                f"restart with --{line[1:]} to change[/]"
-            )
-            continue
-        if line.startswith("/"):
-            console.print(f"[{PALETTE['mauve']}]unknown command {line!r}; try /help[/]")
-            continue
 
-        config = {"configurable": {"thread_id": thread_id}}
+        if line.startswith("/"):
+            ctx.agent = agent
+            ctx.thread_id = thread_id
+            res = dispatch(line, ctx)
+            if res.exit:
+                return 0
+            if res.handled:
+                if res.agent is not None:
+                    agent = res.agent
+                if res.thread_id is not None:
+                    thread_id = res.thread_id
+                continue
+
+        turn_config = {"configurable": {"thread_id": thread_id}}
         payload = {"messages": [{"role": "user", "content": line}]}
         try:
-            _, reload_requested = _stream_turn(agent, payload, config, console, input_fn)
+            _, reload_requested = _stream_turn(agent, payload, turn_config, console, input_fn)
         except KeyboardInterrupt:
             console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")
             continue

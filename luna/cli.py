@@ -371,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             index=index,
             thread_id=start_thread,
             workdir=config.workdir,
+            config=config,
         )
     except KeyboardInterrupt:
         console.print()
