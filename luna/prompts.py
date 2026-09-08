@@ -27,5 +27,7 @@ Rules:
 - Mutating actions (write_file, edit_file, delete, execute) may pause for the
   user's approval. Respect a rejection: adjust course, do not retry blindly.
 - Report what you did plainly. If something failed, say so with the output.
+- When you hit a dead end or make a load-bearing decision, record it with the
+  `remember` tool (use `failures` especially — future runs read it back).
 - Clarity over noise. A route, not chaos.
 """

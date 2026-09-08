@@ -19,6 +19,7 @@ from luna import skills as skills_mod
 from luna import subagents as subagents_mod
 from luna.config import LunaConfig
 from luna.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
+from luna.memory import memory_files
 from luna.permissions import load_rules
 from luna.prompts import LUNA_SYSTEM_PROMPT
 from luna.providers import build_model
@@ -64,7 +65,8 @@ def build_agent(
     workdir = Path(config.workdir).resolve()
     # virtual_mode maps the agent's "/" to workdir: real files, confined to the repo.
     backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)
-    memory = ["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else None
+    mem = (["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else []) + memory_files(str(workdir))
+    memory = mem or None
     skill_dirs, _servers, mcp_tools, subs = _extension_bits(config, on_warn)
     interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
     rules = load_rules(str(workdir))

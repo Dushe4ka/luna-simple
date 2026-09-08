@@ -53,3 +53,16 @@ def test_memory_wired_when_agents_md_present(tmp_path, fake_model):
     cfg = LunaConfig(workdir=str(tmp_path))
     # Should build without error and pick up the memory file.
     build_agent(cfg, model=fake_model())
+
+
+def test_memory_wired_when_luna_memory_tier_present(tmp_path, fake_model):
+    d = tmp_path / ".luna" / "memory"
+    d.mkdir(parents=True)
+    (d / "project.md").write_text("# what this is\n")
+    cfg = LunaConfig(workdir=str(tmp_path))
+    # create_deep_agent must accept the nested ".luna/memory/project.md" path.
+    agent = build_agent(cfg, model=fake_model(AIMessage(content="ok")))
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        config={"configurable": {"thread_id": "mem-tier"}},
+    )
