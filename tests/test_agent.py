@@ -100,6 +100,60 @@ def test_subagent_deny_rule_is_enforced(tmp_path, fake_model):
     assert "blocked by a Luna permission rule" in blob
 
 
+def test_subagent_reads_a_real_file(tmp_path, fake_model):
+    """End-to-end: main agent -> ``task`` -> ``researcher`` -> ``read_file`` on disk.
+
+    The subagent's ``FilesystemMiddleware`` must carry the main agent's real
+    ``LocalShellBackend``. Before the backend fix, deepagents replaced it with an
+    ephemeral ``StateBackend`` and this read returned "File ... not found".
+
+    Uses the true shared-queue form (one ``FakeToolCallingModel`` drives both the
+    main agent and the subagent), and observes the subagent's actual
+    ``read_file`` ``ToolMessage`` via ``stream(subgraphs=True)`` rather than a
+    scripted echo, so the assertion proves the real read happened.
+    """
+    from langchain_core.messages import ToolMessage
+
+    from luna.config import LunaConfig
+
+    (tmp_path / "hello.txt").write_text("the-magic-string-42\n")
+    model = fake_model(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "id": "t1",
+                    "args": {
+                        "description": "read hello.txt and report it",
+                        "subagent_type": "researcher",
+                    },
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "r1", "args": {"file_path": "/hello.txt"}}],
+        ),
+        AIMessage(content="reported"),
+        AIMessage(content="final"),
+    )
+    agent = build_agent(LunaConfig(workdir=str(tmp_path)), model=model)
+    reads: list[str] = []
+    for _ns, state in agent.stream(
+        {"messages": [{"role": "user", "content": "delegate"}]},
+        config={"configurable": {"thread_id": "sub-real"}},
+        subgraphs=True,
+        stream_mode="values",
+    ):
+        for m in state.get("messages", []):
+            if isinstance(m, ToolMessage) and m.name == "read_file":
+                reads.append(m.content)
+    assert reads, "subagent never ran read_file"
+    assert any("the-magic-string-42" in c for c in reads)
+    assert not any("not found" in c.lower() for c in reads)
+
+
 def test_memory_wired_when_agents_md_present(tmp_path, fake_model):
     (tmp_path / "AGENTS.md").write_text("# project notes\n")
     cfg = LunaConfig(workdir=str(tmp_path))

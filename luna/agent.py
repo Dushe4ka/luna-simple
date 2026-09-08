@@ -35,7 +35,10 @@ INTERRUPT_TOOLS: dict = {
 
 
 def _extension_bits(
-    config: LunaConfig, on_warn: Callable[[str], None], guard: object | None = None
+    config: LunaConfig,
+    on_warn: Callable[[str], None],
+    guard: object | None = None,
+    backend: object | None = None,
 ):
     skill_dirs = [str(d) for d in skills_mod.existing_skill_dirs(config.workdir)]
     servers = mcp_mod.load_mcp_config(config.workdir)
@@ -43,7 +46,11 @@ def _extension_bits(
         mcp_mod.load_mcp_tools(mcp_mod.to_connections(servers), on_warn=on_warn) if servers else []
     )
     subs = subagents_mod.load_subagents(
-        config.workdir, fast_model=config.fast_model, guard=guard, on_warn=on_warn
+        config.workdir,
+        fast_model=config.fast_model,
+        guard=guard,
+        on_warn=on_warn,
+        backend=backend,
     )
     return skill_dirs, list(servers), mcp_tools, subs
 
@@ -75,7 +82,9 @@ def build_agent(
     # One guard instance for the main agent and every subagent: shared deny rules
     # and a single per-session undo journal for all changes made this session.
     guard = tool_guard(rules, str(workdir), session_id=session_id)
-    skill_dirs, _servers, mcp_tools, subs = _extension_bits(config, on_warn, guard=guard)
+    skill_dirs, _servers, mcp_tools, subs = _extension_bits(
+        config, on_warn, guard=guard, backend=backend
+    )
     interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
     return create_deep_agent(
         model=model or build_model(config.provider, config.model, config.model_kwargs),
