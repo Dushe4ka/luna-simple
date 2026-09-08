@@ -369,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     from luna.persistence import SessionIndex, checkpointer
 
     index = SessionIndex()
-    cp = checkpointer()
+    cp = checkpointer(on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
     session_id = uuid.uuid4().hex
     start_thread = uuid.uuid4().hex
 
