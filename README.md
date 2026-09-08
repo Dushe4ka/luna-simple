@@ -153,9 +153,11 @@ luna agents list              # встроенные: researcher, reviewer
 - **Скилы** — это Anthropic Agent Skills (`<имя>/SKILL.md`), ставятся в
   `~/.config/luna/skills/`. Нужен `git`.
 - **Субагенты** описываются в `~/.config/luna/subagents.toml`; агент делегирует
-  им работу инструментом `task`. Ключ `unsafe = true` — opt-in для мутирующих
-  инструментов (`write_file` / `edit_file` / `delete` / `execute`); при явном
-  списке `tools` включайте `read_file` (иначе deepagents отклонит конфиг).
+  им работу инструментом `task`. Ключ `unsafe = true` — необязательное
+  подтверждение для мутирующих инструментов (`write_file` / `edit_file` /
+  `delete` / `execute`); deny-правила, запрос одобрения и `/undo` действуют в
+  любом случае. При явном списке `tools` включайте `read_file` (иначе
+  deepagents отклонит конфиг).
 - В REPL: `/reload` активирует добавленные скилы / MCP / субагенты без
   перезапуска; `/tools`, `/agents` показывают, что доступно.
 
@@ -217,10 +219,10 @@ splash = true
   токены / verify этого скрытого хода.
 - Журнал `/undo` привязан к сессии и переживает `luna --continue`: `/diff` и
   `/undo` видят изменения прошлого запуска.
-- Субагенты с `write_file` / `edit_file` / `delete` / `execute` требуют
-  `unsafe = true` в `subagents.toml` и работают без запроса одобрения
-  (deny-правила и `/undo` на них по-прежнему действуют). Субагент без явного
-  ключа `tools` — read-only.
+- Субагенты с `write_file` / `edit_file` / `delete` / `execute` работают под
+  теми же deny-правилами, запросом одобрения и `/undo`, что и основной агент;
+  `unsafe = true` в `subagents.toml` — необязательное подтверждение. Субагент
+  без явного ключа `tools` — read-only.
 
 ## Лицензия
 

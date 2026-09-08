@@ -8,6 +8,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from uuid import uuid4
 
 
 def journal_dir(workdir: str, session_id: str) -> Path:
@@ -40,7 +41,13 @@ def _existed(rec: dict) -> bool:
 
 
 def snapshot(workdir: str, session_id: str, tool: str, rel_path: str) -> None:
-    """Record the pre-image of ``rel_path`` as the next ``NNNN.json`` entry."""
+    """Record the pre-image of ``rel_path`` as a new journal entry.
+
+    Entries are named ``<time_ns>-<rand>.json``. ``time.time_ns()`` is
+    fixed-width for centuries, so a lexicographic sort of the entries stays
+    chronological; the random suffix breaks ties between snapshots taken in the
+    same nanosecond (LangGraph runs tool calls from one AI message in parallel).
+    """
     d = journal_dir(workdir, session_id)
     target = Path(workdir) / rel_path
     existed = target.is_file()
@@ -50,8 +57,7 @@ def snapshot(workdir: str, session_id: str, tool: str, rel_path: str) -> None:
             before = target.read_text()
         except (OSError, ValueError):  # unreadable or non-UTF-8 (binary)
             before = None
-    n = len(_entries(workdir, session_id))
-    (d / f"{n:04d}.json").write_text(
+    (d / f"{time.time_ns()}-{uuid4().hex[:8]}.json").write_text(
         json.dumps(
             {
                 "tool": tool,
@@ -162,8 +168,19 @@ def undo_last(workdir: str, session_id: str) -> str | None:
     return note
 
 
-def gc(workdir: str, *, keep_days: int = 7, keep_max: int = 20) -> None:
-    """Remove stale per-session undo journals under ``<workdir>/.luna/undo/``."""
+def gc(
+    workdir: str,
+    *,
+    keep_days: int = 7,
+    keep_max: int = 20,
+    keep: str | None = None,
+) -> None:
+    """Remove stale per-session undo journals under ``<workdir>/.luna/undo/``.
+
+    ``keep`` is a ``session_id`` whose journal directory is never removed — pass
+    the id of the session being resumed so ``--continue`` can still reach an old
+    journal.
+    """
     root = Path(workdir) / ".luna" / "undo"
     if not root.is_dir():
         return
@@ -180,7 +197,7 @@ def gc(workdir: str, *, keep_days: int = 7, keep_max: int = 20) -> None:
         except OSError:
             return 0.0
 
-    dated = sorted(((d, _mtime(d)) for d in dirs), key=lambda t: t[1])
+    dated = sorted(((d, _mtime(d)) for d in dirs if d.name != keep), key=lambda t: t[1])
     survivors = [d for d, m in dated if m >= cutoff]
     to_remove = [d for d, m in dated if m < cutoff]
     if len(survivors) > keep_max:

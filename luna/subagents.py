@@ -13,8 +13,9 @@ from luna.config import config_dir
 from luna.providers import LunaConfigError
 
 # Filesystem tools a subagent can be restricted to (deepagents FsToolName set).
-# Read-only tools are always allowed; mutating ones need ``unsafe = true`` because
-# a subagent runs without the approval prompt the main agent gets.
+# Read-only tools are always allowed. Declarative subagents inherit the parent's
+# ``interrupt_on``, so a mutating tool call inside one still raises an approval
+# prompt; ``unsafe = true`` is an advisory acknowledgement, not a gate.
 _SAFE_TOOLS = frozenset({"ls", "read_file", "glob", "grep"})
 _MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete", "execute"})
 VALID_TOOLS = _SAFE_TOOLS | _MUTATING_TOOLS
@@ -94,11 +95,12 @@ def load_subagents(
 
     ``guard`` (a ``tool_guard`` middleware) is attached first to every subagent,
     so deny rules and undo snapshots apply inside delegated work too. A user
-    subagent that requests a mutating tool must set ``unsafe = true`` (a real
-    TOML boolean) in its ``[subagent.<name>]`` block; such subagents run without
-    an approval prompt (deny rules and undo snapshots still apply) and trigger an
-    ``on_warn`` line. A user subagent with no ``tools`` key is restricted to the
-    read-only set rather than inheriting the full default toolset.
+    subagent that requests a mutating tool triggers an ``on_warn`` line; deny
+    rules, undo snapshots and approval prompts all apply to it regardless. The
+    ``unsafe = true`` key (a real TOML boolean) is parsed but advisory — it only
+    changes the wording of the warning. A user subagent with no ``tools`` key is
+    restricted to the read-only set rather than inheriting the full default
+    toolset.
     """
     agents: list[SubAgent] = []
     for a in BUILTIN_SUBAGENTS:
@@ -123,15 +125,18 @@ def load_subagents(
                     f"Valid: {', '.join(sorted(VALID_TOOLS))}"
                 )
             mutating = set(tools) & _MUTATING_TOOLS
-            if mutating and cfg.get("unsafe") is not True:
-                raise LunaConfigError(
-                    f"subagent {name!r} requests {sorted(mutating)} but is not marked "
-                    f"unsafe. Add 'unsafe = true' to its [subagent.{name}] block to allow "
-                    f"write/execute tools in a subagent (they run without an approval "
-                    f"prompt), or drop those tools."
-                )
             if mutating and on_warn is not None:
-                on_warn(f"subagent {name!r} runs {sorted(mutating)} with no approval prompt")
+                if cfg.get("unsafe") is True:
+                    on_warn(
+                        f"subagent {name!r} may use {sorted(mutating)} "
+                        f"(deny rules, approval prompts, and undo all apply)"
+                    )
+                else:
+                    on_warn(
+                        f"subagent {name!r} requests {sorted(mutating)}; add "
+                        f"'unsafe = true' to acknowledge (deny rules + undo apply; "
+                        f"approval prompts DO apply)"
+                    )
         agent = _subagent(
             name,
             cfg.get("description", name),

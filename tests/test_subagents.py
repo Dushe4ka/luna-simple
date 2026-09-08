@@ -16,10 +16,17 @@ def _write_subagents(tmp_path, body: str):
     (d / "subagents.toml").write_text(body)
 
 
-def test_mutating_subagent_without_unsafe_is_rejected(tmp_path):
-    _write_subagents(tmp_path, '[subagent.impl]\ndescription = "x"\ntools = ["execute"]\n')
-    with pytest.raises(LunaConfigError, match="unsafe"):
-        load_subagents(str(tmp_path))
+def test_mutating_subagent_without_unsafe_warns(tmp_path):
+    _write_subagents(
+        tmp_path,
+        '[subagent.impl]\ndescription = "x"\ntools = ["execute", "read_file"]\n',
+    )
+    warns: list[str] = []
+    subs = load_subagents(str(tmp_path), on_warn=warns.append)
+    assert "impl" in {s["name"] for s in subs}  # still loads, no raise
+    assert warns and "impl" in warns[0]
+    assert "approval prompts DO apply" in warns[0]
+    assert "'unsafe = true'" in warns[0]
 
 
 def test_unsafe_mutating_subagent_loads_and_warns(tmp_path):
@@ -32,6 +39,7 @@ def test_unsafe_mutating_subagent_loads_and_warns(tmp_path):
     names = {s["name"] for s in subs}
     assert "impl" in names
     assert warns and "impl" in warns[0]
+    assert "deny rules, approval prompts, and undo all apply" in warns[0]
 
 
 def test_guard_is_first_middleware_on_every_subagent(tmp_path):
@@ -63,10 +71,13 @@ def test_user_subagent_without_tools_key_is_restricted(tmp_path):
 def test_unsafe_string_value_does_not_count_as_consent(tmp_path):
     _write_subagents(
         tmp_path,
-        '[subagent.x]\ndescription = "x"\ntools = ["execute"]\nunsafe = "yes"\n',
+        '[subagent.x]\ndescription = "x"\ntools = ["execute", "read_file"]\nunsafe = "yes"\n',
     )
-    with pytest.raises(LunaConfigError, match="unsafe"):
-        load_subagents(str(tmp_path))
+    warns: list[str] = []
+    subs = load_subagents(str(tmp_path), on_warn=warns.append)
+    assert "x" in {s["name"] for s in subs}
+    # a non-boolean 'unsafe' is not consent: the unacknowledged wording is used
+    assert warns and "add 'unsafe = true' to acknowledge" in warns[0]
 
 
 def test_builtins_present():

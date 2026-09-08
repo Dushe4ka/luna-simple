@@ -38,6 +38,17 @@ def test_reload_swaps_agent():
     assert res.agent == "rebuilt"
 
 
+def test_reload_failure_does_not_raise():
+    ctx = _ctx(
+        rebuild=lambda: (_ for _ in ()).throw(RuntimeError("bad toml")),
+        console=Console(file=io.StringIO()),
+    )
+    res = dispatch("/reload", ctx)
+    assert res.handled is True
+    assert res.agent is None
+    assert "/reload failed" in ctx.console.file.getvalue()
+
+
 def test_new_rotates_thread():
     res = dispatch("/new", _ctx())
     assert res.thread_id and res.thread_id != "t"
@@ -221,3 +232,25 @@ def test_compact_no_summary_is_graceful(tmp_path, fake_model):
     ctx = _ctx(agent=agent, thread_id="t", workdir=str(tmp_path), index=None)
     res = dispatch("/compact", ctx)  # must not raise
     assert res.handled is True
+
+
+def test_compact_empty_summary_trims_the_instruction_turn(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+
+    # first turn produces no reusable AI text; the summary turn is empty too
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path)),
+        model=fake_model(AIMessage(content=""), AIMessage(content="")),
+    )
+    cfg = {"configurable": {"thread_id": "keep"}}
+    agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config=cfg)
+    before = len(agent.get_state(cfg).values["messages"])
+
+    ctx = _ctx(agent=agent, thread_id="keep", workdir=str(tmp_path), index=None)
+    dispatch("/compact", ctx)
+
+    after = len(agent.get_state(cfg).values["messages"])
+    assert after == before  # the failed-summary turn was rolled back
+    assert "no summary produced" in ctx.console.file.getvalue()

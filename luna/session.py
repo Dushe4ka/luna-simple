@@ -61,6 +61,7 @@ _COMPACT_ASK = (
 def compact_thread(agent, thread_id: str, console: Console) -> None:
     """Replace this thread's message history with a model-written summary, in place."""
     config = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(config).values.get("messages", [])
     result = agent.invoke({"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config)
     if isinstance(result, dict) and result.get("__interrupt__"):
         result = agent.invoke(
@@ -75,6 +76,8 @@ def compact_thread(agent, thread_id: str, console: Console) -> None:
             summary = text.strip()
             break
     if not summary:
+        added = agent.get_state(config).values["messages"][len(pre) :]
+        agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in added]})
         console.print(f"[{PALETTE['mauve']}]/compact: no summary produced[/]")
         return
     agent.update_state(
@@ -380,6 +383,9 @@ def run_repl(
         except KeyboardInterrupt:
             console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")
             continue
+        except Exception as exc:  # noqa: BLE001 - a provider/network/persistence error must not kill the session
+            console.print(f"[{PALETTE['mauve']}]turn failed: {exc}[/]")
+            continue
         before = len(session_usage.turns)
         session_usage.add_turn(turn_usage)
         if len(session_usage.turns) > before:
@@ -393,5 +399,9 @@ def run_repl(
             index.record(thread_id, workdir, make_title(line))
             index.touch(thread_id)
         if reload_requested and rebuild is not None:
-            agent = rebuild()
-            console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")
+            try:
+                agent = rebuild()
+            except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
+                console.print(f"[{PALETTE['mauve']}]auto-reload failed: {exc}[/]")
+            else:
+                console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")

@@ -126,11 +126,15 @@ def _clear(ctx: CommandContext, arg: str) -> None:
     ctx.console.clear()
 
 
-def _reload(ctx: CommandContext, arg: str) -> DispatchResult:
+def _reload(ctx: CommandContext, arg: str) -> DispatchResult | None:
     if ctx.rebuild is None:
         ctx.console.print(f"[{PALETTE['mauve']}]/reload is not available here[/]")
         return DispatchResult()
-    new = ctx.rebuild()
+    try:
+        new = ctx.rebuild()
+    except Exception as exc:  # noqa: BLE001 - a bad config must not kill the REPL
+        ctx.console.print(f"[{PALETTE['mauve']}]/reload failed: {exc}[/]")
+        return None
     ctx.console.print(f"[{PALETTE['blue']}]reloaded — capabilities refreshed[/]")
     return DispatchResult(agent=new)
 

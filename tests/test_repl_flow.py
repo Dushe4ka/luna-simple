@@ -43,7 +43,7 @@ def test_repl_flow_at_expansion_diff_undo(tmp_path, fake_model):
     )
     assert rc == 0
     out = console.file.getvalue()
-    assert (tmp_path / ".luna" / "undo" / "sid" / "0000.json").exists()
+    assert list((tmp_path / ".luna" / "undo" / "sid").glob("[0-9]*.json"))
     assert "notes.txt" in out  # /diff showed the change
     assert "undo cancelled" in out  # scripted "n" declined it
     assert (tmp_path / "notes.txt").exists()  # not reverted
