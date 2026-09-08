@@ -64,9 +64,10 @@ luna
 ```
 
 Если запустить Luna без настроенного ключа, она сама предложит `luna setup`.
-В REPL: `/help`, `/tools`, `/agents`, `/usage`, `/compact`, `/add`, `/drop`,
-`/context`, `/diff`, `/undo`, `/verify`, `/init`, `/model`, `/provider`,
-`/reload`, `/new`, `/clear`, `/exit`. Команды `/model <name>` и
+В REPL: `/help`, `/tools`, `/agents`, `/sessions`, `/resume`, `/usage`,
+`/compact`, `/add`, `/drop`, `/context`, `/diff`, `/undo`, `/verify`, `/init`,
+`/model`, `/provider`, `/reload`, `/new`, `/clear`, `/exit`. Команды
+`/model <name>` и
 `/provider <key>` теперь меняют модель или провайдера прямо в сессии,
 сохраняя тред.
 
@@ -80,6 +81,9 @@ luna -c            # или --continue: возобновить последню�
 luna --resume            # выбрать сессию из списка
 luna --resume <thread-id>  # возобновить конкретную сессию
 ```
+
+- `/sessions` — список прошлых сессий этого каталога; `/resume <n>` —
+  переключиться на выбранную по номеру (без номера печатает список).
 
 - `/usage` — учёт токенов за сессию (после каждого хода печатается тусклая
   строка `ctx ~X/Y · turn … · session …`).

@@ -57,6 +57,48 @@ def test_provider_without_key_does_not_swap(monkeypatch):
     assert ctx.config.provider == "deepseek"  # unchanged
 
 
+def test_sessions_lists(monkeypatch, capsys):
+    from luna.persistence import SessionIndex
+
+    idx = SessionIndex()
+    idx.record("t-old", ".", "older task")
+    idx.record("t-new", ".", "newer task")
+    ctx = _ctx(index=idx, workdir=".")
+    res = dispatch("/sessions", ctx)
+    assert res.handled is True
+    out = ctx.console.file.getvalue()
+    assert "older task" in out and "newer task" in out
+
+
+def test_resume_by_number_swaps_thread():
+    from luna.persistence import SessionIndex
+
+    idx = SessionIndex()
+    idx.record("t-old", ".", "older")
+    idx.record("t-new", ".", "newer")
+    ctx = _ctx(index=idx, workdir=".")
+    # newest first → [1] = t-new, [2] = t-old
+    res = dispatch("/resume 2", ctx)
+    assert res.thread_id == "t-old"
+
+
+def test_resume_no_arg_lists_and_hints():
+    from luna.persistence import SessionIndex
+
+    idx = SessionIndex()
+    idx.record("t1", ".", "one")
+    ctx = _ctx(index=idx, workdir=".")
+    res = dispatch("/resume", ctx)
+    assert res.thread_id is None
+    assert "one" in ctx.console.file.getvalue()
+
+
+def test_sessions_without_index_is_graceful():
+    ctx = _ctx(index=None)
+    res = dispatch("/sessions", ctx)
+    assert res.handled is True  # no crash
+
+
 def test_compact_rotates_thread_with_summary(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 

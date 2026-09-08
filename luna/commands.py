@@ -140,6 +140,42 @@ def _new(ctx: CommandContext, arg: str) -> DispatchResult:
     return DispatchResult(thread_id=tid)
 
 
+def _sessions(ctx: CommandContext, arg: str) -> None:
+    """List past sessions for this directory."""
+    if ctx.index is None:
+        ctx.console.print("[dim]session history is not available here[/]")
+        return
+    rows = ctx.index.list(ctx.workdir)
+    if not rows:
+        ctx.console.print("[dim]no sessions recorded for this directory[/]")
+        return
+    for n, r in enumerate(rows, 1):
+        ctx.console.print(f"  [{n}] {r.title}")
+
+
+def _resume(ctx: CommandContext, arg: str) -> DispatchResult | None:
+    """Resume a past session: /resume <number> (no arg lists them)."""
+    if ctx.index is None:
+        ctx.console.print("[dim]session history is not available here[/]")
+        return None
+    rows = ctx.index.list(ctx.workdir)
+    if not arg:
+        if not rows:
+            ctx.console.print("[dim]no sessions recorded for this directory[/]")
+            return None
+        for n, r in enumerate(rows, 1):
+            ctx.console.print(f"  [{n}] {r.title}")
+        ctx.console.print("[dim]usage: /resume <number>[/]")
+        return None
+    target = None
+    if arg.isdigit() and 1 <= int(arg) <= len(rows):
+        target = rows[int(arg) - 1].thread_id
+    else:
+        target = arg  # treat as a thread id
+    ctx.console.print(f"[{PALETTE['blue']}]resumed session {target[:8]}[/]")
+    return DispatchResult(thread_id=target)
+
+
 def _usage(ctx: CommandContext, arg: str) -> None:
     session = ctx.usage
     if session is None or not getattr(session, "turns", None):
@@ -287,6 +323,8 @@ _TABLE: dict[str, Callable] = {
     "/clear": _clear,
     "/reload": _reload,
     "/new": _new,
+    "/sessions": _sessions,
+    "/resume": _resume,
     "/compact": _compact,
     "/usage": _usage,
     "/model": _model,
@@ -298,7 +336,6 @@ _TABLE: dict[str, Callable] = {
     "/undo": _undo,
     "/verify": _verify,
     "/init": _init,
-    # later tasks register: /sessions /resume
 }
 
 
