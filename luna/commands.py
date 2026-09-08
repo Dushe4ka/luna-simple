@@ -8,6 +8,7 @@ register additional handlers by adding an entry to ``_TABLE``.
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from rich.console import Console
 
 from luna.config import LunaConfig
+from luna.credentials import get_api_key
+from luna.providers import PROVIDERS
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
 from luna.undo import session_diff, undo_last
@@ -137,12 +140,6 @@ def _new(ctx: CommandContext, arg: str) -> DispatchResult:
     return DispatchResult(thread_id=tid)
 
 
-def _startup_only(ctx: CommandContext, name: str) -> None:
-    ctx.console.print(
-        f"[{PALETTE['blue']}]{name[1:]}: set at startup — restart with --{name[1:]} to change[/]"
-    )
-
-
 def _usage(ctx: CommandContext, arg: str) -> None:
     session = ctx.usage
     if session is None or not getattr(session, "turns", None):
@@ -154,14 +151,32 @@ def _usage(ctx: CommandContext, arg: str) -> None:
     )
 
 
-def _model(ctx: CommandContext, arg: str) -> None:
-    # Task 11 replaces this with real model switching.
-    _startup_only(ctx, "/model")
+def _model(ctx: CommandContext, arg: str) -> DispatchResult | None:
+    if not arg:
+        ctx.console.print(f"model: {ctx.config.model or '(provider default)'}")
+        return None
+    ctx.config.model = arg
+    ctx.console.print(f"[{PALETTE['blue']}]model → {arg}[/]")
+    return DispatchResult(agent=ctx.rebuild())
 
 
-def _provider(ctx: CommandContext, arg: str) -> None:
-    # Task 11 replaces this with real provider switching.
-    _startup_only(ctx, "/provider")
+def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
+    if not arg:
+        ctx.console.print(f"provider: {ctx.config.provider}")
+        return None
+    if arg not in PROVIDERS:
+        ctx.console.print(f"[{PALETTE['mauve']}]unknown provider {arg!r}[/]")
+        return None
+    spec = PROVIDERS[arg]
+    if spec.env_var and not (os.environ.get(spec.env_var) or get_api_key(arg)):
+        ctx.console.print(
+            f"[{PALETTE['mauve']}]no key for {arg}; run: luna config set-key {arg}[/]"
+        )
+        return None
+    ctx.config.provider = arg
+    ctx.config.model = None
+    ctx.console.print(f"[{PALETTE['blue']}]provider → {arg}[/]")
+    return DispatchResult(agent=ctx.rebuild())
 
 
 _COMPACT_ASK = (

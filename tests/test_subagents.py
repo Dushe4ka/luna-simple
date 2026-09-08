@@ -21,6 +21,12 @@ def test_user_subagent_parsed(tmp_path, monkeypatch):
     assert "docs" in names
 
 
+def test_fast_model_applied_to_builtins(tmp_path):
+    subs = load_subagents(str(tmp_path), fast_model="anthropic:claude-haiku-4-5")
+    by_name = {s["name"]: s for s in subs}
+    assert by_name["researcher"].get("model") == "anthropic:claude-haiku-4-5"
+
+
 def test_bad_tool_name_rejected(tmp_path, monkeypatch):
     cfg = tmp_path / ".config" / "luna"
     cfg.mkdir(parents=True)

@@ -21,6 +21,7 @@ _FALSY = {"0", "false", "no", "off"}
 _SETTABLE: dict[str, str] = {
     "model.provider": "str",
     "model.name": "str",
+    "model.fast": "str",
     "agent.yolo": "bool",
     "agent.workdir": "str",
     "agent.verify_command": "str",
@@ -49,6 +50,7 @@ class LunaConfig:
 
     provider: str = DEFAULT_PROVIDER
     model: str | None = None
+    fast_model: str | None = None
     workdir: str = "."
     yolo: bool = False
     verify_command: str = ""
@@ -84,6 +86,8 @@ def _apply_toml(data: dict, into: dict) -> None:
         into["provider"] = model["provider"]
     if "name" in model:
         into["model"] = model["name"]
+    if "fast" in model:
+        into["fast_model"] = model["fast"]
 
     agent = data.get("agent", {})
     for key in ("yolo", "workdir", "verify_command", "temperature", "max_tokens"):
@@ -136,6 +140,7 @@ def load_config(
     return LunaConfig(
         provider=provider,
         model=merged.get("model"),
+        fast_model=merged.get("fast_model"),
         workdir=str(merged.get("workdir", ".")),
         yolo=bool(merged.get("yolo", False)),
         verify_command=str(merged.get("verify_command", "")),

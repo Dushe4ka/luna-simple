@@ -40,7 +40,7 @@ def _extension_bits(config: LunaConfig, on_warn: Callable[[str], None]):
     mcp_tools = (
         mcp_mod.load_mcp_tools(mcp_mod.to_connections(servers), on_warn=on_warn) if servers else []
     )
-    subs = subagents_mod.load_subagents(config.workdir)
+    subs = subagents_mod.load_subagents(config.workdir, fast_model=config.fast_model)
     return skill_dirs, list(servers), mcp_tools, subs
 
 

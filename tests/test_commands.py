@@ -43,6 +43,20 @@ def test_new_rotates_thread():
     assert res.thread_id and res.thread_id != "t"
 
 
+def test_model_swap_rebuilds(monkeypatch):
+    ctx = _ctx(config=LunaConfig(model="claude-sonnet-4-5"))
+    res = dispatch("/model claude-opus-4", ctx)
+    assert ctx.config.model == "claude-opus-4"
+    assert res.agent == "rebuilt"
+
+
+def test_provider_without_key_does_not_swap(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    ctx = _ctx(config=LunaConfig(provider="deepseek"))
+    dispatch("/provider anthropic", ctx)
+    assert ctx.config.provider == "deepseek"  # unchanged
+
+
 def test_compact_rotates_thread_with_summary(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
