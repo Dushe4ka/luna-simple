@@ -152,7 +152,9 @@ luna agents list              # встроенные: researcher, reviewer
 - **Скилы** — это Anthropic Agent Skills (`<имя>/SKILL.md`), ставятся в
   `~/.config/luna/skills/`. Нужен `git`.
 - **Субагенты** описываются в `~/.config/luna/subagents.toml`; агент делегирует
-  им работу инструментом `task`.
+  им работу инструментом `task`. Ключ `unsafe = true` — opt-in для мутирующих
+  инструментов (`write_file` / `edit_file` / `delete` / `execute`); при явном
+  списке `tools` включайте `read_file` (иначе deepagents отклонит конфиг).
 - В REPL: `/reload` активирует добавленные скилы / MCP / субагенты без
   перезапуска; `/tools`, `/agents` показывают, что доступно.
 
@@ -187,7 +189,7 @@ verify_command = "uv run pytest -q"
 
 [permissions]
 allow = ["execute:pytest*"]
-deny = ["execute:git push*", "write_file:.env"]
+deny = ["write:.env", "execute:git push*"]
 
 [ui]
 splash = true
@@ -200,8 +202,10 @@ splash = true
   Luna запускает её и при провале один раз отдаёт вывод агенту на
   исправление; `/verify` — вручную.
 - `[permissions]` — списки `allow` / `deny` вида `"<инструмент>:<glob>"`;
-  `deny` перекрывает даже `--yolo`. То же можно положить в
-  `<repo>/.luna/permissions.toml`, а пункт `[a] always` в запросе
+  `deny` перекрывает даже `--yolo`. Голое `write_file:.env` матчит только
+  этот инструмент; `write:` покрывает `write_file` / `edit_file` / `delete`;
+  `*:` — любой инструмент; группа `fs` включает ещё и чтение. То же можно
+  положить в `<repo>/.luna/permissions.toml`, а пункт `[a] always` в запросе
   подтверждения дописывает правило `allow` туда сам.
 
 Окружение: `LUNA_PROVIDER`, `LUNA_MODEL`, `LUNA_YOLO`, `LUNA_WORKDIR`.
@@ -210,12 +214,12 @@ splash = true
 
 - `/compact` не учитывает токены и не запускает verify — это просто сжатие
   диалога в заметку и переход на новый тред.
-- `luna --continue` возобновляет тред, но заводит свежий журнал `/diff` /
-  `/undo`: изменения прошлого запуска через них не видны.
-- deny-правила действуют по точному имени инструмента: `write_file:.env` не
-  покрывает `edit_file`, `delete` или `execute` над тем же файлом.
-- Снапшоты (`/diff` / `/undo`) и правила доступа не применяются к вызовам
-  инструментов внутри субагентов.
+- Журнал `/undo` привязан к сессии и переживает `luna --continue`: `/diff` и
+  `/undo` видят изменения прошлого запуска.
+- Субагенты с `write_file` / `edit_file` / `delete` / `execute` требуют
+  `unsafe = true` в `subagents.toml` и работают без запроса одобрения
+  (deny-правила и `/undo` на них по-прежнему действуют). Субагент без явного
+  ключа `tools` — read-only.
 
 ## Лицензия
 
