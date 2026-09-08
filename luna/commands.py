@@ -264,6 +264,22 @@ def _undo(ctx: CommandContext, arg: str) -> None:
     ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
 
 
+def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
+    """Generate or update AGENTS.md for this repo."""
+    from luna.initgen import init_prompt
+    from luna.session import run_once  # lazy: session imports commands
+
+    run_once(
+        ctx.agent,
+        init_prompt(ctx.workdir),
+        thread_id=ctx.thread_id,
+        console=ctx.console,
+    )
+    if ctx.rebuild is not None:
+        return DispatchResult(agent=ctx.rebuild())
+    return None
+
+
 _TABLE: dict[str, Callable] = {
     "/help": _help,
     "/tools": _tools,
@@ -281,7 +297,8 @@ _TABLE: dict[str, Callable] = {
     "/diff": _diff,
     "/undo": _undo,
     "/verify": _verify,
-    # later tasks register: /sessions /resume /init
+    "/init": _init,
+    # later tasks register: /sessions /resume
 }
 
 

@@ -19,6 +19,7 @@ from luna.credentials import (
     set_api_key,
     unset_api_key,
 )
+from luna.initgen import init_prompt
 from luna.providers import PROVIDERS, LunaConfigError
 from luna.registry import known_mcp, known_skills, resolve_mcp
 from luna.session import run_once, run_repl
@@ -27,7 +28,7 @@ from luna.subagents import subagent_summaries
 from luna.ui.console import get_console
 from luna.ui.splash import render_splash
 
-_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents"}
+_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -281,6 +282,22 @@ def _run_agents(argv: list[str]) -> int:
     return 0
 
 
+# --- init subcommand ------------------------------------------------------
+
+
+def _run_init(argv: list[str]) -> int:
+    """Explore the repo and write/update AGENTS.md in one agent turn."""
+    console = get_console()
+    config = load_config({})
+    try:
+        agent = build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+    except LunaConfigError as exc:
+        print(f"luna: {exc}", file=sys.stderr)
+        return 2
+    run_once(agent, init_prompt(config.workdir), thread_id=uuid.uuid4().hex, console=console)
+    return 0
+
+
 # --- main -------------------------------------------------------------------
 
 
@@ -294,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
             "mcp": _run_mcp,
             "skills": _run_skills,
             "agents": _run_agents,
+            "init": _run_init,
         }
         try:
             return handlers[raw[0]](raw[1:])
