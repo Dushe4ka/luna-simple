@@ -363,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
             "Luna edits files in place"
         )
 
+    from luna import undo
+
+    undo.gc(config.workdir)
+
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
@@ -370,14 +374,13 @@ def main(argv: list[str] | None = None) -> int:
 
     index = SessionIndex()
     cp = checkpointer(on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
-    session_id = uuid.uuid4().hex
     start_thread = uuid.uuid4().hex
-
     if args.cont or args.resume:
         target = _resolve_resume(args, index, config.workdir, console, interactive)
         if target is None:
             return 2
         start_thread = target
+    session_id = start_thread  # the undo journal follows the session across --continue
 
     def _rebuild():
         return build_agent(
