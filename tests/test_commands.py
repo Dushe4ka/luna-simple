@@ -189,6 +189,29 @@ def test_compact_replaces_history_in_place(tmp_path, fake_model):
     assert msgs[0].type == "human"
 
 
+def test_add_drop_context_handlers(tmp_path):
+    from luna.context import PinnedFiles
+
+    (tmp_path / "p.py").write_text("P = 1\n")
+    pins = PinnedFiles()
+    # highlight=False: Rich would otherwise splice ANSI codes through "/add",
+    # breaking a literal substring match on the usage line.
+    ctx = _ctx(
+        pinned=pins,
+        workdir=str(tmp_path),
+        console=Console(file=io.StringIO(), force_terminal=True, highlight=False),
+    )
+
+    dispatch("/add p.py", ctx)
+    assert pins.paths == ["p.py"]
+    dispatch("/context", ctx)
+    assert "p.py" in ctx.console.file.getvalue()
+    dispatch("/drop p.py", ctx)
+    assert pins.paths == []
+    dispatch("/add", ctx)  # no arg -> usage line, no crash
+    assert "usage: /add" in ctx.console.file.getvalue()
+
+
 def test_compact_no_summary_is_graceful(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
