@@ -62,6 +62,39 @@ def test_suggest_rule():
     assert suggest_rule("write_file", {"file_path": "a/b.py"}, ".") == "write_file:a/b.py"
 
 
+def test_wildcard_tool_blocks_every_tool():
+    rs = RuleSet(deny=["*:.env"])
+    assert rs.match("write_file", {"file_path": "/.env"}) == "deny"
+    assert rs.match("edit_file", {"file_path": ".env"}) == "deny"
+    assert rs.match("delete", {"file_path": ".env"}) == "deny"
+    assert rs.match("read_file", {"file_path": "app.py"}) is None
+
+
+def test_write_group_blocks_mutators_only():
+    rs = RuleSet(deny=["write:secrets/*"])
+    assert rs.match("write_file", {"file_path": "secrets/k.txt"}) == "deny"
+    assert rs.match("edit_file", {"file_path": "secrets/k.txt"}) == "deny"
+    assert rs.match("delete", {"file_path": "secrets/k.txt"}) == "deny"
+    assert rs.match("read_file", {"file_path": "secrets/k.txt"}) is None
+
+
+def test_fs_group_includes_read():
+    assert RuleSet(deny=["fs:x.txt"]).match("read_file", {"file_path": "x.txt"}) == "deny"
+
+
+def test_wildcard_matches_execute_by_command():
+    rs = RuleSet(deny=["*:git push*"])
+    assert rs.match("execute", {"command": "git push origin"}) == "deny"
+    assert rs.match("execute", {"command": "git status"}) is None
+
+
+def test_exact_tool_rules_unchanged():
+    rs = RuleSet(deny=["write_file:.env"], allow=["execute:pytest*"])
+    assert rs.match("write_file", {"file_path": "/.env"}) == "deny"
+    assert rs.match("edit_file", {"file_path": ".env"}) is None  # exact tool only
+    assert rs.match("execute", {"command": "pytest -q"}) == "allow"
+
+
 def test_guard_blocks_deny(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
