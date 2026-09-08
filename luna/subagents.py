@@ -94,9 +94,11 @@ def load_subagents(
 
     ``guard`` (a ``tool_guard`` middleware) is attached first to every subagent,
     so deny rules and undo snapshots apply inside delegated work too. A user
-    subagent that requests a mutating tool must set ``unsafe = true`` in its
-    ``[subagent.<name>]`` block; such subagents run without an approval prompt
-    (deny rules and undo snapshots still apply) and trigger an ``on_warn`` line.
+    subagent that requests a mutating tool must set ``unsafe = true`` (a real
+    TOML boolean) in its ``[subagent.<name>]`` block; such subagents run without
+    an approval prompt (deny rules and undo snapshots still apply) and trigger an
+    ``on_warn`` line. A user subagent with no ``tools`` key is restricted to the
+    read-only set rather than inheriting the full default toolset.
     """
     agents: list[SubAgent] = []
     for a in BUILTIN_SUBAGENTS:
@@ -121,7 +123,7 @@ def load_subagents(
                     f"Valid: {', '.join(sorted(VALID_TOOLS))}"
                 )
             mutating = set(tools) & _MUTATING_TOOLS
-            if mutating and not cfg.get("unsafe", False):
+            if mutating and cfg.get("unsafe") is not True:
                 raise LunaConfigError(
                     f"subagent {name!r} requests {sorted(mutating)} but is not marked "
                     f"unsafe. Add 'unsafe = true' to its [subagent.{name}] block to allow "
@@ -134,7 +136,7 @@ def load_subagents(
             name,
             cfg.get("description", name),
             cfg.get("prompt", f"You are the {name} subagent."),
-            list(tools) if tools is not None else None,
+            list(tools) if tools is not None else list(_READ_ONLY),
             cfg.get("model"),
             guard=guard,
         )

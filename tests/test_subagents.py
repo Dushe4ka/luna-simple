@@ -47,6 +47,28 @@ def test_builtins_are_safe_only():
     assert {s["name"] for s in subs} >= {"researcher", "reviewer"}
 
 
+def test_user_subagent_without_tools_key_is_restricted(tmp_path):
+    from deepagents.middleware import FilesystemMiddleware
+
+    _write_subagents(
+        tmp_path,
+        '[subagent.helper]\ndescription = "help"\nprompt = "you help"\n',
+    )
+    subs = load_subagents(str(tmp_path))
+    helper = next(s for s in subs if s["name"] == "helper")
+    fs = [m for m in helper["middleware"] if isinstance(m, FilesystemMiddleware)]
+    assert fs, "missing tools key must fall back to a restricted FilesystemMiddleware"
+
+
+def test_unsafe_string_value_does_not_count_as_consent(tmp_path):
+    _write_subagents(
+        tmp_path,
+        '[subagent.x]\ndescription = "x"\ntools = ["execute"]\nunsafe = "yes"\n',
+    )
+    with pytest.raises(LunaConfigError, match="unsafe"):
+        load_subagents(str(tmp_path))
+
+
 def test_builtins_present():
     names = {s["name"] for s in BUILTIN_SUBAGENTS}
     assert {"researcher", "reviewer"} <= names
