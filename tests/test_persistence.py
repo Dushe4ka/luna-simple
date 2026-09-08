@@ -35,6 +35,35 @@ def test_index_touch_changes_order(tmp_path):
     assert [r.thread_id for r in idx.list("/r")] == ["t1", "t2"]
 
 
+def test_session_index_survives_unwritable_db(tmp_path, monkeypatch):
+    # point the config dir at a path whose parent is a FILE -> mkdir/connect fail
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(blocker / "config"))
+    idx = SessionIndex()
+    assert idx.ok is False
+    idx.record("t", ".", "title")  # no raise
+    idx.touch("t")  # no raise
+    assert idx.latest_for(".") is None
+    assert idx.list(".") == []
+
+
+def test_checkpointer_falls_back_to_memory(tmp_path, monkeypatch, fake_model):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(blocker / "config"))
+    warned: list[str] = []
+    cp = checkpointer(on_warn=warned.append)
+    assert hasattr(cp, "get") and hasattr(cp, "put")
+    assert len(warned) == 1 and "sessions.db" in warned[0]
+    # a real agent still works with the fallback saver
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "good"))
+    build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(), checkpointer=cp)
+
+
 def _db_file(saver):
     (row,) = saver.conn.execute("PRAGMA database_list").fetchall()
     return row[2]  # the resolved on-disk path of the "main" database

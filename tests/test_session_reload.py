@@ -3,6 +3,7 @@ import io
 from rich.console import Console
 
 from luna.session import run_repl
+from luna.usage import TurnUsage
 
 
 class _FakeAgent:
@@ -45,6 +46,47 @@ def test_reload_refreshes_allow_rules(monkeypatch):
         rebuild=lambda: _FakeAgent(1),
     )
     assert len(calls) >= 2  # once before the loop, again after /reload swapped the agent
+
+
+def test_turn_failure_does_not_kill_the_session(monkeypatch):
+    from luna import session
+
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(session, "_stream_turn", boom)
+    answers = iter(["do a thing", "/exit"])
+    out = io.StringIO()
+    code = run_repl(
+        _FakeAgent(0),
+        console=Console(file=out, force_terminal=True, no_color=True),
+        input_fn=lambda _: next(answers),
+    )
+    assert code == 0
+    assert "turn failed" in out.getvalue()
+    assert calls == [1]
+
+
+def test_auto_reload_failure_keeps_old_agent(monkeypatch):
+    from luna import session
+
+    def fake_stream(*a, **k):
+        return "", True, TurnUsage(), set()
+
+    monkeypatch.setattr(session, "_stream_turn", fake_stream)
+    answers = iter(["trigger reload", "/exit"])
+    out = io.StringIO()
+    code = run_repl(
+        _FakeAgent(0),
+        console=Console(file=out, force_terminal=True, no_color=True),
+        input_fn=lambda _: next(answers),
+        rebuild=lambda: (_ for _ in ()).throw(RuntimeError("bad toml")),
+    )
+    assert code == 0
+    assert "auto-reload failed" in out.getvalue()
 
 
 def test_reload_unavailable_without_rebuild():

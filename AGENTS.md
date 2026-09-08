@@ -19,7 +19,7 @@
 - `luna/providers.py` — реестр провайдеров → chat-модель LangChain
 - `luna/prompts.py` — системный промпт Luna
 - `luna/agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
-- `luna/session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`
+- `luna/session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
 - `luna/commands.py` — диспетчер slash-команд
 - `luna/persistence.py` — SqliteSaver + индекс сессий
 - `luna/usage.py` — учёт токенов
@@ -46,3 +46,6 @@
   `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`.
 - ID моделей — в `luna/providers.py` или конфиге, никогда в логике агента.
 - Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
+- `subagents.toml` получил ключ `unsafe` — opt-in для мутирующих инструментов
+  (`write_file` / `edit_file` / `delete` / `execute`) у субагента; правки
+  субагентов пишутся в общий журнал `/undo` сессии.

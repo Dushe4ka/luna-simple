@@ -369,15 +369,18 @@ def main(argv: list[str] | None = None) -> int:
     from luna.persistence import SessionIndex, checkpointer
 
     index = SessionIndex()
-    cp = checkpointer()
-    session_id = uuid.uuid4().hex
+    cp = checkpointer(on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
     start_thread = uuid.uuid4().hex
-
     if args.cont or args.resume:
         target = _resolve_resume(args, index, config.workdir, console, interactive)
         if target is None:
             return 2
         start_thread = target
+    session_id = start_thread  # the undo journal follows the session across --continue
+
+    from luna import undo
+
+    undo.gc(config.workdir, keep=session_id)  # after session_id: never gc the journal we resume
 
     def _rebuild():
         return build_agent(

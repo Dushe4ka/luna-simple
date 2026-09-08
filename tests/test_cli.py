@@ -24,7 +24,7 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as e:
         main(["--version"])
     assert e.value.code == 0
-    assert "0.2.0" in capsys.readouterr().out
+    assert "0.2.1" in capsys.readouterr().out
 
 
 def test_bad_provider_is_usage_error(capsys):
@@ -81,6 +81,18 @@ def test_mcp_add_explicit_command(tmp_path, monkeypatch):
 def test_agents_list_shows_builtins(capsys):
     assert main(["agents", "list"]) == 0
     assert "researcher" in capsys.readouterr().out
+
+
+def test_agents_list_reports_broken_subagents_toml(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "subagents.toml").write_text(
+        '[subagent.x]\ndescription = "x"\ntools = ["execute", "read_file"]\n'
+    )
+    code = main(["agents", "list"])
+    assert code == 2
+    assert "unsafe = true" in capsys.readouterr().err
 
 
 def test_skills_list_empty_ok(capsys, tmp_path, monkeypatch):

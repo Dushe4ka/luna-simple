@@ -17,7 +17,7 @@ from rich.console import Console
 
 from luna.config import LunaConfig
 from luna.credentials import get_api_key
-from luna.providers import PROVIDERS
+from luna.providers import PROVIDERS, LunaConfigError
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
 from luna.undo import peek_last, session_diff, undo_last
@@ -105,8 +105,16 @@ def _list_tools(console: Console) -> None:
     console.print(f"  [dim {PALETTE['blue']}](+ any MCP tools as mcp__<server>__<tool>)[/]")
 
 
-def _list_agents(console: Console) -> None:
-    for name, desc in subagent_summaries():
+def _list_agents(console: Console, workdir: str = ".") -> None:
+    try:
+        summaries = subagent_summaries(workdir)
+    except LunaConfigError as exc:
+        # A bad subagents.toml (e.g. a mutating subagent without unsafe = true)
+        # must not unwind past dispatch() and kill the REPL. /reload reports the
+        # same error the same way.
+        console.print(f"[{PALETTE['mauve']}]{exc}[/]")
+        return
+    for name, desc in summaries:
         console.print(f"  [bold {PALETTE['accent']}]{name}[/] — {desc}")
 
 
@@ -119,18 +127,22 @@ def _tools(ctx: CommandContext, arg: str) -> None:
 
 
 def _agents(ctx: CommandContext, arg: str) -> None:
-    _list_agents(ctx.console)
+    _list_agents(ctx.console, ctx.workdir)
 
 
 def _clear(ctx: CommandContext, arg: str) -> None:
     ctx.console.clear()
 
 
-def _reload(ctx: CommandContext, arg: str) -> DispatchResult:
+def _reload(ctx: CommandContext, arg: str) -> DispatchResult | None:
     if ctx.rebuild is None:
         ctx.console.print(f"[{PALETTE['mauve']}]/reload is not available here[/]")
         return DispatchResult()
-    new = ctx.rebuild()
+    try:
+        new = ctx.rebuild()
+    except Exception as exc:  # noqa: BLE001 - a bad config must not kill the REPL
+        ctx.console.print(f"[{PALETTE['mauve']}]/reload failed: {exc}[/]")
+        return None
     ctx.console.print(f"[{PALETTE['blue']}]reloaded — capabilities refreshed[/]")
     return DispatchResult(agent=new)
 
@@ -232,59 +244,17 @@ def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
     return DispatchResult(agent=new_agent)
 
 
-_COMPACT_ASK = (
-    "Summarise this whole session as a dense handoff note: the goal, decisions "
-    "made, files touched, current state, and open questions. No preamble."
-)
-
-
 def _compact(ctx: CommandContext, arg: str) -> DispatchResult | None:
+    """Summarise the conversation and replace its history in place."""
+    from luna.session import compact_thread  # lazy: session imports commands
+
     try:
-        return _compact_impl(ctx, arg)
+        compact_thread(ctx.agent, ctx.thread_id, ctx.console)
     except Exception as exc:  # noqa: BLE001 - a failed compact must not kill the REPL
         ctx.console.print(f"[{PALETTE['mauve']}]/compact failed: {exc}[/]")
-        return None
-
-
-def _compact_impl(ctx: CommandContext, arg: str) -> DispatchResult:
-    old_config = {"configurable": {"thread_id": ctx.thread_id}}
-    result = ctx.agent.invoke(
-        {"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config=old_config
-    )
-    summary = ""
-    for msg in reversed(result.get("messages", [])):
-        text = getattr(msg, "content", "")
-        if getattr(msg, "type", "") == "ai" and isinstance(text, str) and text.strip():
-            summary = text.strip()
-            break
-    new_id = uuid.uuid4().hex
-    ctx.agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Continuing a compacted session. Handoff note:\n" + summary,
-                }
-            ]
-        },
-        config={"configurable": {"thread_id": new_id}},
-    )
     if ctx.index is not None:
-        title = "compacted"
-        row = None
-        try:
-            row = next(
-                (r for r in ctx.index.list(ctx.workdir) if r.thread_id == ctx.thread_id),
-                None,
-            )
-        except Exception:  # noqa: BLE001 - index is best-effort here
-            row = None
-        if row is not None:
-            title = "compacted: " + row.title
-        ctx.index.record(new_id, ctx.workdir, title)
-        ctx.index.touch(new_id)
-    ctx.console.print(f"[{PALETTE['blue']}]compacted — new thread seeded from the summary[/]")
-    return DispatchResult(thread_id=new_id)
+        ctx.index.touch(ctx.thread_id)
+    return None
 
 
 def _add(ctx: CommandContext, arg: str) -> None:

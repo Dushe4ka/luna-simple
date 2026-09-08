@@ -31,6 +31,20 @@ def _subject(tool: str, args: dict) -> str:
     return _relpath(args.get("file_path", args.get("path", "")))
 
 
+_TOOL_GROUPS: dict[str, frozenset[str]] = {
+    "write": frozenset({"write_file", "edit_file", "delete"}),
+    "fs": frozenset({"write_file", "edit_file", "delete", "read_file", "ls", "glob", "grep"}),
+}
+
+
+def _tool_matches(rule_tool: str, tool: str) -> bool:
+    """Check if a rule's tool segment (exact name, ``*``, or a group) covers ``tool``."""
+    if rule_tool in ("*", tool):
+        return True
+    group = _TOOL_GROUPS.get(rule_tool)
+    return group is not None and tool in group
+
+
 @dataclass
 class RuleSet:
     """Allow / deny rule lists with ``deny``-wins matching."""
@@ -41,7 +55,7 @@ class RuleSet:
     def _hit(self, rules: list[str], tool: str, subject: str) -> bool:
         for rule in rules:
             rtool, _, pattern = rule.partition(":")
-            if rtool != tool:
+            if not _tool_matches(rtool, tool):
                 continue
             if tool != "execute":
                 pattern = _relpath(pattern)  # 'write_file:/.env' == 'write_file:.env'

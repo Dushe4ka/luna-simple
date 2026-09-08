@@ -45,3 +45,26 @@ def test_resume_list_non_interactive_returns_none(tmp_path):
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=False
     )
     assert got is None
+
+
+def test_session_id_follows_resumed_thread(tmp_path, monkeypatch):
+    import luna.cli as cli
+    from luna.persistence import SessionIndex
+
+    idx = SessionIndex()
+    idx.record("thread-abc", str(tmp_path), "earlier work")
+
+    seen: dict = {}
+
+    def _capture(agent, **kw):
+        seen.update(kw)
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(cli, "run_repl", _capture)
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+
+    cli.main(["-c"])
+    assert seen["thread_id"] == "thread-abc"
+    assert seen["session_id"] == "thread-abc"
