@@ -168,7 +168,7 @@ def run_once(
     input_fn: Callable[[str], str] = input,
     index: SessionIndex | None = None,
     workdir: str = ".",
-    session_id: str = "",
+    session_id: str = "",  # accepted for API symmetry; snapshots run in the middleware
 ) -> str:
     """Run a single prompt and return the final assistant text."""
     thread_id = thread_id or _new_thread_id()

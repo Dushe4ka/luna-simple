@@ -54,6 +54,21 @@ def test_missing_path_never_raises(tmp_path):
     assert undo_last(str(tmp_path / "nope"), "x") is None
 
 
+def test_non_utf8_file_never_raises(tmp_path):
+    (tmp_path / "b.bin").write_bytes(b"\xff\xfe\x00")
+    snapshot(str(tmp_path), "bin", "write_file", "b.bin")
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01\x02")
+    # neither call raises UnicodeDecodeError on the binary content
+    assert isinstance(session_diff(str(tmp_path), "bin"), str)
+    assert undo_last(str(tmp_path), "bin") is not None
+
+
+def test_empty_json_entry_is_skipped(tmp_path):
+    journal_dir(str(tmp_path), "e").joinpath("0000.json").write_text("{}")
+    assert session_diff(str(tmp_path), "e") == ""
+    assert undo_last(str(tmp_path), "e") is None
+
+
 def test_snapshot_lands_via_middleware(tmp_path, fake_model):
     write_call = AIMessage(
         content="",
@@ -72,3 +87,25 @@ def test_snapshot_lands_via_middleware(tmp_path, fake_model):
         config={"configurable": {"thread_id": "t1"}},
     )
     assert (tmp_path / ".luna" / "undo" / "sid" / "0000.json").exists()
+
+
+def test_denied_write_makes_no_journal_entry(tmp_path, fake_model):
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["write_file:*"]\n')
+    write_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "write_file", "id": "1", "args": {"file_path": "/x.txt", "content": "x\n"}}
+        ],
+    )
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True),
+        model=fake_model(write_call, AIMessage(content="done")),
+        session_id="d",
+    )
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "write x.txt"}]},
+        config={"configurable": {"thread_id": "t1"}},
+    )
+    journal = tmp_path / ".luna" / "undo" / "d"
+    assert not journal.exists() or not list(journal.glob("*.json"))

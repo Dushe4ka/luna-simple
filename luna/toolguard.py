@@ -33,7 +33,7 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = ""):
             if rel:
                 try:
                     snapshot(workdir, session_id, name, rel)
-                except OSError:
+                except (OSError, ValueError):
                     pass
         return handler(request)
 

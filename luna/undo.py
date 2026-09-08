@@ -27,7 +27,13 @@ def snapshot(workdir: str, session_id: str, tool: str, rel_path: str) -> None:
     """Record the pre-image of ``rel_path`` as the next ``NNNN.json`` entry."""
     d = journal_dir(workdir, session_id)
     target = Path(workdir) / rel_path
-    before = target.read_text() if target.is_file() else None
+    if target.is_file():
+        try:
+            before = target.read_text()
+        except (OSError, ValueError):  # unreadable or non-UTF-8 (e.g. binary)
+            before = None
+    else:
+        before = None
     n = len(_entries(workdir, session_id))
     (d / f"{n:04d}.json").write_text(
         json.dumps({"tool": tool, "path": rel_path, "before": before, "ts": time.time()})
@@ -42,11 +48,20 @@ def session_diff(workdir: str, session_id: str) -> str:
             rec = json.loads(entry.read_text())
         except (OSError, ValueError):
             continue
-        earliest.setdefault(rec["path"], rec["before"])
+        rel = rec.get("path")
+        if rel is None:
+            continue
+        earliest.setdefault(rel, rec.get("before"))
     chunks: list[str] = []
     for rel, before in earliest.items():
         target = Path(workdir) / rel
-        current = target.read_text() if target.is_file() else ""
+        if target.is_file():
+            try:
+                current = target.read_text()
+            except (OSError, ValueError):
+                current = ""
+        else:
+            current = ""
         diff = difflib.unified_diff(
             (before or "").splitlines(),
             current.splitlines(),
@@ -69,16 +84,22 @@ def undo_last(workdir: str, session_id: str) -> str | None:
         rec = json.loads(entries[-1].read_text())
     except (OSError, ValueError):
         return None
-    target = Path(workdir) / rec["path"]
-    if rec["before"] is None:
+    rel = rec.get("path")
+    if rel is None:
+        with contextlib.suppress(OSError):
+            entries[-1].unlink()
+        return None
+    target = Path(workdir) / rel
+    before = rec.get("before")
+    if before is None:
         if target.is_file():
             with contextlib.suppress(OSError):
                 target.unlink()
-        note = f"removed {rec['path']}"
+        note = f"removed {rel}"
     else:
         with contextlib.suppress(OSError):
-            target.write_text(rec["before"])
-        note = f"reverted {rec['path']}"
+            target.write_text(before)
+        note = f"reverted {rel}"
     with contextlib.suppress(OSError):
         entries[-1].unlink()
     return note

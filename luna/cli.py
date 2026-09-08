@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from luna.gitinfo import dirty_paths
 
-    _dirty = dirty_paths(config.workdir)
+    _dirty = dirty_paths(config.workdir) if interactive and not prompt else []
     if _dirty:
         console.print(
             f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
