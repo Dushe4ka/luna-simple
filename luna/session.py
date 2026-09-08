@@ -140,10 +140,10 @@ def _stream_turn(
         ):
             if mode == "messages":
                 msg, meta = chunk
-                turn_usage.merge(getattr(msg, "usage_metadata", None))
                 if meta.get("langgraph_node") == "model" and isinstance(
                     msg, (AIMessage, AIMessageChunk)
                 ):
+                    turn_usage.merge(getattr(msg, "usage_metadata", None))
                     text = msg.content if isinstance(msg.content, str) else ""
                     if text:
                         parts.append(text)
@@ -172,7 +172,9 @@ def _stream_turn(
     return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen
 
 
-def _run_verification(agent, turn_config: dict, console: Console, cfg, input_fn) -> None:
+def _run_verification(
+    agent, turn_config: dict, console: Console, cfg, input_fn, rules=None
+) -> None:
     """Run the verify command; on failure, take exactly one fix-up turn.
 
     ``turn_config`` is the ``{"configurable": {"thread_id": ...}}`` dict for the
@@ -195,7 +197,7 @@ def _run_verification(agent, turn_config: dict, console: Console, cfg, input_fn)
             }
         ]
     }
-    _stream_turn(agent, payload, turn_config, console, input_fn)
+    _stream_turn(agent, payload, turn_config, console, input_fn, rules=rules, workdir=cfg.workdir)
     ok, tail = run_verify(cfg.verify_command, cfg.workdir)
     console.print(
         "[dim]✓ verify ok[/]" if ok else f"[yellow]⚠ verify still failing after 1 retry[/]\n{tail}"
@@ -218,17 +220,18 @@ def run_once(
     thread_id = thread_id or _new_thread_id()
     config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
+    rules = load_rules(workdir)
     text, _, _, tool_names = _stream_turn(
         agent,
         payload,
         config,
         console,
         input_fn,
-        rules=load_rules(workdir),
+        rules=rules,
         workdir=workdir,
     )
     if cfg is not None and tool_names & _MUTATING:
-        _run_verification(agent, config, console, cfg, input_fn)
+        _run_verification(agent, config, console, cfg, input_fn, rules=rules)
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
         index.touch(thread_id)
@@ -283,6 +286,7 @@ def run_repl(
         usage=session_usage,
         pinned=pinned,
         permissions=rules,
+        input_fn=input_fn,
     )
 
     if index is not None:
@@ -307,6 +311,8 @@ def run_repl(
             if res.handled:
                 if res.agent is not None:
                     agent = res.agent
+                    rules = load_rules(workdir)
+                    ctx.permissions = rules
                 if res.thread_id is not None:
                     thread_id = res.thread_id
                 continue
@@ -329,7 +335,7 @@ def run_repl(
             console.print(f"[dim]{indicator_line(session_usage, config.provider, config.model)}[/]")
         if tool_names & _MUTATING:
             try:
-                _run_verification(agent, turn_config, console, config, input_fn)
+                _run_verification(agent, turn_config, console, config, input_fn, rules=rules)
             except KeyboardInterrupt:
                 console.print(f"\n[{PALETTE['mauve']}]verify fix-up cancelled[/]")
         if index is not None:

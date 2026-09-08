@@ -46,13 +46,19 @@ class TurnUsage:
     total_tokens: int = 0
 
     def merge(self, meta: dict | None) -> None:
-        """Fold one ``usage_metadata`` mapping in. ``None`` is a no-op."""
+        """Fold one ``usage_metadata`` mapping in. ``None`` is a no-op.
+
+        ``output_tokens`` and ``total_tokens`` accumulate (summed for cost),
+        but ``input_tokens`` tracks the *last* non-zero value seen: it is the
+        current prompt size, not a running sum.
+        """
         if not isinstance(meta, dict):
             return
         in_tok = _int(meta.get("input_tokens"))
         out_tok = _int(meta.get("output_tokens"))
         total = _int(meta.get("total_tokens")) or (in_tok + out_tok)
-        self.input_tokens += in_tok
+        if in_tok:
+            self.input_tokens = in_tok
         self.output_tokens += out_tok
         self.total_tokens += total
 

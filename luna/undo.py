@@ -75,6 +75,28 @@ def session_diff(workdir: str, session_id: str) -> str:
     return "\n\n".join(chunks)
 
 
+def peek_last(workdir: str, session_id: str) -> str | None:
+    """Describe what :func:`undo_last` would revert, without mutating anything.
+
+    Returns ``"revert <path>"`` (or ``"delete <path> (was newly created)"``
+    when the newest entry recorded no pre-image), or ``None`` if the journal
+    is empty or unreadable.
+    """
+    entries = _entries(workdir, session_id)
+    if not entries:
+        return None
+    try:
+        rec = json.loads(entries[-1].read_text())
+    except (OSError, ValueError):
+        return None
+    rel = rec.get("path")
+    if rel is None:
+        return None
+    if rec.get("before") is None:
+        return f"delete {rel} (was newly created)"
+    return f"revert {rel}"
+
+
 def undo_last(workdir: str, session_id: str) -> str | None:
     """Restore (or delete) the file behind the newest journal entry."""
     entries = _entries(workdir, session_id)

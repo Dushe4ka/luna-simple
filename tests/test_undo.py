@@ -2,7 +2,7 @@ from langchain_core.messages import AIMessage
 
 from luna.agent import build_agent
 from luna.config import LunaConfig
-from luna.undo import journal_dir, session_diff, snapshot, undo_last
+from luna.undo import journal_dir, peek_last, session_diff, snapshot, undo_last
 
 
 def test_snapshot_and_undo_modify(tmp_path):
@@ -24,6 +24,22 @@ def test_snapshot_and_undo_create(tmp_path):
 
 def test_undo_empty_returns_none(tmp_path):
     assert undo_last(str(tmp_path), "empty") is None
+
+
+def test_peek_last_describes_revert_without_mutating(tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text("old\n")
+    snapshot(str(tmp_path), "p", "edit_file", "a.py")
+    f.write_text("new\n")
+    assert peek_last(str(tmp_path), "p") == "revert a.py"
+    assert f.read_text() == "new\n"  # peek did not touch the file
+    assert list(journal_dir(str(tmp_path), "p").glob("[0-9]*.json"))  # nor the journal
+
+
+def test_peek_last_describes_delete_and_empty(tmp_path):
+    assert peek_last(str(tmp_path), "none") is None
+    snapshot(str(tmp_path), "c", "write_file", "created.py")
+    assert peek_last(str(tmp_path), "c") == "delete created.py (was newly created)"
 
 
 def test_snapshot_numbering_is_monotonic(tmp_path):

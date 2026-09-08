@@ -20,7 +20,7 @@ from luna.credentials import get_api_key
 from luna.providers import PROVIDERS
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
-from luna.undo import session_diff, undo_last
+from luna.undo import peek_last, session_diff, undo_last
 from luna.verify import run_verify
 
 HELP: dict[str, str] = {
@@ -66,6 +66,7 @@ class CommandContext:
     pinned: object | None = None  # context.PinnedFiles, Task 6
     usage: object | None = None  # usage.SessionUsage, Task 5
     permissions: object | None = None  # permissions ruleset, Task 7
+    input_fn: Callable[[str], str] | None = None
 
 
 @dataclass
@@ -191,9 +192,16 @@ def _model(ctx: CommandContext, arg: str) -> DispatchResult | None:
     if not arg:
         ctx.console.print(f"model: {ctx.config.model or '(provider default)'}")
         return None
+    previous_model = ctx.config.model
     ctx.config.model = arg
+    try:
+        new_agent = ctx.rebuild()
+    except Exception as exc:  # noqa: BLE001 - a bad model must not kill the REPL
+        ctx.config.model = previous_model
+        ctx.console.print(f"[{PALETTE['mauve']}]could not switch: {exc}[/]")
+        return None
     ctx.console.print(f"[{PALETTE['blue']}]model → {arg}[/]")
-    return DispatchResult(agent=ctx.rebuild())
+    return DispatchResult(agent=new_agent)
 
 
 def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
@@ -209,10 +217,19 @@ def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
             f"[{PALETTE['mauve']}]no key for {arg}; run: luna config set-key {arg}[/]"
         )
         return None
+    previous_provider = ctx.config.provider
+    previous_model = ctx.config.model
     ctx.config.provider = arg
     ctx.config.model = None
+    try:
+        new_agent = ctx.rebuild()
+    except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the REPL
+        ctx.config.provider = previous_provider
+        ctx.config.model = previous_model
+        ctx.console.print(f"[{PALETTE['mauve']}]could not switch: {exc}[/]")
+        return None
     ctx.console.print(f"[{PALETTE['blue']}]provider → {arg}[/]")
-    return DispatchResult(agent=ctx.rebuild())
+    return DispatchResult(agent=new_agent)
 
 
 _COMPACT_ASK = (
@@ -221,7 +238,15 @@ _COMPACT_ASK = (
 )
 
 
-def _compact(ctx: CommandContext, arg: str) -> DispatchResult:
+def _compact(ctx: CommandContext, arg: str) -> DispatchResult | None:
+    try:
+        return _compact_impl(ctx, arg)
+    except Exception as exc:  # noqa: BLE001 - a failed compact must not kill the REPL
+        ctx.console.print(f"[{PALETTE['mauve']}]/compact failed: {exc}[/]")
+        return None
+
+
+def _compact_impl(ctx: CommandContext, arg: str) -> DispatchResult:
     old_config = {"configurable": {"thread_id": ctx.thread_id}}
     result = ctx.agent.invoke(
         {"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config=old_config
@@ -295,7 +320,16 @@ def _diff(ctx: CommandContext, arg: str) -> None:
 
 
 def _undo(ctx: CommandContext, arg: str) -> None:
-    """Revert the last file change made this session."""
+    """Revert the last file change made this session (confirms first)."""
+    desc = peek_last(ctx.workdir, ctx.session_id)
+    if desc is None:
+        ctx.console.print("[dim]nothing to undo[/]")
+        return
+    if ctx.input_fn is not None:
+        answer = ctx.input_fn(f"{desc}? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            ctx.console.print("[dim]undo cancelled[/]")
+            return
     note = undo_last(ctx.workdir, ctx.session_id)
     ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
 
@@ -310,6 +344,7 @@ def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
         init_prompt(ctx.workdir),
         thread_id=ctx.thread_id,
         console=ctx.console,
+        workdir=ctx.workdir,
     )
     if ctx.rebuild is not None:
         return DispatchResult(agent=ctx.rebuild())

@@ -31,6 +31,22 @@ def test_reload_swaps_agent():
     assert "reload" in out.getvalue().lower()
 
 
+def test_reload_refreshes_allow_rules(monkeypatch):
+    from luna import session
+
+    calls = []
+    monkeypatch.setattr(session, "load_rules", lambda wd: calls.append(wd) or f"rules-{len(calls)}")
+
+    answers = iter(["/reload", "/exit"])
+    run_repl(
+        _FakeAgent(0),
+        console=Console(file=io.StringIO(), force_terminal=True, no_color=True),
+        input_fn=lambda _: next(answers),
+        rebuild=lambda: _FakeAgent(1),
+    )
+    assert len(calls) >= 2  # once before the loop, again after /reload swapped the agent
+
+
 def test_reload_unavailable_without_rebuild():
     answers = iter(["/reload", "/exit"])
     out = io.StringIO()

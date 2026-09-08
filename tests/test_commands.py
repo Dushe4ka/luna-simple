@@ -99,6 +99,74 @@ def test_sessions_without_index_is_graceful():
     assert res.handled is True  # no crash
 
 
+def test_undo_declined_does_not_revert(tmp_path):
+    from luna.undo import journal_dir, snapshot
+
+    f = tmp_path / "a.py"
+    f.write_text("old\n")
+    snapshot(str(tmp_path), "s1", "edit_file", "a.py")
+    f.write_text("new\n")
+    ctx = _ctx(workdir=str(tmp_path), session_id="s1", input_fn=lambda _: "n")
+    dispatch("/undo", ctx)
+    assert f.read_text() == "new\n"  # file untouched
+    assert list(journal_dir(str(tmp_path), "s1").glob("[0-9]*.json"))  # entry kept
+
+
+def test_undo_confirmed_reverts(tmp_path):
+    from luna.undo import snapshot
+
+    f = tmp_path / "a.py"
+    f.write_text("old\n")
+    snapshot(str(tmp_path), "s1", "edit_file", "a.py")
+    f.write_text("new\n")
+    ctx = _ctx(workdir=str(tmp_path), session_id="s1", input_fn=lambda _: "y")
+    dispatch("/undo", ctx)
+    assert f.read_text() == "old\n"
+
+
+def test_undo_without_input_fn_proceeds(tmp_path):
+    from luna.undo import snapshot
+
+    f = tmp_path / "a.py"
+    f.write_text("old\n")
+    snapshot(str(tmp_path), "s1", "edit_file", "a.py")
+    f.write_text("new\n")
+    ctx = _ctx(workdir=str(tmp_path), session_id="s1")  # input_fn is None
+    dispatch("/undo", ctx)
+    assert f.read_text() == "old\n"
+
+
+def test_model_switch_failure_rolls_back(monkeypatch):
+    def boom():
+        raise RuntimeError("no such model")
+
+    ctx = _ctx(
+        config=LunaConfig(model="claude-sonnet-4-5"),
+        rebuild=boom,
+        console=Console(file=io.StringIO()),
+    )
+    res = dispatch("/model claude-opus-4", ctx)
+    assert res.agent is None
+    assert ctx.config.model == "claude-sonnet-4-5"  # rolled back
+    assert "could not switch" in ctx.console.file.getvalue()
+
+
+def test_compact_failure_does_not_raise(tmp_path):
+    class _BoomAgent:
+        def invoke(self, *a, **k):
+            raise RuntimeError("boom")
+
+    ctx = _ctx(
+        agent=_BoomAgent(),
+        workdir=str(tmp_path),
+        thread_id="old",
+        console=Console(file=io.StringIO()),
+    )
+    res = dispatch("/compact", ctx)
+    assert res.handled is True and res.thread_id is None
+    assert "/compact failed" in ctx.console.file.getvalue()
+
+
 def test_compact_rotates_thread_with_summary(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 

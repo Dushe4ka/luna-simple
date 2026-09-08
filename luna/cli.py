@@ -87,7 +87,10 @@ def _resolve_resume(args, index, workdir, console, interactive):
             return None
         return row.thread_id
     if args.resume != "__list__":
-        return args.resume  # treat as a thread id
+        rows = index.list(workdir)
+        if args.resume.isdigit() and 1 <= int(args.resume) <= len(rows):
+            return rows[int(args.resume) - 1].thread_id
+        return args.resume  # non-numeric: treat as a raw thread id
     rows = index.list(workdir)
     if not rows:
         print("luna: no sessions recorded for this directory", file=sys.stderr)
@@ -294,7 +297,13 @@ def _run_init(argv: list[str]) -> int:
     except LunaConfigError as exc:
         print(f"luna: {exc}", file=sys.stderr)
         return 2
-    run_once(agent, init_prompt(config.workdir), thread_id=uuid.uuid4().hex, console=console)
+    run_once(
+        agent,
+        init_prompt(config.workdir),
+        thread_id=uuid.uuid4().hex,
+        console=console,
+        workdir=config.workdir,
+    )
     return 0
 
 

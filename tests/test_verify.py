@@ -1,4 +1,5 @@
 import io
+import sys
 
 from rich.console import Console
 
@@ -16,19 +17,21 @@ def test_disabled_command_is_ok(tmp_path):
 
 
 def test_passing_command(tmp_path):
-    ok, tail = run_verify("python -c \"print('hi')\"", str(tmp_path))
+    ok, tail = run_verify(f"{sys.executable} -c \"print('hi')\"", str(tmp_path))
     assert ok is True
 
 
 def test_failing_command_tail(tmp_path):
-    ok, tail = run_verify("python -c \"import sys; print('boom'); sys.exit(1)\"", str(tmp_path))
+    ok, tail = run_verify(
+        f"{sys.executable} -c \"import sys; print('boom'); sys.exit(1)\"", str(tmp_path)
+    )
     assert ok is False and "boom" in tail
 
 
 def _flaky_command(sentinel) -> str:
     """A command that fails the first time and passes once ``sentinel`` exists."""
     return (
-        'python -c "import os,sys; '
+        f'{sys.executable} -c "import os,sys; '
         f"sys.exit(0) if os.path.exists(r'{sentinel}') "
         f"else (open(r'{sentinel}','w').close() or sys.exit(1))\""
     )
@@ -89,7 +92,10 @@ def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
         lambda *a, **k: stream_calls.append(a) or ("", False, TurnUsage(), set()),
     )
 
-    cfg = LunaConfig(workdir=str(tmp_path), verify_command='python -c "import sys; sys.exit(1)"')
+    cfg = LunaConfig(
+        workdir=str(tmp_path),
+        verify_command=f'{sys.executable} -c "import sys; sys.exit(1)"',
+    )
     console = Console(file=io.StringIO(), width=200)
 
     session._run_verification(
