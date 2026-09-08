@@ -17,6 +17,7 @@ from rich.console import Console
 from luna.config import LunaConfig
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
+from luna.undo import session_diff, undo_last
 
 HELP: dict[str, str] = {
     "/help": "show this help",
@@ -226,6 +227,18 @@ def _context(ctx: CommandContext, arg: str) -> None:
     ctx.console.print("\n".join(f"  {p}" for p in ctx.pinned.paths) or "[dim](no pinned files)[/]")
 
 
+def _diff(ctx: CommandContext, arg: str) -> None:
+    """Show the diff of files changed this session."""
+    text = session_diff(ctx.workdir, ctx.session_id)
+    ctx.console.print(text or "[dim]no changes this session[/]")
+
+
+def _undo(ctx: CommandContext, arg: str) -> None:
+    """Revert the last file change made this session."""
+    note = undo_last(ctx.workdir, ctx.session_id)
+    ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
+
+
 _TABLE: dict[str, Callable] = {
     "/help": _help,
     "/tools": _tools,
@@ -240,7 +253,9 @@ _TABLE: dict[str, Callable] = {
     "/add": _add,
     "/drop": _drop,
     "/context": _context,
-    # later tasks register: /sessions /resume /diff /undo /verify /init
+    "/diff": _diff,
+    "/undo": _undo,
+    # later tasks register: /sessions /resume /verify /init
 }
 
 

@@ -168,6 +168,7 @@ def run_once(
     input_fn: Callable[[str], str] = input,
     index: SessionIndex | None = None,
     workdir: str = ".",
+    session_id: str = "",
 ) -> str:
     """Run a single prompt and return the final assistant text."""
     thread_id = thread_id or _new_thread_id()
@@ -214,6 +215,7 @@ def run_repl(
     thread_id: str | None = None,
     workdir: str = ".",
     config: LunaConfig | None = None,
+    session_id: str = "",
 ) -> int:
     """Interactive loop. Returns a process exit code."""
     thread_id = thread_id or _new_thread_id()
@@ -231,6 +233,7 @@ def run_repl(
         thread_id=thread_id,
         workdir=workdir,
         index=index,
+        session_id=session_id,
         usage=session_usage,
         pinned=pinned,
         permissions=rules,

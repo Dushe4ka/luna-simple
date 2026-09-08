@@ -327,6 +327,15 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(_overrides(args))
         # non-interactive: fall through; build_agent raises the clean error.
 
+    from luna.gitinfo import dirty_paths
+
+    _dirty = dirty_paths(config.workdir)
+    if _dirty:
+        console.print(
+            f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
+            "Luna edits files in place"
+        )
+
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
@@ -334,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 
     index = SessionIndex()
     cp = checkpointer()
+    session_id = uuid.uuid4().hex
     start_thread = uuid.uuid4().hex
 
     if args.cont or args.resume:
@@ -344,7 +354,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def _rebuild():
         return build_agent(
-            config, checkpointer=cp, on_warn=lambda m: console.print(f"[yellow]{m}[/]")
+            config,
+            checkpointer=cp,
+            on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
+            session_id=session_id,
         )
 
     try:
@@ -362,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
                 console=console,
                 index=index,
                 workdir=config.workdir,
+                session_id=session_id,
             )
             return 0
         return run_repl(
@@ -372,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
             thread_id=start_thread,
             workdir=config.workdir,
             config=config,
+            session_id=session_id,
         )
     except KeyboardInterrupt:
         console.print()

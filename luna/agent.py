@@ -49,6 +49,7 @@ def build_agent(
     model: BaseChatModel | None = None,
     checkpointer=None,
     on_warn: Callable[[str], None] = print,
+    session_id: str = "",
 ):
     """Build a compiled Luna deep agent.
 
@@ -57,6 +58,7 @@ def build_agent(
         model: inject a model instance to bypass provider resolution (tests).
         checkpointer: LangGraph checkpointer; defaults to an in-memory one.
         on_warn: sink for non-fatal warnings (e.g. an MCP server that failed).
+        session_id: per-process id for the undo journal (``/diff`` and ``/undo``).
 
     """
     workdir = Path(config.workdir).resolve()
@@ -75,7 +77,7 @@ def build_agent(
         skills=skill_dirs or None,
         subagents=subs or None,
         interrupt_on=interrupt_on,
-        middleware=[tool_guard(rules, str(workdir))],
+        middleware=[tool_guard(rules, str(workdir), session_id=session_id)],
         checkpointer=checkpointer or InMemorySaver(),
         name="luna",
     )
