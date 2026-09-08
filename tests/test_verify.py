@@ -68,3 +68,73 @@ def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
     )
 
     assert calls == []
+
+
+def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
+    from luna import session
+    from luna.verify import run_verify as real_run_verify
+
+    verify_calls: list = []
+
+    def counting(command, workdir):
+        verify_calls.append(command)
+        return real_run_verify(command, workdir)
+
+    monkeypatch.setattr(session, "run_verify", counting)
+
+    stream_calls: list = []
+    monkeypatch.setattr(
+        session,
+        "_stream_turn",
+        lambda *a, **k: stream_calls.append(a) or ("", False, TurnUsage(), set()),
+    )
+
+    cfg = LunaConfig(workdir=str(tmp_path), verify_command='python -c "import sys; sys.exit(1)"')
+    console = Console(file=io.StringIO(), width=200)
+
+    session._run_verification(
+        object(), {"configurable": {"thread_id": "t"}}, console, cfg, lambda _: ""
+    )
+
+    assert len(stream_calls) == 1  # exactly one fix-up turn, no second
+    assert len(verify_calls) == 2  # initial check + one re-check, no third
+    assert "still failing after 1 retry" in console.file.getvalue()
+
+
+def test_verification_gated_on_mutating_tool(tmp_path, monkeypatch):
+    from luna import session
+
+    verify_calls: list = []
+    monkeypatch.setattr(
+        session,
+        "run_verify",
+        lambda *a, **k: verify_calls.append(a) or (True, ""),
+    )
+
+    def scripted(names):
+        return lambda *a, **k: ("", False, TurnUsage(), names)
+
+    cfg = LunaConfig(workdir=str(tmp_path), verify_command="x")
+
+    monkeypatch.setattr(session, "_stream_turn", scripted({"write_file"}))
+    session.run_once(
+        object(),
+        "go",
+        thread_id="t",
+        console=_console(),
+        workdir=str(tmp_path),
+        cfg=cfg,
+    )
+    assert len(verify_calls) == 1  # mutating turn -> verification ran
+
+    verify_calls.clear()
+    monkeypatch.setattr(session, "_stream_turn", scripted({"read_file"}))
+    session.run_once(
+        object(),
+        "go",
+        thread_id="t",
+        console=_console(),
+        workdir=str(tmp_path),
+        cfg=cfg,
+    )
+    assert verify_calls == []  # read-only turn -> verification skipped

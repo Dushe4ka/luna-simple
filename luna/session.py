@@ -328,7 +328,10 @@ def run_repl(
         if len(session_usage.turns) > before:
             console.print(f"[dim]{indicator_line(session_usage, config.provider, config.model)}[/]")
         if tool_names & _MUTATING:
-            _run_verification(agent, turn_config, console, config, input_fn)
+            try:
+                _run_verification(agent, turn_config, console, config, input_fn)
+            except KeyboardInterrupt:
+                console.print(f"\n[{PALETTE['mauve']}]verify fix-up cancelled[/]")
         if index is not None:
             index.record(thread_id, workdir, make_title(line))
             index.touch(thread_id)
