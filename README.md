@@ -56,13 +56,37 @@ luna setup
 # один запрос и выход
 luna "прочитай pyproject.toml и опиши точки входа"
 
+# исследовать репозиторий и создать/обновить AGENTS.md
+luna init
+
 # интерактивный REPL (с заставкой)
 luna
 ```
 
 Если запустить Luna без настроенного ключа, она сама предложит `luna setup`.
-В REPL: `/help`, `/tools`, `/agents`, `/model`, `/provider`, `/reload`, `/new`,
-`/clear`, `/exit`.
+В REPL: `/help`, `/tools`, `/agents`, `/usage`, `/compact`, `/add`, `/drop`,
+`/context`, `/diff`, `/undo`, `/verify`, `/init`, `/model`, `/provider`,
+`/reload`, `/new`, `/clear`, `/exit`. Команды `/model <name>` и
+`/provider <key>` теперь меняют модель или провайдера прямо в сессии,
+сохраняя тред.
+
+## Сессии и контекст
+
+Каждая сессия — и REPL, и одиночный запрос — чекпойнтится в
+`~/.config/luna/sessions.db`, так что диалог можно продолжить позже.
+
+```bash
+luna -c            # или --continue: возобновить последнюю сессию этого каталога
+luna --resume            # выбрать сессию из списка
+luna --resume <thread-id>  # возобновить конкретную сессию
+```
+
+- `/usage` — учёт токенов за сессию (после каждого хода печатается тусклая
+  строка `ctx ~X/Y · turn … · session …`).
+- `/compact` — сжать диалог в плотную заметку и продолжить на свежем треде.
+- `@путь` (или `@"a b.py"`) в сообщении подставляет содержимое файла в этот
+  ход; `/add путь …` закрепляет файлы во всех следующих ходах, `/drop`
+  открепляет, `/context` показывает закреплённое.
 
 ## Настройка и ключи
 
@@ -150,14 +174,31 @@ Luna работает с **реальными файлами** в текущей
 [model]
 provider = "anthropic"
 name = "claude-sonnet-4-5"
+fast = "anthropic:claude-haiku-4-5"
 
 [agent]
 yolo = false
 temperature = 0.0
+verify_command = "uv run pytest -q"
+
+[permissions]
+allow = ["execute:pytest*"]
+deny = ["execute:git push*", "write_file:.env"]
 
 [ui]
 splash = true
 ```
+
+- `[model] fast` — необязательная более дешёвая модель (полная строка
+  `<префикс>:<модель>`), её используют встроенные субагенты `researcher` /
+  `reviewer`.
+- `[agent] verify_command` — команда проверки: после хода, изменившего файлы,
+  Luna запускает её и при провале один раз отдаёт вывод агенту на
+  исправление; `/verify` — вручную.
+- `[permissions]` — списки `allow` / `deny` вида `"<инструмент>:<glob>"`;
+  `deny` перекрывает даже `--yolo`. То же можно положить в
+  `<repo>/.luna/permissions.toml`, а пункт `[a] always` в запросе
+  подтверждения дописывает правило `allow` туда сам.
 
 Окружение: `LUNA_PROVIDER`, `LUNA_MODEL`, `LUNA_YOLO`, `LUNA_WORKDIR`.
 

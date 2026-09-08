@@ -5,7 +5,7 @@ import luna
 
 
 def test_version_constant():
-    assert luna.__version__ == "0.1.0"
+    assert luna.__version__ == "0.2.0"
 
 
 def test_module_entrypoint_runs():
@@ -15,4 +15,4 @@ def test_module_entrypoint_runs():
         text=True,
     )
     assert out.returncode == 0
-    assert "0.1.0" in out.stdout
+    assert "0.2.0" in out.stdout

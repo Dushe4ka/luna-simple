@@ -20,6 +20,17 @@
 - `luna/prompts.py` — системный промпт Luna
 - `luna/agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
 - `luna/session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`
+- `luna/commands.py` — диспетчер slash-команд
+- `luna/persistence.py` — SqliteSaver + индекс сессий
+- `luna/usage.py` — учёт токенов
+- `luna/context.py` — `@file` + закреплённые файлы
+- `luna/permissions.py` — правила allow/deny
+- `luna/toolguard.py` — middleware: deny + снапшоты
+- `luna/undo.py` — журнал снапшотов, `/diff` `/undo`
+- `luna/gitinfo.py` — проверка git-дерева
+- `luna/memory.py` — `.luna/memory/*.md`
+- `luna/verify.py` — verify-команда
+- `luna/initgen.py` — `luna init`
 - `luna/registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)
 - `luna/mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов
 - `luna/skills.py` — установка/список/удаление скилов в стиле Anthropic
@@ -31,7 +42,7 @@
 ## Соглашения
 
 - Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
-- Все импорты `deepagents` / `langgraph` держать внутри `luna/agent.py` и
-  `luna/session.py`.
+- Все импорты `deepagents` / `langgraph` держать внутри `luna/agent.py`,
+  `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`.
 - ID моделей — в `luna/providers.py` или конфиге, никогда в логике агента.
 - Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
