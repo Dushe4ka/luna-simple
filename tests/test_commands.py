@@ -167,20 +167,34 @@ def test_compact_failure_does_not_raise(tmp_path):
     assert "/compact failed" in ctx.console.file.getvalue()
 
 
-def test_compact_rotates_thread_with_summary(tmp_path, fake_model):
+def test_compact_replaces_history_in_place(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
     from luna.agent import build_agent
 
-    ctx = _ctx(
-        agent=build_agent(
-            LunaConfig(workdir=str(tmp_path)),
-            model=fake_model(AIMessage(content="SUMMARY: did X")),
-        ),
-        workdir=str(tmp_path),
-        thread_id="old",
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path)),
+        model=fake_model(AIMessage(content="chatter"), AIMessage(content="SUMMARY: did X and Y")),
     )
+    cfg = {"configurable": {"thread_id": "keep"}}
+    agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config=cfg)
+
+    ctx = _ctx(agent=agent, thread_id="keep", workdir=str(tmp_path), index=None)
     res = dispatch("/compact", ctx)
-    assert res.thread_id and res.thread_id != "old"
-    state = ctx.agent.get_state({"configurable": {"thread_id": res.thread_id}})
-    assert any("did X" in getattr(m, "content", "") for m in state.values["messages"])
+
+    assert res.thread_id is None  # same thread
+    msgs = agent.get_state(cfg).values["messages"]
+    assert len(msgs) == 1
+    assert "did X and Y" in msgs[0].content
+    assert msgs[0].type == "human"
+
+
+def test_compact_no_summary_is_graceful(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+
+    agent = build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(AIMessage(content="")))
+    ctx = _ctx(agent=agent, thread_id="t", workdir=str(tmp_path), index=None)
+    res = dispatch("/compact", ctx)  # must not raise
+    assert res.handled is True

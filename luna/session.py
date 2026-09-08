@@ -9,7 +9,14 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    RemoveMessage,
+    ToolMessage,
+)
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
@@ -26,7 +33,13 @@ from luna.ui.turn import close_turn, open_turn, tool_line
 from luna.usage import SessionUsage, TurnUsage, indicator_line
 from luna.verify import run_verify
 
-__all__ = ["SLASH_COMMANDS", "collect_decisions", "run_once", "run_repl"]
+__all__ = [
+    "SLASH_COMMANDS",
+    "collect_decisions",
+    "compact_thread",
+    "run_once",
+    "run_repl",
+]
 
 _RELOAD_MARKER = "Run /reload"
 
@@ -36,6 +49,44 @@ _MUTATING = {"write_file", "edit_file", "delete", "execute"}
 
 def _new_thread_id() -> str:
     return uuid.uuid4().hex
+
+
+_COMPACT_ASK = (
+    "Summarise this whole session as a dense handoff note: the goal, decisions "
+    "made, files touched, current state, and open questions. Text only — do not "
+    "call any tools. No preamble."
+)
+
+
+def compact_thread(agent, thread_id: str, console: Console) -> None:
+    """Replace this thread's message history with a model-written summary, in place."""
+    config = {"configurable": {"thread_id": thread_id}}
+    result = agent.invoke({"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config)
+    if isinstance(result, dict) and result.get("__interrupt__"):
+        result = agent.invoke(
+            Command(resume={"decisions": [{"type": "reject", "message": "summary only"}]}),
+            config,
+        )
+    summary = ""
+    messages = result.get("messages", []) if isinstance(result, dict) else []
+    for msg in reversed(messages):
+        text = getattr(msg, "content", "")
+        if getattr(msg, "type", "") == "ai" and isinstance(text, str) and text.strip():
+            summary = text.strip()
+            break
+    if not summary:
+        console.print(f"[{PALETTE['mauve']}]/compact: no summary produced[/]")
+        return
+    agent.update_state(
+        config,
+        {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                HumanMessage(content="[compacted] Handoff note:\n" + summary),
+            ]
+        },
+    )
+    console.print(f"[{PALETTE['blue']}]compacted — history replaced with a summary[/]")
 
 
 def collect_decisions(
