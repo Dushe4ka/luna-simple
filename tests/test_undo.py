@@ -1,3 +1,6 @@
+import os
+import time
+
 from langchain_core.messages import AIMessage
 
 from luna.agent import build_agent
@@ -125,3 +128,56 @@ def test_denied_write_makes_no_journal_entry(tmp_path, fake_model):
     )
     journal = tmp_path / ".luna" / "undo" / "d"
     assert not journal.exists() or not list(journal.glob("*.json"))
+
+
+def test_undo_refuses_to_delete_a_changed_binary(tmp_path):
+    from luna.undo import peek_last, snapshot, undo_last
+
+    f = tmp_path / "logo.bin"
+    f.write_bytes(b"\x89PNG\x00original")
+    snapshot(str(tmp_path), "s", "write_file", "logo.bin")  # before=None, existed=True
+    f.write_bytes(b"\x89PNG\x00changed")
+    assert "binary" in (peek_last(str(tmp_path), "s") or "").lower()
+    note = undo_last(str(tmp_path), "s")
+    assert f.exists() and f.read_bytes() == b"\x89PNG\x00changed"
+    assert "cannot revert" in note
+
+
+def test_undo_still_deletes_a_created_file(tmp_path):
+    from luna.undo import snapshot, undo_last
+
+    snapshot(str(tmp_path), "s", "write_file", "new.py")  # existed=False
+    (tmp_path / "new.py").write_text("x\n")
+    undo_last(str(tmp_path), "s")
+    assert not (tmp_path / "new.py").exists()
+
+
+def test_read_paths_do_not_create_the_journal_dir(tmp_path):
+    from luna.undo import session_diff, undo_last
+
+    assert session_diff(str(tmp_path), "none") == ""
+    assert undo_last(str(tmp_path), "none") is None
+    assert not (tmp_path / ".luna" / "undo" / "none").exists()
+
+
+def test_session_diff_marks_binary_entries(tmp_path):
+    from luna.undo import session_diff, snapshot
+
+    (tmp_path / "b.bin").write_bytes(b"\xff\x00\xfe")
+    snapshot(str(tmp_path), "s", "edit_file", "b.bin")
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01")
+    assert "binary or unreadable" in session_diff(str(tmp_path), "s")
+
+
+def test_gc_removes_old_journals(tmp_path):
+    from luna.undo import gc, journal_dir
+
+    old = journal_dir(str(tmp_path), "old")
+    (old / "0000.json").write_text("{}")
+    fresh = journal_dir(str(tmp_path), "fresh")
+    (fresh / "0000.json").write_text("{}")
+    past = time.time() - 40 * 86400
+    os.utime(old / "0000.json", (past, past))
+    os.utime(old, (past, past))
+    gc(str(tmp_path), keep_days=7)
+    assert not old.exists() and fresh.exists()
