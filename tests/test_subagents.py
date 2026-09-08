@@ -1,7 +1,50 @@
 import pytest
 
 from luna.providers import LunaConfigError
-from luna.subagents import BUILTIN_SUBAGENTS, load_subagents, subagent_summaries
+from luna.subagents import (
+    _MUTATING_TOOLS,
+    _SAFE_TOOLS,
+    BUILTIN_SUBAGENTS,
+    load_subagents,
+    subagent_summaries,
+)
+
+
+def _write_subagents(tmp_path, body: str):
+    d = tmp_path / ".luna"
+    d.mkdir(exist_ok=True)
+    (d / "subagents.toml").write_text(body)
+
+
+def test_mutating_subagent_without_unsafe_is_rejected(tmp_path):
+    _write_subagents(tmp_path, '[subagent.impl]\ndescription = "x"\ntools = ["execute"]\n')
+    with pytest.raises(LunaConfigError, match="unsafe"):
+        load_subagents(str(tmp_path))
+
+
+def test_unsafe_mutating_subagent_loads_and_warns(tmp_path):
+    _write_subagents(
+        tmp_path,
+        '[subagent.impl]\ndescription = "x"\ntools = ["write_file", "read_file"]\nunsafe = true\n',
+    )
+    warns: list[str] = []
+    subs = load_subagents(str(tmp_path), on_warn=warns.append)
+    names = {s["name"] for s in subs}
+    assert "impl" in names
+    assert warns and "impl" in warns[0]
+
+
+def test_guard_is_first_middleware_on_every_subagent(tmp_path):
+    sentinel = object()
+    subs = load_subagents(str(tmp_path), guard=sentinel)
+    for s in subs:
+        assert s["middleware"][0] is sentinel
+
+
+def test_builtins_are_safe_only():
+    assert _MUTATING_TOOLS.isdisjoint(_SAFE_TOOLS)
+    subs = load_subagents(".")
+    assert {s["name"] for s in subs} >= {"researcher", "reviewer"}
 
 
 def test_builtins_present():
@@ -14,7 +57,7 @@ def test_user_subagent_parsed(tmp_path, monkeypatch):
     cfg.mkdir(parents=True)
     (cfg / "subagents.toml").write_text(
         '[subagent.docs]\ndescription = "write docs"\nprompt = "You write docs."\n'
-        'tools = ["read_file", "write_file"]\n'
+        'tools = ["read_file", "write_file"]\nunsafe = true\n'
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     names = [n for n, _ in subagent_summaries(str(tmp_path))]

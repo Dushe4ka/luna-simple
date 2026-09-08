@@ -48,6 +48,58 @@ def test_build_agent_wires_extensions(tmp_path, fake_model, monkeypatch):
     assert caps["tools"] >= 2  # manage_mcp + manage_skills
 
 
+def test_subagent_deny_rule_is_enforced(tmp_path, fake_model):
+    """An unsafe subagent's execute call is still blocked by a deny rule.
+
+    Downgraded per the task brief to the direct-graph form: driving ``task``
+    through ``FakeToolCallingModel`` is unreliable because the subagent shares
+    the (already-drained) scripted model with the main agent. Here the subagent
+    graph is built directly with the same ``guard`` middleware and a denied
+    ``execute`` call must come back as the block message.
+    """
+    from deepagents import create_deep_agent
+    from deepagents.backends import LocalShellBackend
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from luna.permissions import load_rules
+    from luna.subagents import load_subagents
+    from luna.toolguard import tool_guard
+
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["execute:*"]\n')
+    (tmp_path / ".luna" / "subagents.toml").write_text(
+        '[subagent.impl]\ndescription = "impl"\nprompt = "you implement"\n'
+        'tools = ["execute", "read_file"]\nunsafe = true\n'
+    )
+    rules = load_rules(str(tmp_path))
+    guard = tool_guard(rules, str(tmp_path), session_id="sess")
+
+    # The subagent loads without raising because unsafe = true is set.
+    subs = load_subagents(str(tmp_path), guard=guard, on_warn=lambda _l: None)
+    impl = next(s for s in subs if s["name"] == "impl")
+    assert impl["middleware"][0] is guard
+
+    exec_call = {"name": "execute", "id": "e1", "args": {"command": "ls"}}
+    model = fake_model(
+        AIMessage(content="", tool_calls=[exec_call]),
+        AIMessage(content="done"),
+    )
+    sub_graph = create_deep_agent(
+        model=model,
+        system_prompt="you implement",
+        backend=LocalShellBackend(root_dir=str(tmp_path), virtual_mode=True, inherit_env=True),
+        middleware=[guard],
+        checkpointer=InMemorySaver(),
+    )
+    out = sub_graph.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "sub"}},
+    )
+    blob = " ".join(getattr(m, "content", "") or "" for m in out["messages"])
+    assert "blocked by a Luna permission rule" in blob
+
+
 def test_memory_wired_when_agents_md_present(tmp_path, fake_model):
     (tmp_path / "AGENTS.md").write_text("# project notes\n")
     cfg = LunaConfig(workdir=str(tmp_path))

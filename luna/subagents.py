@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from deepagents import SubAgent
@@ -13,18 +13,30 @@ from luna.config import config_dir
 from luna.providers import LunaConfigError
 
 # Filesystem tools a subagent can be restricted to (deepagents FsToolName set).
-VALID_TOOLS = frozenset(
-    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
-)
+# Read-only tools are always allowed; mutating ones need ``unsafe = true`` because
+# a subagent runs without the approval prompt the main agent gets.
+_SAFE_TOOLS = frozenset({"ls", "read_file", "glob", "grep"})
+_MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete", "execute"})
+VALID_TOOLS = _SAFE_TOOLS | _MUTATING_TOOLS
 _READ_ONLY = ["ls", "read_file", "glob", "grep"]
 
 
 def _subagent(
-    name: str, description: str, prompt: str, fs_tools: list[str] | None, model: str | None = None
+    name: str,
+    description: str,
+    prompt: str,
+    fs_tools: list[str] | None,
+    model: str | None = None,
+    guard: object | None = None,
 ) -> SubAgent:
-    spec: dict = {"name": name, "description": description, "system_prompt": prompt}
+    mw: list = []
+    if guard is not None:
+        mw.append(guard)
     if fs_tools is not None:
-        spec["middleware"] = [FilesystemMiddleware(tools=fs_tools)]
+        mw.append(FilesystemMiddleware(tools=fs_tools))
+    spec: dict = {"name": name, "description": description, "system_prompt": prompt}
+    if mw:
+        spec["middleware"] = mw
     if model:
         spec["model"] = model
     return SubAgent(**spec)
@@ -72,19 +84,33 @@ def load_subagents(
     *,
     env: Mapping[str, str] | None = None,
     fast_model: str | None = None,
+    guard: object | None = None,
+    on_warn: Callable[[str], None] | None = None,
 ) -> list[SubAgent]:
     """Built-in subagents plus any defined in ``subagents.toml`` (user + project).
 
     When ``fast_model`` is set, every built-in subagent that has no explicit
     model of its own is rebuilt to run on that cheaper/faster model.
+
+    ``guard`` (a ``tool_guard`` middleware) is attached first to every subagent,
+    so deny rules and undo snapshots apply inside delegated work too. A user
+    subagent that requests a mutating tool must set ``unsafe = true`` in its
+    ``[subagent.<name>]`` block; such subagents run without an approval prompt
+    (deny rules and undo snapshots still apply) and trigger an ``on_warn`` line.
     """
     agents: list[SubAgent] = []
     for a in BUILTIN_SUBAGENTS:
-        if fast_model and "model" not in a:
-            a = _subagent(
-                a["name"], a["description"], a["system_prompt"], _READ_ONLY, model=fast_model
+        model = fast_model if (fast_model and "model" not in a) else a.get("model")
+        agents.append(
+            _subagent(
+                a["name"],
+                a["description"],
+                a["system_prompt"],
+                _READ_ONLY,
+                model=model,
+                guard=guard,
             )
-        agents.append(a)
+        )
     for name, cfg in _load_raw(workdir, env).items():
         tools = cfg.get("tools")
         if tools is not None:
@@ -94,12 +120,23 @@ def load_subagents(
                     f"subagent {name!r}: unknown tools {sorted(bad)}. "
                     f"Valid: {', '.join(sorted(VALID_TOOLS))}"
                 )
+            mutating = set(tools) & _MUTATING_TOOLS
+            if mutating and not cfg.get("unsafe", False):
+                raise LunaConfigError(
+                    f"subagent {name!r} requests {sorted(mutating)} but is not marked "
+                    f"unsafe. Add 'unsafe = true' to its [subagent.{name}] block to allow "
+                    f"write/execute tools in a subagent (they run without an approval "
+                    f"prompt), or drop those tools."
+                )
+            if mutating and on_warn is not None:
+                on_warn(f"subagent {name!r} runs {sorted(mutating)} with no approval prompt")
         agent = _subagent(
             name,
             cfg.get("description", name),
             cfg.get("prompt", f"You are the {name} subagent."),
             list(tools) if tools is not None else None,
             cfg.get("model"),
+            guard=guard,
         )
         agents = [a for a in agents if a["name"] != name] + [agent]
     return agents

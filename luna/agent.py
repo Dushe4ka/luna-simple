@@ -34,13 +34,17 @@ INTERRUPT_TOOLS: dict = {
 }
 
 
-def _extension_bits(config: LunaConfig, on_warn: Callable[[str], None]):
+def _extension_bits(
+    config: LunaConfig, on_warn: Callable[[str], None], guard: object | None = None
+):
     skill_dirs = [str(d) for d in skills_mod.existing_skill_dirs(config.workdir)]
     servers = mcp_mod.load_mcp_config(config.workdir)
     mcp_tools = (
         mcp_mod.load_mcp_tools(mcp_mod.to_connections(servers), on_warn=on_warn) if servers else []
     )
-    subs = subagents_mod.load_subagents(config.workdir, fast_model=config.fast_model)
+    subs = subagents_mod.load_subagents(
+        config.workdir, fast_model=config.fast_model, guard=guard, on_warn=on_warn
+    )
     return skill_dirs, list(servers), mcp_tools, subs
 
 
@@ -67,9 +71,12 @@ def build_agent(
     backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)
     mem = (["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else []) + memory_files(str(workdir))
     memory = mem or None
-    skill_dirs, _servers, mcp_tools, subs = _extension_bits(config, on_warn)
-    interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
     rules = load_rules(str(workdir))
+    # One guard instance for the main agent and every subagent: shared deny rules
+    # and a single per-session undo journal for all changes made this session.
+    guard = tool_guard(rules, str(workdir), session_id=session_id)
+    skill_dirs, _servers, mcp_tools, subs = _extension_bits(config, on_warn, guard=guard)
+    interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
     return create_deep_agent(
         model=model or build_model(config.provider, config.model, config.model_kwargs),
         system_prompt=LUNA_SYSTEM_PROMPT,
@@ -79,7 +86,7 @@ def build_agent(
         skills=skill_dirs or None,
         subagents=subs or None,
         interrupt_on=interrupt_on,
-        middleware=[tool_guard(rules, str(workdir), session_id=session_id)],
+        middleware=[guard],
         checkpointer=checkpointer or InMemorySaver(),
         name="luna",
     )
