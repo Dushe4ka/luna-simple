@@ -17,7 +17,7 @@ from rich.console import Console
 
 from luna.config import LunaConfig
 from luna.credentials import get_api_key
-from luna.providers import PROVIDERS
+from luna.providers import PROVIDERS, LunaConfigError
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
 from luna.undo import peek_last, session_diff, undo_last
@@ -105,8 +105,16 @@ def _list_tools(console: Console) -> None:
     console.print(f"  [dim {PALETTE['blue']}](+ any MCP tools as mcp__<server>__<tool>)[/]")
 
 
-def _list_agents(console: Console) -> None:
-    for name, desc in subagent_summaries():
+def _list_agents(console: Console, workdir: str = ".") -> None:
+    try:
+        summaries = subagent_summaries(workdir)
+    except LunaConfigError as exc:
+        # A bad subagents.toml (e.g. a mutating subagent without unsafe = true)
+        # must not unwind past dispatch() and kill the REPL. /reload reports the
+        # same error the same way.
+        console.print(f"[{PALETTE['mauve']}]{exc}[/]")
+        return
+    for name, desc in summaries:
         console.print(f"  [bold {PALETTE['accent']}]{name}[/] — {desc}")
 
 
@@ -119,7 +127,7 @@ def _tools(ctx: CommandContext, arg: str) -> None:
 
 
 def _agents(ctx: CommandContext, arg: str) -> None:
-    _list_agents(ctx.console)
+    _list_agents(ctx.console, ctx.workdir)
 
 
 def _clear(ctx: CommandContext, arg: str) -> None:

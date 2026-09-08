@@ -83,6 +83,18 @@ def test_agents_list_shows_builtins(capsys):
     assert "researcher" in capsys.readouterr().out
 
 
+def test_agents_list_reports_broken_subagents_toml(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "subagents.toml").write_text(
+        '[subagent.x]\ndescription = "x"\ntools = ["execute", "read_file"]\n'
+    )
+    code = main(["agents", "list"])
+    assert code == 2
+    assert "unsafe = true" in capsys.readouterr().err
+
+
 def test_skills_list_empty_ok(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.chdir(tmp_path)

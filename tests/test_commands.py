@@ -49,6 +49,19 @@ def test_reload_failure_does_not_raise():
     assert "/reload failed" in ctx.console.file.getvalue()
 
 
+def test_agents_with_broken_subagents_toml_does_not_kill_repl(tmp_path):
+    d = tmp_path / ".luna"
+    d.mkdir()
+    (d / "subagents.toml").write_text(
+        '[subagent.x]\ndescription = "x"\ntools = ["execute", "read_file"]\n'
+    )
+    ctx = _ctx(workdir=str(tmp_path), console=Console(file=io.StringIO()))
+    res = dispatch("/agents", ctx)
+    assert res.handled is True and res.exit is False
+    out = ctx.console.file.getvalue()
+    assert "unsafe = true" in out
+
+
 def test_new_rotates_thread():
     res = dispatch("/new", _ctx())
     assert res.thread_id and res.thread_id != "t"
