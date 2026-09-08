@@ -18,6 +18,7 @@ from luna.config import LunaConfig
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
 from luna.undo import session_diff, undo_last
+from luna.verify import run_verify
 
 HELP: dict[str, str] = {
     "/help": "show this help",
@@ -227,6 +228,15 @@ def _context(ctx: CommandContext, arg: str) -> None:
     ctx.console.print("\n".join(f"  {p}" for p in ctx.pinned.paths) or "[dim](no pinned files)[/]")
 
 
+def _verify(ctx: CommandContext, arg: str) -> None:
+    """Run the project's verify command now."""
+    if not ctx.config.verify_command:
+        ctx.console.print("[dim]set agent.verify_command in config first[/]")
+        return
+    ok, tail = run_verify(ctx.config.verify_command, ctx.config.workdir)
+    ctx.console.print("[dim]✓ verify ok[/]" if ok else f"[yellow]verify failed[/]\n{tail}")
+
+
 def _diff(ctx: CommandContext, arg: str) -> None:
     """Show the diff of files changed this session."""
     text = session_diff(ctx.workdir, ctx.session_id)
@@ -255,7 +265,8 @@ _TABLE: dict[str, Callable] = {
     "/context": _context,
     "/diff": _diff,
     "/undo": _undo,
-    # later tasks register: /sessions /resume /verify /init
+    "/verify": _verify,
+    # later tasks register: /sessions /resume /init
 }
 
 

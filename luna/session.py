@@ -24,10 +24,14 @@ from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn, tool_line
 from luna.usage import SessionUsage, TurnUsage, indicator_line
+from luna.verify import run_verify
 
 __all__ = ["SLASH_COMMANDS", "collect_decisions", "run_once", "run_repl"]
 
 _RELOAD_MARKER = "Run /reload"
+
+#: Tool names whose use marks a turn as mutating and triggers verification.
+_MUTATING = {"write_file", "edit_file", "delete", "execute"}
 
 
 def _new_thread_id() -> str:
@@ -87,8 +91,11 @@ def _iter_interrupts(chunk: object):
         yield from chunk["__interrupt__"]
 
 
-def _report_tools(chunk: dict, console: Console, seen: set[str]) -> bool:
-    """Print tool lines; return True if a tool asked for /reload."""
+def _report_tools(chunk: dict, console: Console, seen: set[str], names: set[str]) -> bool:
+    """Print tool lines; return True if a tool asked for /reload.
+
+    Every reported tool's name is added to ``names``.
+    """
     reload_requested = False
     for update in chunk.values():
         if not isinstance(update, dict):
@@ -96,6 +103,8 @@ def _report_tools(chunk: dict, console: Console, seen: set[str]) -> bool:
         for msg in update.get("messages", []) or []:
             if isinstance(msg, ToolMessage) and msg.tool_call_id not in seen:
                 seen.add(msg.tool_call_id)
+                if msg.name:
+                    names.add(msg.name)
                 body = str(msg.content) if msg.content else ""
                 tool_line(console, msg.name or "tool", body.splitlines()[0][:120])
                 if msg.name in ("manage_mcp", "manage_skills") and _RELOAD_MARKER in body:
@@ -112,10 +121,14 @@ def _stream_turn(
     *,
     rules=None,
     workdir: str = ".",
-) -> tuple[str, bool, TurnUsage]:
-    """Run one user turn. Returns ``(final_text, reload_requested, turn_usage)``."""
+) -> tuple[str, bool, TurnUsage, set[str]]:
+    """Run one user turn.
+
+    Returns ``(final_text, reload_requested, turn_usage, tool_names_seen)``.
+    """
     parts: list[str] = []
     seen_tools: set[str] = set()
+    tool_names_seen: set[str] = set()
     reload_requested = False
     turn_usage = TurnUsage()
 
@@ -137,7 +150,7 @@ def _stream_turn(
                         console.print(text, end="", soft_wrap=True)
             elif mode == "updates":
                 interrupts.extend(_iter_interrupts(chunk))
-                reload_requested |= _report_tools(chunk, console, seen_tools)
+                reload_requested |= _report_tools(chunk, console, seen_tools, tool_names_seen)
 
         if not interrupts:
             state = agent.get_state(config)
@@ -156,7 +169,37 @@ def _stream_turn(
         payload = Command(resume=resume)
 
     close_turn(console)
-    return "".join(parts).strip(), reload_requested, turn_usage
+    return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen
+
+
+def _run_verification(agent, turn_config: dict, console: Console, cfg, input_fn) -> None:
+    """Run the verify command; on failure, take exactly one fix-up turn.
+
+    ``turn_config`` is the ``{"configurable": {"thread_id": ...}}`` dict for the
+    active thread. Does nothing when no verify command is configured.
+    """
+    if not cfg.verify_command:
+        return
+    ok, tail = run_verify(cfg.verify_command, cfg.workdir)
+    if ok:
+        console.print("[dim]✓ verify ok[/]")
+        return
+    console.print(f"[yellow]verify failed[/]\n{tail}")
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    f"The verify command `{cfg.verify_command}` failed. Output:\n{tail}\nFix it."
+                ),
+            }
+        ]
+    }
+    _stream_turn(agent, payload, turn_config, console, input_fn)
+    ok, tail = run_verify(cfg.verify_command, cfg.workdir)
+    console.print(
+        "[dim]✓ verify ok[/]" if ok else f"[yellow]⚠ verify still failing after 1 retry[/]\n{tail}"
+    )
 
 
 def run_once(
@@ -169,12 +212,13 @@ def run_once(
     index: SessionIndex | None = None,
     workdir: str = ".",
     session_id: str = "",  # accepted for API symmetry; snapshots run in the middleware
+    cfg: LunaConfig | None = None,
 ) -> str:
     """Run a single prompt and return the final assistant text."""
     thread_id = thread_id or _new_thread_id()
     config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
-    text, _, _ = _stream_turn(
+    text, _, _, tool_names = _stream_turn(
         agent,
         payload,
         config,
@@ -183,6 +227,8 @@ def run_once(
         rules=load_rules(workdir),
         workdir=workdir,
     )
+    if cfg is not None and tool_names & _MUTATING:
+        _run_verification(agent, config, console, cfg, input_fn)
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
         index.touch(thread_id)
@@ -271,7 +317,7 @@ def run_repl(
         content = pinned_block + "\n\n" + expanded if pinned_block else expanded
         payload = {"messages": [{"role": "user", "content": content}]}
         try:
-            _, reload_requested, turn_usage = _stream_turn(
+            _, reload_requested, turn_usage, tool_names = _stream_turn(
                 agent, payload, turn_config, console, input_fn, rules=rules, workdir=workdir
             )
         except KeyboardInterrupt:
@@ -281,6 +327,8 @@ def run_repl(
         session_usage.add_turn(turn_usage)
         if len(session_usage.turns) > before:
             console.print(f"[dim]{indicator_line(session_usage, config.provider, config.model)}[/]")
+        if tool_names & _MUTATING:
+            _run_verification(agent, turn_config, console, config, input_fn)
         if index is not None:
             index.record(thread_id, workdir, make_title(line))
             index.touch(thread_id)

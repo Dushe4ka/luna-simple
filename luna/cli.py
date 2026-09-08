@@ -376,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
                 index=index,
                 workdir=config.workdir,
                 session_id=session_id,
+                cfg=config,
             )
             return 0
         return run_repl(
