@@ -1,4 +1,4 @@
-from luna.extension_tools import EXTENSION_INTERRUPTS, manage_mcp, manage_skills
+from luna.extension_tools import EXTENSION_INTERRUPTS, manage_mcp, manage_skills, remember
 from luna.mcp import load_mcp_config
 
 
@@ -32,4 +32,19 @@ def test_manage_skills_list(tmp_path, monkeypatch):
 
 
 def test_interrupts_registered():
-    assert EXTENSION_INTERRUPTS == {"manage_mcp": True, "manage_skills": True}
+    assert EXTENSION_INTERRUPTS == {
+        "manage_mcp": True,
+        "manage_skills": True,
+        "remember": True,
+    }
+
+
+def test_remember_is_interrupted():
+    assert EXTENSION_INTERRUPTS.get("remember") is True
+
+
+def test_remember_writes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    out = remember.invoke({"kind": "decisions", "topic": "db", "note": "chose sqlite"})
+    assert "decisions.md" in out
+    assert "chose sqlite" in (tmp_path / ".luna" / "memory" / "decisions.md").read_text()

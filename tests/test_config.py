@@ -36,6 +36,20 @@ def test_model_kwargs_composed(tmp_path):
     assert cfg.model_kwargs == {"temperature": 0.2, "max_tokens": 1000}
 
 
+def test_verify_command_settable(tmp_path, isolated_config_home):
+    from luna.config import load_config, set_config_values
+
+    set_config_values({"agent.verify_command": "pytest -q"})
+    assert load_config({}).verify_command == "pytest -q"
+
+
+def test_fast_model_settable(isolated_config_home):
+    from luna.config import load_config, set_config_values
+
+    set_config_values({"model.fast": "anthropic:claude-haiku-4-5"})
+    assert load_config({}).fast_model == "anthropic:claude-haiku-4-5"
+
+
 def test_user_config_is_lowest_layer(tmp_path, monkeypatch):
     cfg_home = tmp_path / "xdg"
     (cfg_home / "luna").mkdir(parents=True)

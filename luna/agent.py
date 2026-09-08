@@ -19,8 +19,11 @@ from luna import skills as skills_mod
 from luna import subagents as subagents_mod
 from luna.config import LunaConfig
 from luna.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
+from luna.memory import memory_files
+from luna.permissions import load_rules
 from luna.prompts import LUNA_SYSTEM_PROMPT
 from luna.providers import build_model
+from luna.toolguard import tool_guard
 
 # Tools that mutate the workspace and therefore pause for approval.
 INTERRUPT_TOOLS: dict = {
@@ -37,7 +40,7 @@ def _extension_bits(config: LunaConfig, on_warn: Callable[[str], None]):
     mcp_tools = (
         mcp_mod.load_mcp_tools(mcp_mod.to_connections(servers), on_warn=on_warn) if servers else []
     )
-    subs = subagents_mod.load_subagents(config.workdir)
+    subs = subagents_mod.load_subagents(config.workdir, fast_model=config.fast_model)
     return skill_dirs, list(servers), mcp_tools, subs
 
 
@@ -47,6 +50,7 @@ def build_agent(
     model: BaseChatModel | None = None,
     checkpointer=None,
     on_warn: Callable[[str], None] = print,
+    session_id: str = "",
 ):
     """Build a compiled Luna deep agent.
 
@@ -55,14 +59,17 @@ def build_agent(
         model: inject a model instance to bypass provider resolution (tests).
         checkpointer: LangGraph checkpointer; defaults to an in-memory one.
         on_warn: sink for non-fatal warnings (e.g. an MCP server that failed).
+        session_id: per-process id for the undo journal (``/diff`` and ``/undo``).
 
     """
     workdir = Path(config.workdir).resolve()
     # virtual_mode maps the agent's "/" to workdir: real files, confined to the repo.
     backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)
-    memory = ["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else None
+    mem = (["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else []) + memory_files(str(workdir))
+    memory = mem or None
     skill_dirs, _servers, mcp_tools, subs = _extension_bits(config, on_warn)
     interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
+    rules = load_rules(str(workdir))
     return create_deep_agent(
         model=model or build_model(config.provider, config.model, config.model_kwargs),
         system_prompt=LUNA_SYSTEM_PROMPT,
@@ -72,6 +79,7 @@ def build_agent(
         skills=skill_dirs or None,
         subagents=subs or None,
         interrupt_on=interrupt_on,
+        middleware=[tool_guard(rules, str(workdir), session_id=session_id)],
         checkpointer=checkpointer or InMemorySaver(),
         name="luna",
     )

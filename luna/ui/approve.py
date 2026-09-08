@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from luna.permissions import suggest_rule
 from luna.ui.theme import PALETTE
 
 _MAX_PREVIEW_LINES = 40
@@ -71,7 +72,7 @@ def prompt_decision(
     Returns a decision dict for ``Command(resume={"decisions": [...]})``.
     """
     console.print(_panel(action_request))
-    choice = input_fn("[Enter] approve · [e] edit · [n] reject > ").strip().lower()
+    choice = input_fn("[Enter] approve · [e] edit · [a] always · [n] reject > ").strip().lower()
 
     if choice in ("", "y", "yes"):
         return {"type": "approve"}
@@ -79,6 +80,13 @@ def prompt_decision(
     if choice in ("n", "no"):
         reason = input_fn("reason > ").strip()
         return {"type": "reject", "message": reason or "rejected by user"}
+
+    if choice in ("a", "always"):
+        action = action_request.get("action") or action_request.get("name")
+        args = action_request.get("args", {}) or {}
+        rule = suggest_rule(action, args, ".")
+        edited = input_fn(f"rule [{rule}] > ").strip()
+        return {"type": "approve", "always": edited or rule}
 
     if choice in ("e", "edit"):
         action = action_request.get("action") or action_request.get("name")

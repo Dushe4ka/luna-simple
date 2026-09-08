@@ -19,6 +19,7 @@ from luna.credentials import (
     set_api_key,
     unset_api_key,
 )
+from luna.initgen import init_prompt
 from luna.providers import PROVIDERS, LunaConfigError
 from luna.registry import known_mcp, known_skills, resolve_mcp
 from luna.session import run_once, run_repl
@@ -27,7 +28,7 @@ from luna.subagents import subagent_summaries
 from luna.ui.console import get_console
 from luna.ui.splash import render_splash
 
-_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents"}
+_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,8 +60,50 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_input",
         help="never prompt interactively (fail fast instead)",
     )
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="cont",
+        action="store_true",
+        help="resume the most recent session for this directory",
+    )
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="__list__",
+        default=None,
+        help="resume a past session (no value: pick from a list; or a thread id)",
+    )
     parser.add_argument("--version", action="version", version=f"luna {__version__}")
     return parser
+
+
+def _resolve_resume(args, index, workdir, console, interactive):
+    """Return a thread_id to resume, or None on error."""
+    if args.cont:
+        row = index.latest_for(workdir)
+        if row is None:
+            print("luna: no previous session for this directory", file=sys.stderr)
+            return None
+        return row.thread_id
+    if args.resume != "__list__":
+        rows = index.list(workdir)
+        if args.resume.isdigit() and 1 <= int(args.resume) <= len(rows):
+            return rows[int(args.resume) - 1].thread_id
+        return args.resume  # non-numeric: treat as a raw thread id
+    rows = index.list(workdir)
+    if not rows:
+        print("luna: no sessions recorded for this directory", file=sys.stderr)
+        return None
+    for n, r in enumerate(rows, 1):
+        console.print(f"  [{n}] {r.title}")
+    if not interactive:
+        print("luna: --resume needs a value in non-interactive mode", file=sys.stderr)
+        return None
+    choice = input("resume which? > ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(rows):
+        return rows[int(choice) - 1].thread_id
+    return choice or None
 
 
 def _overrides(args: argparse.Namespace) -> dict:
@@ -242,6 +285,28 @@ def _run_agents(argv: list[str]) -> int:
     return 0
 
 
+# --- init subcommand ------------------------------------------------------
+
+
+def _run_init(argv: list[str]) -> int:
+    """Explore the repo and write/update AGENTS.md in one agent turn."""
+    console = get_console()
+    config = load_config({})
+    try:
+        agent = build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+    except LunaConfigError as exc:
+        print(f"luna: {exc}", file=sys.stderr)
+        return 2
+    run_once(
+        agent,
+        init_prompt(config.workdir),
+        thread_id=uuid.uuid4().hex,
+        console=console,
+        workdir=config.workdir,
+    )
+    return 0
+
+
 # --- main -------------------------------------------------------------------
 
 
@@ -255,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             "mcp": _run_mcp,
             "skills": _run_skills,
             "agents": _run_agents,
+            "init": _run_init,
         }
         try:
             return handlers[raw[0]](raw[1:])
@@ -288,11 +354,38 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(_overrides(args))
         # non-interactive: fall through; build_agent raises the clean error.
 
+    from luna.gitinfo import dirty_paths
+
+    _dirty = dirty_paths(config.workdir) if interactive and not prompt else []
+    if _dirty:
+        console.print(
+            f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
+            "Luna edits files in place"
+        )
+
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
+    from luna.persistence import SessionIndex, checkpointer
+
+    index = SessionIndex()
+    cp = checkpointer()
+    session_id = uuid.uuid4().hex
+    start_thread = uuid.uuid4().hex
+
+    if args.cont or args.resume:
+        target = _resolve_resume(args, index, config.workdir, console, interactive)
+        if target is None:
+            return 2
+        start_thread = target
+
     def _rebuild():
-        return build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        return build_agent(
+            config,
+            checkpointer=cp,
+            on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
+            session_id=session_id,
+        )
 
     try:
         agent = _rebuild()
@@ -302,9 +395,27 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if prompt:
-            run_once(agent, prompt, thread_id=uuid.uuid4().hex, console=console)
+            run_once(
+                agent,
+                prompt,
+                thread_id=start_thread,
+                console=console,
+                index=index,
+                workdir=config.workdir,
+                session_id=session_id,
+                cfg=config,
+            )
             return 0
-        return run_repl(agent, console=console, rebuild=_rebuild)
+        return run_repl(
+            agent,
+            console=console,
+            rebuild=_rebuild,
+            index=index,
+            thread_id=start_thread,
+            workdir=config.workdir,
+            config=config,
+            session_id=session_id,
+        )
     except KeyboardInterrupt:
         console.print()
         return 130

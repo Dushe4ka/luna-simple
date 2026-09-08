@@ -67,9 +67,24 @@ def _load_raw(workdir: str, env: Mapping[str, str] | None) -> dict:
     return merged
 
 
-def load_subagents(workdir: str = ".", *, env: Mapping[str, str] | None = None) -> list[SubAgent]:
-    """Built-in subagents plus any defined in ``subagents.toml`` (user + project)."""
-    agents = list(BUILTIN_SUBAGENTS)
+def load_subagents(
+    workdir: str = ".",
+    *,
+    env: Mapping[str, str] | None = None,
+    fast_model: str | None = None,
+) -> list[SubAgent]:
+    """Built-in subagents plus any defined in ``subagents.toml`` (user + project).
+
+    When ``fast_model`` is set, every built-in subagent that has no explicit
+    model of its own is rebuilt to run on that cheaper/faster model.
+    """
+    agents: list[SubAgent] = []
+    for a in BUILTIN_SUBAGENTS:
+        if fast_model and "model" not in a:
+            a = _subagent(
+                a["name"], a["description"], a["system_prompt"], _READ_ONLY, model=fast_model
+            )
+        agents.append(a)
     for name, cfg in _load_raw(workdir, env).items():
         tools = cfg.get("tools")
         if tools is not None:

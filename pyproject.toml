@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "luna-simple"
-version = "0.1.0"
+version = "0.2.0"
 description = "Luna — простой лёгкий CLI-агент для кода на deepagents. Observe, Understand, Plan, Act."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,7 @@ dependencies = [
     "langgraph~=1.2",
     "rich>=13.7",
     "langchain-anthropic>=1.7",
+    "langgraph-checkpoint-sqlite>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -7,6 +7,7 @@ from typing import Literal
 from langchain_core.tools import tool
 
 from luna import mcp, skills
+from luna.memory import append_note
 from luna.providers import LunaConfigError
 from luna.registry import known_mcp, known_skills, resolve_mcp
 
@@ -65,5 +66,21 @@ def manage_skills(
         return str(exc)
 
 
-EXTENSION_TOOLS = [manage_mcp, manage_skills]
-EXTENSION_INTERRUPTS = {"manage_mcp": True, "manage_skills": True}
+@tool
+def remember(
+    kind: Literal["project", "conventions", "decisions", "failures"],
+    topic: str,
+    note: str,
+) -> str:
+    """Record a durable note in .luna/memory/<kind>.md.
+
+    Use 'failures' for dead ends ("tried X, it conflicts with Y, don't retry"),
+    'decisions' for load-bearing choices, 'conventions' for how this repo works,
+    'project' for what it is. Run /reload afterwards to load it into context.
+    """
+    path = append_note(".", kind, topic, note)
+    return f"noted in {path.as_posix()}. Run /reload to load it into context."
+
+
+EXTENSION_TOOLS = [manage_mcp, manage_skills, remember]
+EXTENSION_INTERRUPTS = {"manage_mcp": True, "manage_skills": True, "remember": True}
