@@ -389,8 +389,8 @@ def run_repl(
         before = len(session_usage.turns)
         session_usage.add_turn(turn_usage)
         if len(session_usage.turns) > before:
-            line = indicator_line(session_usage, config.provider, config.model, config.pricing)
-            console.print(f"[dim]{line}[/]")
+            indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
+            console.print(f"[dim]{indicator}[/]")
         if tool_names & _MUTATING:
             try:
                 _run_verification(agent, turn_config, console, config, input_fn, rules=rules)
