@@ -50,6 +50,17 @@ def test_fast_model_settable(isolated_config_home):
     assert load_config({}).fast_model == "anthropic:claude-haiku-4-5"
 
 
+def test_pricing_table_is_loaded(isolated_config_home):
+    from luna.config import config_dir, load_config
+
+    (config_dir()).mkdir(parents=True, exist_ok=True)
+    (config_dir() / "config.toml").write_text(
+        '[model.pricing."my-model"]\ninput = 2.0\noutput = 6.0\nwindow = 128000\n'
+    )
+    cfg = load_config({})
+    assert cfg.pricing.get("my-model") == {"input": 2.0, "output": 6.0, "window": 128000}
+
+
 def test_user_config_is_lowest_layer(tmp_path, monkeypatch):
     cfg_home = tmp_path / "xdg"
     (cfg_home / "luna").mkdir(parents=True)

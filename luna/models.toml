@@ -1,0 +1,59 @@
+["claude-opus-4"]
+window = 200000
+input  = 15.0
+output = 75.0
+
+["claude-sonnet-4"]
+window = 200000
+input  = 3.0
+output = 15.0
+
+["claude-haiku"]
+window = 200000
+input  = 0.8
+output = 4.0
+
+["gpt-5"]
+window = 400000
+input  = 1.25
+output = 10.0
+
+["gpt-4.1"]
+window = 1000000
+input  = 2.0
+output = 8.0
+
+["gpt-4o"]
+window = 128000
+input  = 2.5
+output = 10.0
+
+["o3"]
+window = 200000
+input  = 2.0
+output = 8.0
+
+["o1"]
+window = 200000
+input  = 15.0
+output = 60.0
+
+["gemini-2.5"]
+window = 1000000
+input  = 1.25
+output = 10.0
+
+["gemini-1.5"]
+window = 1000000
+input  = 1.25
+output = 5.0
+
+["deepseek"]
+window = 64000
+input  = 0.28
+output = 0.42
+
+["qwen2.5-coder"]
+window = 32000
+input  = 0.0
+output = 0.0

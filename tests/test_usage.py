@@ -43,3 +43,47 @@ def test_indicator_line_mentions_ctx_and_session():
     s.add_turn(t)
     line = indicator_line(s, "anthropic", "claude-sonnet-4-5")
     assert "ctx" in line and "session" in line
+
+
+def test_registry_window_and_price():
+    from luna.usage import context_window, price
+
+    assert context_window("anthropic", "claude-sonnet-4-5") == 200_000
+    p = price("anthropic", "claude-sonnet-4-5")
+    assert p is not None and p[0] > 0 and p[1] > 0
+
+
+def test_registry_overrides_win_over_the_packaged_file():
+    from luna.usage import context_window, price
+
+    overrides = {"my-model": {"window": 128_000, "input": 2.0, "output": 6.0}}
+    assert context_window("x", "my-model-v1", overrides) == 128_000
+    assert price("x", "my-model-v1", overrides) == (2.0, 6.0)
+
+
+def test_unknown_model_has_no_price():
+    from luna.usage import price
+
+    assert price("x", "totally-unknown-model-id") is None
+
+
+def test_session_cost_uses_totals():
+    from luna.usage import SessionUsage, TurnUsage
+
+    s = SessionUsage()
+    t = TurnUsage()
+    t.merge({"input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000})
+    s.add_turn(t)
+    cost = s.cost("anthropic", "claude-sonnet-4-5")
+    assert cost is not None and cost > 0
+
+
+def test_indicator_line_shows_cost_when_known():
+    from luna.usage import SessionUsage, TurnUsage, indicator_line
+
+    s = SessionUsage()
+    t = TurnUsage()
+    t.merge({"input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200})
+    s.add_turn(t)
+    line = indicator_line(s, "anthropic", "claude-sonnet-4-5")
+    assert "$" in line

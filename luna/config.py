@@ -51,6 +51,7 @@ class LunaConfig:
     provider: str = DEFAULT_PROVIDER
     model: str | None = None
     fast_model: str | None = None
+    pricing: dict = field(default_factory=dict)
     workdir: str = "."
     yolo: bool = False
     verify_command: str = ""
@@ -88,6 +89,8 @@ def _apply_toml(data: dict, into: dict) -> None:
         into["model"] = model["name"]
     if "fast" in model:
         into["fast_model"] = model["fast"]
+    if isinstance(model.get("pricing"), dict):
+        into["pricing"] = {k: dict(v) for k, v in model["pricing"].items() if isinstance(v, dict)}
 
     agent = data.get("agent", {})
     for key in ("yolo", "workdir", "verify_command", "temperature", "max_tokens"):
@@ -141,6 +144,7 @@ def load_config(
         provider=provider,
         model=merged.get("model"),
         fast_model=merged.get("fast_model"),
+        pricing=dict(merged.get("pricing", {})),
         workdir=str(merged.get("workdir", ".")),
         yolo=bool(merged.get("yolo", False)),
         verify_command=str(merged.get("verify_command", "")),

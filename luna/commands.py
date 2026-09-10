@@ -198,6 +198,9 @@ def _usage(ctx: CommandContext, arg: str) -> None:
     ctx.console.print(
         f"  turns: {len(session.turns)}  in: {in_tok}  out: {out_tok}  total: {total}"
     )
+    cost = session.cost(ctx.config.provider, ctx.config.model, ctx.config.pricing)
+    if cost is not None:
+        ctx.console.print(f"  cost: ${cost:.4f}")
 
 
 def _model(ctx: CommandContext, arg: str) -> DispatchResult | None:
