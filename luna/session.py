@@ -20,7 +20,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
-from luna import permissions
+from luna import fmt, gitinfo, permissions
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config import LunaConfig
@@ -226,6 +226,22 @@ def _stream_turn(
     return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen
 
 
+def _format_and_diagnose(console: Console, cfg: LunaConfig) -> str:
+    """Run the format step for files this turn changed. Returns diagnose output.
+
+    Diagnose is wired in by Task 3; this task's version always returns ``""``.
+    """
+    changed = gitinfo.dirty_paths(cfg.workdir) if gitinfo.is_git_repo(cfg.workdir) else []
+    fmt_cmd = cfg.format_command
+    if fmt_cmd == "auto":
+        fmt_cmd = fmt.detect(cfg.workdir)
+    if fmt_cmd:
+        touched = fmt.run(fmt_cmd, cfg.workdir, changed)
+        if touched:
+            console.print(f"[dim]⌁ formatted {len(touched)} file(s)[/]")
+    return ""
+
+
 def _run_verification(
     agent, turn_config: dict, console: Console, cfg, input_fn, rules=None
 ) -> None:
@@ -285,6 +301,7 @@ def run_once(
         workdir=workdir,
     )
     if cfg is not None and tool_names & _MUTATING:
+        _format_and_diagnose(console, cfg)
         _run_verification(agent, config, console, cfg, input_fn, rules=rules)
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
@@ -392,6 +409,7 @@ def run_repl(
             indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
             console.print(f"[dim]{indicator}[/]")
         if tool_names & _MUTATING:
+            _format_and_diagnose(console, config)
             try:
                 _run_verification(agent, turn_config, console, config, input_fn, rules=rules)
             except KeyboardInterrupt:
