@@ -238,12 +238,20 @@ def _run_git(workdir: str, args: list[str], env: dict | None = None) -> str | No
 
 
 def _snapshot_tree(workdir: str) -> str | None:
-    """Write the current worktree to a tree object without touching the real index."""
+    """Write the current worktree to a tree object without touching the real index.
+
+    ``git add``'s exit code is deliberately ignored here: when ``.luna`` itself is
+    gitignored (the documented default — ``/init`` adds it to the project's
+    ``.gitignore``), git exits 1 with an "ignored paths" warning even though the
+    ``:(exclude).luna/undo`` pathspec still builds the index correctly — verified
+    by inspecting the resulting tree directly. Gating on that exit code made
+    ``begin_turn`` silently stop recording turns from the moment ``.luna/`` first
+    exists on disk, in exactly the setup Luna itself recommends.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         index_file = str(Path(tmp) / "index")
         env = {**os.environ, "GIT_INDEX_FILE": index_file}
-        if _run_git(workdir, ["add", "-A", "--", ".", ":(exclude).luna/undo"], env=env) is None:
-            return None
+        _run_git(workdir, ["add", "-A", "--", ".", ":(exclude).luna/undo"], env=env)
         return _run_git(workdir, ["write-tree"], env=env)
 
 

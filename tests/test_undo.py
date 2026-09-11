@@ -655,6 +655,65 @@ def test_undo_does_not_delete_its_own_journal(tmp_path, fake_model):
     assert ledger.is_file()  # must survive the undo that just used it
 
 
+def test_begin_turn_keeps_recording_every_turn_when_luna_is_gitignored(tmp_path, fake_model):
+    """CRITICAL regression: in the documented default setup (``/init`` adds
+    ``.luna/`` to the project's ``.gitignore``), ``git add -A`` exits nonzero once
+    ``.luna/`` exists on disk ("The following paths are ignored"), even though the
+    ``:(exclude).luna/undo`` pathspec still builds a correct index. Gating
+    ``_snapshot_tree`` on that exit code made ``begin_turn`` silently stop
+    recording from the SECOND turn onward — a single ``/undo`` would then revert
+    the whole session back to turn one instead of just the last turn. This test
+    fails against the pre-fix code (only 1 ledger entry survives 3 turns; undoing
+    once jumps straight from v3 to v0 instead of v3 to v2)."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitignore").write_text(".luna/\n")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    def _write(version):
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": str(version),
+                    "args": {"file_path": "/a.txt", "content": f"v{version}\n"},
+                }
+            ],
+        )
+
+    calls = [
+        _write(1),
+        AIMessage(content="1"),
+        _write(2),
+        AIMessage(content="2"),
+        _write(3),
+        AIMessage(content="3"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    for prompt in ("turn 1", "turn 2", "turn 3"):
+        pre = agent.get_state(cfg).values.get("messages", [])
+        begin_turn(str(tmp_path), "sess1", len(pre))
+        agent.invoke({"messages": [{"role": "user", "content": prompt}]}, config=cfg)
+
+    assert (tmp_path / "a.txt").read_text() == "v3\n"
+    ledger = json.loads((tmp_path / ".luna" / "undo" / "sess1" / "turns.json").read_text())
+    assert len(ledger) == 3  # every turn must have been recorded, not just the first
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    assert (tmp_path / "a.txt").read_text() == "v2\n"  # one turn back, not all the way to v0
+
+
 def test_undo_preserves_the_ledger_when_update_state_raises(tmp_path, fake_model):
     """M4: turns.json must not be lost if agent.update_state blows up mid-undo —
     the write is deferred until after the risky work succeeds, so a failed undo

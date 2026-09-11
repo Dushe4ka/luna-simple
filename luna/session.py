@@ -272,6 +272,12 @@ def _format_and_diagnose(console: Console, cfg: LunaConfig, before: list[str] | 
     if not diag_cmd:
         return ""
     changed = _touched_now()
+    if is_repo and before_set is not None and not changed:
+        # Same guard as above: formatting can normalize a turn's edit back to
+        # exactly the committed content, making this recomputed `changed` empty
+        # even though the first check above passed — must not fall through to
+        # diagnose.run's "no paths -> whole project" convention either.
+        return ""
     text = diagnose.run(diag_cmd, cfg.workdir, changed)
     if text:
         console.print(f"[dim]{text}[/]")
@@ -333,8 +339,10 @@ def run_once(
         current_messages = agent.get_state(config).values.get("messages", [])
     except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
         current_messages = []
-    dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
     undo.begin_turn(workdir, session_id, len(current_messages))
+    # captured *after* begin_turn so its own journal writes don't register as
+    # "newly dirty" when .luna/ isn't gitignored
+    dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
     text, _, turn_usage, tool_names = _stream_turn(
         agent,
         payload,
@@ -477,12 +485,14 @@ def run_repl(
             )
 
         turn_config = {"configurable": {"thread_id": thread_id}}
-        dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
         try:
             current_messages = agent.get_state(turn_config).values.get("messages", [])
         except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
             current_messages = []
         undo.begin_turn(workdir, session_id, len(current_messages))
+        # captured *after* begin_turn so its own journal writes don't register as
+        # "newly dirty" when .luna/ isn't gitignored
+        dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
         diag_block = (
             f"<diagnostics>\n{pending_diagnostics}\n</diagnostics>\n\n"
             if pending_diagnostics
