@@ -284,3 +284,14 @@ def test_compact_empty_summary_trims_the_instruction_turn(tmp_path, fake_model):
     after = len(agent.get_state(cfg).values["messages"])
     assert after == before  # the failed-summary turn was rolled back
     assert "no summary produced" in ctx.console.file.getvalue()
+
+
+def test_plan_toggle_and_explicit_state():
+    ctx = _ctx()
+    ctx.plan_state = [False]
+    dispatch("/plan", ctx)
+    assert ctx.plan_state[0] is True
+    dispatch("/plan off", ctx)
+    assert ctx.plan_state[0] is False
+    dispatch("/plan on", ctx)
+    assert ctx.plan_state[0] is True

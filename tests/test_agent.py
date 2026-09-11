@@ -172,3 +172,47 @@ def test_memory_wired_when_luna_memory_tier_present(tmp_path, fake_model):
         {"messages": [{"role": "user", "content": "hi"}]},
         config={"configurable": {"thread_id": "mem-tier"}},
     )
+
+
+def test_plan_mode_blocks_mutating_tools(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "write_file", "id": "1", "args": {"file_path": "/a.py", "content": "x"}}
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls), plan_flag=lambda: True)
+    out = agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    blob = " ".join(getattr(m, "content", "") or "" for m in out["messages"])
+    assert "plan mode" in blob
+    assert not (tmp_path / "a.py").exists()
+
+
+def test_plan_flag_none_means_never_blocked(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "write_file", "id": "1", "args": {"file_path": "/a.py", "content": "x"}}
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))  # plan_flag defaults None
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    assert (tmp_path / "a.py").exists()

@@ -63,6 +63,7 @@ def build_agent(
     checkpointer=None,
     on_warn: Callable[[str], None] = print,
     session_id: str = "",
+    plan_flag: Callable[[], bool] | None = None,
 ):
     """Build a compiled Luna deep agent.
 
@@ -72,6 +73,8 @@ def build_agent(
         checkpointer: LangGraph checkpointer; defaults to an in-memory one.
         on_warn: sink for non-fatal warnings (e.g. an MCP server that failed).
         session_id: per-process id for the undo journal (``/diff`` and ``/undo``).
+        plan_flag: when it returns ``True``, mutating tool calls are refused
+            without rebuilding the agent (backs ``/plan``).
 
     """
     workdir = Path(config.workdir).resolve()
@@ -93,7 +96,7 @@ def build_agent(
     rules = load_rules(str(workdir))
     # One guard instance for the main agent and every subagent: shared deny rules
     # and a single per-session undo journal for all changes made this session.
-    guard = tool_guard(rules, str(workdir), session_id=session_id)
+    guard = tool_guard(rules, str(workdir), session_id=session_id, plan=plan_flag)
     skill_dirs, _servers, mcp_tools, subs = _extension_bits(
         config, on_warn, guard=guard, backend=backend
     )

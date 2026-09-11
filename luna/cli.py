@@ -377,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         start_thread = target
     session_id = start_thread  # the undo journal follows the session across --continue
+    plan_state = [False]
 
     from luna import undo
 
@@ -388,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpointer=cp,
             on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
             session_id=session_id,
+            plan_flag=lambda: plan_state[0],
         )
 
     try:
@@ -418,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             workdir=config.workdir,
             config=config,
             session_id=session_id,
+            plan_state=plan_state,
         )
     except KeyboardInterrupt:
         console.print()

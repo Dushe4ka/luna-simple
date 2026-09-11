@@ -44,6 +44,7 @@ HELP: dict[str, str] = {
     "/reload": "rebuild the agent with the current config",
     "/new": "start a fresh conversation thread",
     "/commands": "list custom slash commands",
+    "/plan": "toggle plan mode (blocks writes/execute)",
     "/clear": "clear the screen",
     "/exit": "leave Luna (also /quit, Ctrl-D)",
 }
@@ -70,6 +71,7 @@ class CommandContext:
     permissions: object | None = None  # permissions ruleset, Task 7
     input_fn: Callable[[str], str] | None = None
     user_commands: dict | None = None  # usercmd.load(workdir), Task 5
+    plan_state: list | None = None
 
 
 @dataclass
@@ -352,6 +354,18 @@ def _commands(ctx: CommandContext, arg: str) -> None:
         ctx.console.print(f"  [bold {PALETTE['peri']}]/{name}[/]  {cmd.description}")
 
 
+def _plan(ctx: CommandContext, arg: str) -> None:
+    """Toggle plan mode: /plan, /plan on, /plan off."""
+    if ctx.plan_state is None:
+        ctx.console.print("[dim]plan mode is not available here[/]")
+        return
+    if arg in ("on", "off"):
+        ctx.plan_state[0] = arg == "on"
+    else:
+        ctx.plan_state[0] = not ctx.plan_state[0]
+    ctx.console.print(f"[{PALETTE['blue']}]plan mode: {'on' if ctx.plan_state[0] else 'off'}[/]")
+
+
 _TABLE: dict[str, Callable] = {
     "/help": _help,
     "/tools": _tools,
@@ -374,6 +388,7 @@ _TABLE: dict[str, Callable] = {
     "/diagnose": _diagnose,
     "/init": _init,
     "/commands": _commands,
+    "/plan": _plan,
 }
 
 

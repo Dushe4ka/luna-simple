@@ -342,10 +342,12 @@ def run_repl(
     workdir: str = ".",
     config: LunaConfig | None = None,
     session_id: str = "",
+    plan_state: list | None = None,
 ) -> int:
     """Interactive loop. Returns a process exit code."""
     thread_id = thread_id or _new_thread_id()
     config = config or LunaConfig()
+    plan_state = plan_state if plan_state is not None else [False]
     console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
 
     session_usage = SessionUsage()
@@ -366,6 +368,7 @@ def run_repl(
         permissions=rules,
         input_fn=input_fn,
         user_commands=user_commands,
+        plan_state=plan_state,
     )
 
     if index is not None:
@@ -374,7 +377,8 @@ def run_repl(
     pending_diagnostics = ""
     while True:
         try:
-            line = input_fn("luna › ").strip()
+            prompt_label = "luna (plan) › " if plan_state[0] else "luna › "
+            line = input_fn(prompt_label).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return 0
