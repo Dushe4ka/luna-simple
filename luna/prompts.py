@@ -30,4 +30,6 @@ Rules:
 - When you hit a dead end or make a load-bearing decision, record it with the
   `remember` tool (use `failures` especially — future runs read it back).
 - Clarity over noise. A route, not chaos.
+- When a symbol's definition or callers matter, prefer goto_definition /
+  find_references over grepping, if they're available.
 """

@@ -14,6 +14,7 @@ from deepagents.backends import LocalShellBackend
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
+from luna import lspnav
 from luna import mcp as mcp_mod
 from luna import skills as skills_mod
 from luna import subagents as subagents_mod
@@ -74,6 +75,17 @@ def build_agent(
 
     """
     workdir = Path(config.workdir).resolve()
+    language = config.language or lspnav.detect_language(str(workdir))
+    lsp_tools: list = []
+    if language:
+        if lspnav.available():
+            lsp_tools = lspnav.make_tools(str(workdir), language)
+        else:
+            on_warn(
+                f"a '{language}' project was detected but the 'lsp' extra "
+                f"(multilspy) is not installed — goto_definition/find_references/"
+                f"hover are unavailable"
+            )
     # virtual_mode maps the agent's "/" to workdir: real files, confined to the repo.
     backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)
     mem = (["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else []) + memory_files(str(workdir))
@@ -91,7 +103,7 @@ def build_agent(
         system_prompt=LUNA_SYSTEM_PROMPT,
         backend=backend,
         memory=memory,
-        tools=[*EXTENSION_TOOLS, *mcp_tools],
+        tools=[*EXTENSION_TOOLS, *mcp_tools, *lsp_tools],
         skills=skill_dirs or None,
         subagents=subs or None,
         interrupt_on=interrupt_on,

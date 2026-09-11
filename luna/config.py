@@ -27,6 +27,7 @@ _SETTABLE: dict[str, str] = {
     "agent.verify_command": "str",
     "agent.format_command": "str",
     "agent.diagnose_command": "str",
+    "agent.language": "str",
     "agent.temperature": "float",
     "agent.max_tokens": "int",
     "ui.splash": "bool",
@@ -59,6 +60,7 @@ class LunaConfig:
     verify_command: str = ""
     format_command: str = "auto"
     diagnose_command: str = "auto"
+    language: str = ""
     show_splash: bool = True
     temperature: float | None = None
     max_tokens: int | None = None
@@ -103,6 +105,7 @@ def _apply_toml(data: dict, into: dict) -> None:
         "verify_command",
         "format_command",
         "diagnose_command",
+        "language",
         "temperature",
         "max_tokens",
     ):
@@ -162,6 +165,7 @@ def load_config(
         verify_command=str(merged.get("verify_command", "")),
         format_command=str(merged.get("format_command", "auto")),
         diagnose_command=str(merged.get("diagnose_command", "auto")),
+        language=str(merged.get("language", "")),
         show_splash=bool(merged.get("show_splash", True)),
         temperature=merged.get("temperature"),
         max_tokens=merged.get("max_tokens"),
