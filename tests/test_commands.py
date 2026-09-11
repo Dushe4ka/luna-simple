@@ -33,6 +33,23 @@ def test_non_command_not_handled():
     assert dispatch("hello world", _ctx()).handled is False
 
 
+def test_user_command_falls_through_to_a_prompt(tmp_path):
+    from luna.usercmd import UserCommand
+
+    ctx = _ctx(
+        workdir=str(tmp_path),
+        user_commands={"greet": UserCommand("greet", "", "hi $ARGUMENTS")},
+    )
+    res = dispatch("/greet world", ctx)
+    assert res.handled is True
+    assert res.prompt == "hi world"
+
+
+def test_unknown_command_still_reported_when_no_user_command_matches():
+    res = dispatch("/nope", _ctx())
+    assert res.prompt is None
+
+
 def test_reload_swaps_agent():
     res = dispatch("/reload", _ctx())
     assert res.agent == "rebuilt"

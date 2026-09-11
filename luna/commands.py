@@ -43,6 +43,7 @@ HELP: dict[str, str] = {
     "/provider": "show or switch the provider (/provider <key>)",
     "/reload": "rebuild the agent with the current config",
     "/new": "start a fresh conversation thread",
+    "/commands": "list custom slash commands",
     "/clear": "clear the screen",
     "/exit": "leave Luna (also /quit, Ctrl-D)",
 }
@@ -68,6 +69,7 @@ class CommandContext:
     usage: object | None = None  # usage.SessionUsage, Task 5
     permissions: object | None = None  # permissions ruleset, Task 7
     input_fn: Callable[[str], str] | None = None
+    user_commands: dict | None = None  # usercmd.load(workdir), Task 5
 
 
 @dataclass
@@ -78,6 +80,7 @@ class DispatchResult:
     agent: object | None = None
     thread_id: str | None = None
     exit: bool = False
+    prompt: str | None = None
 
 
 _TOOL_NAMES = (
@@ -339,6 +342,16 @@ def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
     return None
 
 
+def _commands(ctx: CommandContext, arg: str) -> None:
+    """List custom slash commands loaded from .luna/commands/."""
+    cmds = ctx.user_commands or {}
+    if not cmds:
+        ctx.console.print("[dim](no custom commands)[/]")
+        return
+    for name, cmd in sorted(cmds.items()):
+        ctx.console.print(f"  [bold {PALETTE['peri']}]/{name}[/]  {cmd.description}")
+
+
 _TABLE: dict[str, Callable] = {
     "/help": _help,
     "/tools": _tools,
@@ -360,6 +373,7 @@ _TABLE: dict[str, Callable] = {
     "/verify": _verify,
     "/diagnose": _diagnose,
     "/init": _init,
+    "/commands": _commands,
 }
 
 
@@ -373,6 +387,12 @@ def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
         return DispatchResult(exit=True)
     handler = _TABLE.get(name)
     if handler is None:
+        bare = name[1:]
+        if ctx.user_commands and bare in ctx.user_commands:
+            from luna.usercmd import expand
+
+            prompt = expand(ctx.user_commands[bare], arg, ctx.workdir)
+            return DispatchResult(prompt=prompt)
         ctx.console.print(f"[{PALETTE['mauve']}]unknown command {name!r}; try /help[/]")
         return DispatchResult()
     return handler(ctx, arg) or DispatchResult()

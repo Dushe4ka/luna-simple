@@ -20,7 +20,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
-from luna import diagnose, fmt, gitinfo, permissions
+from luna import diagnose, fmt, gitinfo, permissions, usercmd
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config import LunaConfig
@@ -351,6 +351,7 @@ def run_repl(
     session_usage = SessionUsage()
     pinned = PinnedFiles()
     rules = load_rules(workdir)
+    user_commands = usercmd.load(workdir)
     ctx = CommandContext(
         console=console,
         config=config,
@@ -364,6 +365,7 @@ def run_repl(
         pinned=pinned,
         permissions=rules,
         input_fn=input_fn,
+        user_commands=user_commands,
     )
 
     if index is not None:
@@ -386,11 +388,15 @@ def run_repl(
             res = dispatch(line, ctx)
             if res.exit:
                 return 0
-            if res.handled:
+            if res.prompt is not None:
+                line = res.prompt  # fall through to the normal turn-building code below
+            elif res.handled:
                 if res.agent is not None:
                     agent = res.agent
                     rules = load_rules(workdir)
                     ctx.permissions = rules
+                    user_commands = usercmd.load(workdir)
+                    ctx.user_commands = user_commands
                 if res.thread_id is not None:
                     thread_id = res.thread_id
                 continue
