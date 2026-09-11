@@ -44,3 +44,35 @@ def test_slash_help_registered():
     assert "/help" in SLASH_COMMANDS
     assert "/exit" in SLASH_COMMANDS
     assert "/tools" in SLASH_COMMANDS
+
+
+def test_at_agent_mention_is_rewritten_to_a_delegation_instruction(tmp_path, fake_model):
+    from luna.session import run_repl
+
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content="ok"))
+    )
+    seen: list[str] = []
+    real_stream = agent.stream
+
+    def _spy(payload, *a, **kw):
+        if isinstance(payload, dict):
+            msgs = payload.get("messages", [])
+            if msgs:
+                seen.append(msgs[-1]["content"])
+        yield from real_stream(payload, *a, **kw)
+
+    agent.stream = _spy
+    console = _console()
+    lines = iter(["@researcher find the entry point", "/exit"])
+    run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=True),
+        thread_id="t",
+    )
+    assert seen and "researcher" in seen[0] and "task tool" in seen[0]
+    assert "find the entry point" in seen[0]

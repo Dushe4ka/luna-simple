@@ -6,6 +6,7 @@ Together with :mod:`luna.agent` this is the only module that touches
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Callable
 
@@ -27,6 +28,7 @@ from luna.config import LunaConfig
 from luna.context import PinnedFiles, expand_mentions, render_pinned
 from luna.permissions import load_rules
 from luna.persistence import SessionIndex, make_title
+from luna.subagents import subagent_summaries
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn, tool_line
@@ -45,6 +47,9 @@ _RELOAD_MARKER = "Run /reload"
 
 #: Tool names whose use marks a turn as mutating and triggers verification.
 _MUTATING = {"write_file", "edit_file", "delete", "execute"}
+
+#: Matches a non-slash line invoking a subagent by name, e.g. ``@researcher do X``.
+_AT_AGENT_RE = re.compile(r"^@([\w-]+)\s+(.+)$", re.DOTALL)
 
 
 def _new_thread_id() -> str:
@@ -354,6 +359,7 @@ def run_repl(
     pinned = PinnedFiles()
     rules = load_rules(workdir)
     user_commands = usercmd.load(workdir)
+    subagent_names = {n for n, _ in subagent_summaries(workdir)}
     ctx = CommandContext(
         console=console,
         config=config,
@@ -401,9 +407,17 @@ def run_repl(
                     ctx.permissions = rules
                     user_commands = usercmd.load(workdir)
                     ctx.user_commands = user_commands
+                    subagent_names = {n for n, _ in subagent_summaries(workdir)}
                 if res.thread_id is not None:
                     thread_id = res.thread_id
                 continue
+
+        at_match = _AT_AGENT_RE.match(line)
+        if at_match and at_match.group(1) in subagent_names:
+            line = (
+                f"Delegate this to the '{at_match.group(1)}' subagent using the "
+                f"task tool: {at_match.group(2)}"
+            )
 
         turn_config = {"configurable": {"thread_id": thread_id}}
         diag_block = (
