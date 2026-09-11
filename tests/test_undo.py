@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import time
 
 from langchain_core.messages import AIMessage
@@ -216,3 +217,60 @@ def test_gc_never_removes_the_kept_session(tmp_path):
     os.utime(keepme, (past, past))
     gc(str(tmp_path), keep_days=7, keep="keepme")
     assert keepme.exists()  # resumed session's journal survives even when stale
+
+
+def _git(tmp_path, *args):
+    subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+
+def test_begin_turn_creates_a_shadow_ref(tmp_path):
+    from luna.undo import begin_turn
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    begin_turn(str(tmp_path), "sess1", message_count=1)
+
+    out = subprocess.run(
+        ["git", "rev-parse", "refs/luna/undo/sess1"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert out.returncode == 0 and out.stdout.strip()
+    ledger = tmp_path / ".luna" / "undo" / "sess1" / "turns.json"
+    assert ledger.is_file()
+
+
+def test_begin_turn_is_a_noop_outside_git(tmp_path):
+    from luna.undo import begin_turn
+
+    begin_turn(str(tmp_path), "sess1", message_count=1)  # must not raise
+    assert not (tmp_path / ".luna" / "undo").exists()
+
+
+def test_begin_turn_handles_an_unborn_head(tmp_path):
+    from luna.undo import begin_turn
+
+    _git(tmp_path, "init", "-q")  # no commits yet
+    begin_turn(str(tmp_path), "sess1", message_count=0)  # must not raise
+    ledger = tmp_path / ".luna" / "undo" / "sess1" / "turns.json"
+    assert ledger.is_file()
+
+
+def test_begin_turn_does_not_touch_the_users_index_or_worktree(tmp_path):
+    from luna.undo import begin_turn
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+    (tmp_path / "a.txt").write_text("staged-change\n")
+    _git(tmp_path, "add", "a.txt")  # user has a staged change
+
+    begin_turn(str(tmp_path), "sess1", message_count=1)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
+    assert "M  a.txt" in status  # still staged, untouched by the snapshot
+    assert (tmp_path / "a.txt").read_text() == "staged-change\n"  # worktree untouched

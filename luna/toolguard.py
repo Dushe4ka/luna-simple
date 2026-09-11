@@ -5,6 +5,7 @@ from __future__ import annotations
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
 
+from luna import gitinfo
 from luna.permissions import RuleSet
 from luna.undo import snapshot
 
@@ -15,10 +16,12 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
     """Build a ``wrap_tool_call`` middleware that blocks ``deny``-matched calls.
 
     Non-denied ``write_file`` / ``edit_file`` / ``delete`` calls are snapshotted
-    into the per-session undo journal before the tool runs. ``plan`` is an
-    optional ``Callable[[], bool]``; while it returns ``True``, mutating calls
-    (``write_file`` / ``edit_file`` / ``delete`` / ``execute``) are refused.
+    into the per-session undo journal before the tool runs, unless ``workdir``
+    is a git repo (then ``undo.begin_turn`` handles snapshots instead). ``plan``
+    is an optional ``Callable[[], bool]``; while it returns ``True``, mutating
+    calls (``write_file`` / ``edit_file`` / ``delete`` / ``execute``) are refused.
     """
+    use_journal = session_id and not gitinfo.is_git_repo(workdir)
 
     @wrap_tool_call
     def _guard(request, handler):
@@ -35,7 +38,7 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
                 content=f"plan mode is on — refusing to {name}. Run /plan off to make changes.",
                 tool_call_id=call.get("id", "blocked"),
             )
-        if session_id and name in _MUTATING:
+        if use_journal and name in _MUTATING:
             rel = (args.get("file_path") or args.get("path") or "").lstrip("/")
             if rel:
                 try:

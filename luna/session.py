@@ -23,7 +23,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
-from luna import diagnose, fmt, gitinfo, permissions, usercmd
+from luna import diagnose, fmt, gitinfo, permissions, undo, usercmd
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config import LunaConfig
@@ -306,6 +306,11 @@ def run_once(
     payload = {"messages": [{"role": "user", "content": prompt}]}
     rules = load_rules(workdir)
     quiet = Console(file=open(os.devnull, "w")) if output_format == "json" else console
+    try:
+        current_messages = agent.get_state(config).values.get("messages", [])
+    except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
+        current_messages = []
+    undo.begin_turn(workdir, session_id, len(current_messages))
     text, _, turn_usage, tool_names = _stream_turn(
         agent,
         payload,
@@ -448,6 +453,11 @@ def run_repl(
             )
 
         turn_config = {"configurable": {"thread_id": thread_id}}
+        try:
+            current_messages = agent.get_state(turn_config).values.get("messages", [])
+        except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
+            current_messages = []
+        undo.begin_turn(workdir, session_id, len(current_messages))
         diag_block = (
             f"<diagnostics>\n{pending_diagnostics}\n</diagnostics>\n\n"
             if pending_diagnostics

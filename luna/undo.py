@@ -5,10 +5,15 @@ from __future__ import annotations
 import contextlib
 import difflib
 import json
+import os
 import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from uuid import uuid4
+
+from luna import gitinfo
 
 
 def journal_dir(workdir: str, session_id: str) -> Path:
@@ -205,3 +210,70 @@ def gc(
     for d in to_remove:
         with contextlib.suppress(OSError):
             shutil.rmtree(d)
+
+
+def _run_git(workdir: str, args: list[str], env: dict | None = None) -> str | None:
+    """Run a git plumbing command; return stdout on success, ``None`` on failure."""
+    try:
+        proc = subprocess.run(
+            ["git", *args], cwd=workdir, capture_output=True, text=True, timeout=10, env=env
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _snapshot_tree(workdir: str) -> str | None:
+    """Write the current worktree to a tree object without touching the real index."""
+    with tempfile.TemporaryDirectory() as tmp:
+        index_file = str(Path(tmp) / "index")
+        env = {**os.environ, "GIT_INDEX_FILE": index_file}
+        if _run_git(workdir, ["add", "-A"], env=env) is None:
+            return None
+        return _run_git(workdir, ["write-tree"], env=env)
+
+
+def _git_turns_dir(workdir: str, session_id: str) -> Path:
+    path = Path(workdir) / ".luna" / "undo" / (session_id or "default")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _read_json_list(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _write_json_list(path: Path, data: list[dict]) -> None:
+    with contextlib.suppress(OSError):
+        path.write_text(json.dumps(data))
+
+
+def begin_turn(workdir: str, session_id: str, message_count: int) -> None:
+    """Snapshot the worktree into a shadow ref before a turn (git repos only).
+
+    No-op outside a git repository. Never raises.
+    """
+    if not gitinfo.is_git_repo(workdir):
+        return
+    tree = _snapshot_tree(workdir)
+    if tree is None:
+        return
+    parent = _run_git(workdir, ["rev-parse", "HEAD"])
+    commit_args = ["commit-tree", tree, "-m", "luna turn snapshot"]
+    if parent:
+        commit_args += ["-p", parent]
+    sha = _run_git(workdir, commit_args)
+    if not sha:
+        return
+    _run_git(workdir, ["update-ref", f"refs/luna/undo/{session_id or 'default'}", sha])
+    d = _git_turns_dir(workdir, session_id)
+    turns = _read_json_list(d / "turns.json")
+    turns.append({"turn": len(turns), "pre_sha": sha, "message_count": message_count})
+    _write_json_list(d / "turns.json", turns)
+    _write_json_list(d / "redo.json", [])  # a new turn clears any pending redo
