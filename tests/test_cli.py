@@ -139,6 +139,32 @@ def test_missing_key_non_interactive_is_config_error(monkeypatch, tmp_path, caps
     assert "luna setup" in capsys.readouterr().err
 
 
+def test_json_output_is_one_parseable_object(tmp_path, fake_model, monkeypatch, capsys):
+    import json
+
+    from langchain_core.messages import AIMessage
+
+    import luna.cli as cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(
+        cli,
+        "build_agent",
+        lambda *a, **k: __import__("luna.agent", fromlist=["build_agent"]).build_agent(
+            *a,
+            model=fake_model(AIMessage(content="hi")),
+            **{kk: vv for kk, vv in k.items() if kk != "model"},
+        ),
+    )
+    rc = cli.main(["--json", "hello"])
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    data = json.loads(out.splitlines()[-1])
+    assert data["text"] == "hi"
+    assert "thread_id" in data
+
+
 def test_missing_key_interactive_runs_wizard(monkeypatch, tmp_path):
     calls = {}
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

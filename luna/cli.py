@@ -74,6 +74,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="resume a past session (no value: pick from a list; or a thread id)",
     )
+    parser.add_argument(
+        "--output-format",
+        choices=["text", "json"],
+        default="text",
+        dest="output_format",
+        help="output format for a one-shot prompt",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_const",
+        const="json",
+        dest="output_format",
+        help="shorthand for --output-format json",
+    )
     parser.add_argument("--version", action="version", version=f"luna {__version__}")
     return parser
 
@@ -409,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                 workdir=config.workdir,
                 session_id=session_id,
                 cfg=config,
+                output_format=args.output_format,
             )
             return 0
         return run_repl(

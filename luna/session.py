@@ -6,6 +6,8 @@ Together with :mod:`luna.agent` this is the only module that touches
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import uuid
 from collections.abc import Callable
@@ -32,7 +34,7 @@ from luna.subagents import subagent_summaries
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn, tool_line
-from luna.usage import SessionUsage, TurnUsage, indicator_line
+from luna.usage import SessionUsage, TurnUsage, indicator_line, price
 from luna.verify import run_verify
 
 __all__ = [
@@ -296,27 +298,53 @@ def run_once(
     workdir: str = ".",
     session_id: str = "",  # accepted for API symmetry; snapshots run in the middleware
     cfg: LunaConfig | None = None,
+    output_format: str = "text",
 ) -> str:
-    """Run a single prompt and return the final assistant text."""
+    """Run a single prompt and return the final assistant text (or "" in json mode)."""
     thread_id = thread_id or _new_thread_id()
     config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": prompt}]}
     rules = load_rules(workdir)
-    text, _, _, tool_names = _stream_turn(
+    quiet = Console(file=open(os.devnull, "w")) if output_format == "json" else console
+    text, _, turn_usage, tool_names = _stream_turn(
         agent,
         payload,
         config,
-        console,
+        quiet,
         input_fn,
         rules=rules,
         workdir=workdir,
     )
     if cfg is not None and tool_names & _MUTATING:
-        _format_and_diagnose(console, cfg)
-        _run_verification(agent, config, console, cfg, input_fn, rules=rules)
+        _format_and_diagnose(quiet, cfg)
+        _run_verification(agent, config, quiet, cfg, input_fn, rules=rules)
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
         index.touch(thread_id)
+    if output_format == "json":
+        provider = cfg.provider if cfg is not None else ""
+        model = cfg.model if cfg is not None else None
+        overrides = cfg.pricing if cfg is not None else None
+        p = price(provider, model, overrides)
+        cost_usd = (
+            None
+            if p is None
+            else turn_usage.input_tokens / 1_000_000 * p[0]
+            + turn_usage.output_tokens / 1_000_000 * p[1]
+        )
+        payload_out = {
+            "text": text,
+            "tools_used": sorted(tool_names),
+            "usage": {
+                "input": turn_usage.input_tokens,
+                "output": turn_usage.output_tokens,
+                "total": turn_usage.total_tokens,
+            },
+            "cost_usd": cost_usd,
+            "thread_id": thread_id,
+        }
+        print(json.dumps(payload_out))
+        return ""
     return text
 
 
