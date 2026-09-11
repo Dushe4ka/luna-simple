@@ -33,6 +33,7 @@ HELP: dict[str, str] = {
     "/compact": "summarise and compact the conversation",
     "/diff": "show file changes made this session",
     "/undo": "revert the last file change",
+    "/redo": "re-apply the last undone turn (git only)",
     "/add": "pin files into context (/add path ...)",
     "/drop": "unpin files (/drop path ...)",
     "/context": "list pinned files",
@@ -314,6 +315,21 @@ def _diff(ctx: CommandContext, arg: str) -> None:
 
 def _undo(ctx: CommandContext, arg: str) -> None:
     """Revert the last file change made this session (confirms first)."""
+    from luna import gitinfo
+
+    if gitinfo.is_git_repo(ctx.workdir):
+        from luna.undo import undo as git_undo
+
+        if ctx.input_fn is not None:
+            answer = (
+                ctx.input_fn("undo the last turn (files + conversation)? [y/N] ").strip().lower()
+            )
+            if answer not in ("y", "yes"):
+                ctx.console.print("[dim]undo cancelled[/]")
+                return
+        note = git_undo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
+        ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
+        return
     desc = peek_last(ctx.workdir, ctx.session_id)
     if desc is None:
         ctx.console.print("[dim]nothing to undo[/]")
@@ -325,6 +341,19 @@ def _undo(ctx: CommandContext, arg: str) -> None:
             return
     note = undo_last(ctx.workdir, ctx.session_id)
     ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
+
+
+def _redo(ctx: CommandContext, arg: str) -> None:
+    """Re-apply the last undone turn (git repositories only)."""
+    from luna import gitinfo
+
+    if not gitinfo.is_git_repo(ctx.workdir):
+        ctx.console.print("[dim]redo needs a git repository[/]")
+        return
+    from luna.undo import redo as git_redo
+
+    note = git_redo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
+    ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to redo[/]")
 
 
 def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
@@ -384,6 +413,7 @@ _TABLE: dict[str, Callable] = {
     "/context": _context,
     "/diff": _diff,
     "/undo": _undo,
+    "/redo": _redo,
     "/verify": _verify,
     "/diagnose": _diagnose,
     "/init": _init,

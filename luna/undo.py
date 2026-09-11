@@ -1,4 +1,9 @@
-"""Per-session file snapshots so ``/undo`` and ``/diff`` work without git."""
+"""Per-session file snapshots so ``/undo`` and ``/diff`` work without git.
+
+``undo()``/``redo()`` accept an already-built agent and lazily import message
+classes only inside those two functions — every other function in this file
+is framework-free.
+"""
 
 from __future__ import annotations
 
@@ -277,3 +282,92 @@ def begin_turn(workdir: str, session_id: str, message_count: int) -> None:
     turns.append({"turn": len(turns), "pre_sha": sha, "message_count": message_count})
     _write_json_list(d / "turns.json", turns)
     _write_json_list(d / "redo.json", [])  # a new turn clears any pending redo
+
+
+def _message_to_dict(msg) -> dict:
+    """Serialise one BaseMessage well enough to rebuild it with a fresh id."""
+    return {
+        "type": getattr(msg, "type", "human"),
+        "content": getattr(msg, "content", ""),
+        "tool_calls": getattr(msg, "tool_calls", None),
+        "tool_call_id": getattr(msg, "tool_call_id", None),
+        "name": getattr(msg, "name", None),
+    }
+
+
+def _dict_to_message(data: dict):
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    kind = data.get("type")
+    if kind == "tool":
+        return ToolMessage(
+            content=data.get("content", ""),
+            tool_call_id=data.get("tool_call_id") or "",
+            name=data.get("name"),
+        )
+    if kind == "ai":
+        kwargs = {"content": data.get("content", "")}
+        if data.get("tool_calls"):
+            kwargs["tool_calls"] = data["tool_calls"]
+        return AIMessage(**kwargs)
+    return HumanMessage(content=data.get("content", ""))
+
+
+def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
+    """Revert the last turn's files and truncate the conversation (git path)."""
+    d = _git_turns_dir(workdir, session_id)
+    turns = _read_json_list(d / "turns.json")
+    if not turns:
+        return None
+    record = turns.pop()
+    _write_json_list(d / "turns.json", turns)
+
+    config = {"configurable": {"thread_id": thread_id}}
+    post_sha = _snapshot_tree(workdir)
+    state_messages = agent.get_state(config).values.get("messages", [])
+    added = state_messages[record["message_count"] :]
+
+    _run_git(workdir, ["checkout", record["pre_sha"], "--", "."])
+    from langchain_core.messages import RemoveMessage
+
+    if added:
+        agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in added]})
+
+    redo_stack = _read_json_list(d / "redo.json")
+    redo_stack.append(
+        {
+            "post_sha": post_sha,
+            "message_count": record["message_count"],
+            "messages": [_message_to_dict(m) for m in added],
+        }
+    )
+    _write_json_list(d / "redo.json", redo_stack)
+    return f"undid turn {record['turn']} — {len(added)} message(s), files restored"
+
+
+def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
+    """Re-apply the most recently undone turn's files and messages (git path)."""
+    d = _git_turns_dir(workdir, session_id)
+    redo_stack = _read_json_list(d / "redo.json")
+    if not redo_stack:
+        return None
+    record = redo_stack.pop()
+    _write_json_list(d / "redo.json", redo_stack)
+
+    if record.get("post_sha"):
+        _run_git(workdir, ["checkout", record["post_sha"], "--", "."])
+    config = {"configurable": {"thread_id": thread_id}}
+    rebuilt = [_dict_to_message(m) for m in record.get("messages", [])]
+    if rebuilt:
+        agent.update_state(config, {"messages": rebuilt})
+
+    turns = _read_json_list(d / "turns.json")
+    turns.append(
+        {
+            "turn": len(turns),
+            "pre_sha": record.get("post_sha", ""),
+            "message_count": record["message_count"],
+        }
+    )
+    _write_json_list(d / "turns.json", turns)
+    return "redo applied"

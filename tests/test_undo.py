@@ -274,3 +274,130 @@ def test_begin_turn_does_not_touch_the_users_index_or_worktree(tmp_path):
     ).stdout
     assert "M  a.txt" in status  # still staged, untouched by the snapshot
     assert (tmp_path / "a.txt").read_text() == "staged-change\n"  # worktree untouched
+
+
+def test_undo_restores_files_and_truncates_the_conversation(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+    assert (tmp_path / "a.txt").read_text() == "v1\n"
+    after = len(agent.get_state(cfg).values["messages"])
+    assert after > len(pre)
+
+    note = undo(str(tmp_path), "sess1", agent, thread_id)
+    assert note is not None
+    assert (tmp_path / "a.txt").read_text() == "v0\n"
+    assert len(agent.get_state(cfg).values["messages"]) == len(pre)
+
+
+def test_undo_with_no_turns_returns_none(tmp_path):
+    from luna.undo import undo
+
+    _git(tmp_path, "init", "-q")
+    assert undo(str(tmp_path), "sess-empty", agent=None, thread_id="t") is None
+
+
+def test_redo_restores_files_and_messages(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, redo, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+    after_count = len(agent.get_state(cfg).values["messages"])
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    redo(str(tmp_path), "sess1", agent, thread_id)
+
+    assert (tmp_path / "a.txt").read_text() == "v1\n"
+    assert len(agent.get_state(cfg).values["messages"]) == after_count
+
+
+def test_redo_with_nothing_to_redo_returns_none(tmp_path):
+    from luna.undo import redo
+
+    _git(tmp_path, "init", "-q")
+    assert redo(str(tmp_path), "sess-empty", agent=None, thread_id="t") is None
+
+
+def test_a_new_turn_clears_the_redo_stack(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, redo, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content="ok"))
+    )
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "turn 1"}]}, config=cfg)
+    undo(str(tmp_path), "sess1", agent, thread_id)
+
+    begin_turn(
+        str(tmp_path), "sess1", len(agent.get_state(cfg).values["messages"])
+    )  # a fresh turn begins
+
+    assert redo(str(tmp_path), "sess1", agent, thread_id) is None
