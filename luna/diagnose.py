@@ -39,7 +39,7 @@ def run(command: str, workdir: str, paths: list[str]) -> str:
         return ""
     if not executable or shutil.which(executable) is None:
         return ""
-    full = f"{command} {' '.join(paths)}" if paths else command
+    full = f"{command} {' '.join(shlex.quote(p) for p in paths)}" if paths else command
     try:
         proc = subprocess.run(
             full, shell=True, cwd=workdir, capture_output=True, text=True, timeout=_TIMEOUT

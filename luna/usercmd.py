@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from luna.config import config_dir
-from luna.context import expand_mentions
 
 _SHELL_RE = re.compile(r"!`([^`]*)`")
 _SHELL_TIMEOUT = 30
@@ -72,7 +71,14 @@ def _run_shell(match: re.Match) -> str:
 
 
 def expand(cmd: UserCommand, arg: str, workdir: str) -> str:
-    """Render a command's body: ``$ARGUMENTS``, `` !`shell` ``, then ``@file``."""
+    """Render a command's body: ``$ARGUMENTS`` substitution, then `` !`shell` `` injection.
+
+    ``@file``/``@agent`` tokens are left untouched — ``run_repl`` resolves those
+    once, after any ``@agent`` rewrite has had a chance to see the raw text, so a
+    command body starting with ``@<subagent>`` delegates cleanly instead of being
+    polluted by an unrelated file-mention lookup, and ``@file`` mentions aren't
+    expanded twice.
+    """
     text = cmd.body.replace("$ARGUMENTS", arg)
     text = _SHELL_RE.sub(_run_shell, text)
-    return expand_mentions(text, workdir).strip()
+    return text.strip()

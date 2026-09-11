@@ -62,9 +62,11 @@ def test_expand_runs_shell_injection(tmp_path):
     assert "hi" in expand(cmd, "", str(tmp_path))
 
 
-def test_expand_expands_file_mentions(tmp_path):
+def test_expand_leaves_file_mentions_for_the_caller(tmp_path):
+    """@file/@agent resolution is the caller's job (run_repl), not usercmd.expand's —
+    see the M2 fix in the final whole-branch review: expanding mentions here would
+    corrupt an @agent-prefixed command body before run_repl's @agent check ever runs."""
     from luna.usercmd import UserCommand, expand
 
-    (tmp_path / "f.py").write_text("CONTENT\n")
     cmd = UserCommand(name="x", description="", body="look at @f.py")
-    assert "CONTENT" in expand(cmd, "", str(tmp_path))
+    assert expand(cmd, "", str(tmp_path)) == "look at @f.py"

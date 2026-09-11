@@ -29,3 +29,16 @@ def test_run_with_empty_command_is_a_noop(tmp_path):
     from luna.fmt import run
 
     assert run("", str(tmp_path), ["a.txt"]) == []
+
+
+def test_run_does_not_execute_shell_metacharacters_in_a_path(tmp_path):
+    from luna.fmt import run
+
+    marker = tmp_path / "PWNED"
+    evil_path = f"x$(touch {marker}).py"
+    # a formatter command that would just no-op on a nonexistent file — the point
+    # is that shlex.quote must prevent the shell from ever seeing "$(...)" as a
+    # command substitution
+    cmd = f'{sys.executable} -c "import sys; sys.exit(0)"'
+    run(cmd, str(tmp_path), [evil_path])
+    assert not marker.exists()

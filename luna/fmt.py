@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,7 +36,7 @@ def run(command: str, workdir: str, paths: list[str]) -> list[str]:
     """
     if not command.strip():
         return []
-    full = f"{command} {' '.join(paths)}" if paths else command
+    full = f"{command} {' '.join(shlex.quote(p) for p in paths)}" if paths else command
     try:
         result = subprocess.run(
             full, shell=True, cwd=workdir, capture_output=True, text=True, timeout=_TIMEOUT

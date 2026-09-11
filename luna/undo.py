@@ -88,7 +88,7 @@ def session_diff(workdir: str, session_id: str) -> str:
         if not turns:
             return ""
         earliest_sha = turns[0]["pre_sha"]
-        out = _run_git(workdir, ["diff", earliest_sha, "--", "."])
+        out = _run_git(workdir, ["diff", earliest_sha, "--", ".", ":(exclude).luna"])
         return out or ""
     earliest: dict[str, tuple[str | None, bool]] = {}
     for entry in _entries(workdir, session_id):
@@ -242,7 +242,7 @@ def _snapshot_tree(workdir: str) -> str | None:
     with tempfile.TemporaryDirectory() as tmp:
         index_file = str(Path(tmp) / "index")
         env = {**os.environ, "GIT_INDEX_FILE": index_file}
-        if _run_git(workdir, ["add", "-A"], env=env) is None:
+        if _run_git(workdir, ["add", "-A", "--", ".", ":(exclude).luna"], env=env) is None:
             return None
         return _run_git(workdir, ["write-tree"], env=env)
 
@@ -293,9 +293,28 @@ def begin_turn(workdir: str, session_id: str, message_count: int) -> None:
     _write_json_list(d / "redo.json", [])  # a new turn clears any pending redo
 
 
+def forget_messages(workdir: str, session_id: str, message_count: int) -> None:
+    """Resync the git-path ledger after the conversation itself was rewritten.
+
+    (e.g. by ``/compact``), so a later ``undo()`` doesn't try to remove messages
+    that no longer exist. Files stay revertible; only the pending message-removal
+    for the most recent turn is reset to match the truncated conversation. No-op
+    outside a git repository or when there's no turn on record. Never raises.
+    """
+    if not gitinfo.is_git_repo(workdir):
+        return
+    d = _git_turns_dir(workdir, session_id)
+    turns = _read_json_list(d / "turns.json")
+    if turns:
+        turns[-1]["message_count"] = message_count
+        _write_json_list(d / "turns.json", turns)
+    _write_json_list(d / "redo.json", [])
+
+
 def _message_to_dict(msg) -> dict:
-    """Serialise one BaseMessage well enough to rebuild it with a fresh id."""
+    """Serialise one BaseMessage well enough to rebuild it with the same id."""
     return {
+        "id": getattr(msg, "id", None),
         "type": getattr(msg, "type", "human"),
         "content": getattr(msg, "content", ""),
         "tool_calls": getattr(msg, "tool_calls", None),
@@ -307,24 +326,28 @@ def _message_to_dict(msg) -> dict:
 def _dict_to_message(data: dict):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+    msg_id = data.get("id") or uuid4().hex
     kind = data.get("type")
     if kind == "tool":
         return ToolMessage(
+            id=msg_id,
             content=data.get("content", ""),
             tool_call_id=data.get("tool_call_id") or "",
             name=data.get("name"),
         )
     if kind == "ai":
-        kwargs = {"content": data.get("content", "")}
+        kwargs = {"id": msg_id, "content": data.get("content", "")}
         if data.get("tool_calls"):
             kwargs["tool_calls"] = data["tool_calls"]
         return AIMessage(**kwargs)
-    return HumanMessage(content=data.get("content", ""))
+    return HumanMessage(id=msg_id, content=data.get("content", ""))
 
 
 def _added_paths(workdir: str, old: str, new: str) -> list[str]:
     """Paths present in ``new`` but not in ``old`` (a checkout from new->old won't delete them)."""
-    out = _run_git(workdir, ["diff", "--name-only", "--diff-filter=A", old, new])
+    out = _run_git(
+        workdir, ["diff", "--name-only", "--diff-filter=A", old, new, "--", ".", ":(exclude).luna"]
+    )
     return [p for p in (out or "").splitlines() if p.strip()]
 
 
@@ -342,23 +365,33 @@ def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     turns = _read_json_list(d / "turns.json")
     if not turns:
         return None
-    record = turns.pop()
-    _write_json_list(d / "turns.json", turns)
+    record = turns[-1]
 
     config = {"configurable": {"thread_id": thread_id}}
     post_sha = _snapshot_tree(workdir)
-    state_messages = agent.get_state(config).values.get("messages", [])
+    try:
+        state_messages = agent.get_state(config).values.get("messages", [])
+    except Exception:  # noqa: BLE001 - a stub/broken agent must not corrupt the ledger
+        state_messages = []
     added = state_messages[record["message_count"] :]
 
-    _run_git(workdir, ["checkout", record["pre_sha"], "--", "."])
+    _run_git(
+        workdir,
+        ["restore", "--source", record["pre_sha"], "--worktree", "--", ".", ":(exclude).luna"],
+    )
     if post_sha:
-        # A checkout only restores content for paths present in pre_sha's tree —
+        # A restore only rewrites content for paths present in pre_sha's tree —
         # it never deletes a file the turn created, which has no counterpart there.
         _unlink_stragglers(workdir, _added_paths(workdir, record["pre_sha"], post_sha))
+
     from langchain_core.messages import RemoveMessage
 
-    if added:
-        agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in added]})
+    removable = [m for m in added if getattr(m, "id", None)]
+    if removable:
+        agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in removable]})
+
+    turns.pop()
+    _write_json_list(d / "turns.json", turns)
 
     redo_stack = _read_json_list(d / "redo.json")
     redo_stack.append(
@@ -370,7 +403,10 @@ def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
         }
     )
     _write_json_list(d / "redo.json", redo_stack)
-    return f"undid turn {record['turn']} — {len(added)} message(s), files restored"
+    note = f"undid turn {record['turn']} — {len(added)} message(s), files restored"
+    if len(removable) != len(added):
+        note += f" ({len(added) - len(removable)} message(s) could not be removed)"
+    return note
 
 
 def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
@@ -379,14 +415,16 @@ def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     redo_stack = _read_json_list(d / "redo.json")
     if not redo_stack:
         return None
-    record = redo_stack.pop()
-    _write_json_list(d / "redo.json", redo_stack)
+    record = redo_stack[-1]
 
     if record.get("post_sha"):
-        _run_git(workdir, ["checkout", record["post_sha"], "--", "."])
+        _run_git(
+            workdir,
+            ["restore", "--source", record["post_sha"], "--worktree", "--", ".", ":(exclude).luna"],
+        )
         if record.get("pre_sha"):
             # The mirror case: a file the turn deleted is still sitting on disk
-            # from pre_sha's state — a checkout to post_sha won't remove it.
+            # from pre_sha's state — a restore to post_sha won't remove it.
             _unlink_stragglers(
                 workdir, _added_paths(workdir, record["post_sha"], record["pre_sha"])
             )
@@ -394,6 +432,9 @@ def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     rebuilt = [_dict_to_message(m) for m in record.get("messages", [])]
     if rebuilt:
         agent.update_state(config, {"messages": rebuilt})
+
+    redo_stack.pop()
+    _write_json_list(d / "redo.json", redo_stack)
 
     turns = _read_json_list(d / "turns.json")
     turns.append(

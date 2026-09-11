@@ -558,6 +558,220 @@ def test_session_diff_uses_git_when_available(tmp_path, fake_model):
     assert "v0" in diff and "v1" in diff
 
 
+def test_undo_redo_undo_leaves_the_thread_usable(tmp_path, fake_model):
+    """The message-side mirror of test_undo_redo_undo_reverts_files_the_second_time:
+    after undo -> redo -> undo, the thread's message list must be genuinely restorable
+    (no leftover un-removable RemoveMessage), and a NEXT turn against the agent must
+    actually succeed rather than raising "Unknown BaseMessage type"."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, redo, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+        AIMessage(content="ok, second turn worked"),  # the turn AFTER the second undo
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    redo(str(tmp_path), "sess1", agent, thread_id)
+    undo(str(tmp_path), "sess1", agent, thread_id)
+
+    messages_after = agent.get_state(cfg).values["messages"]
+    assert all(getattr(m, "type", "") != "remove" for m in messages_after)
+    # every message in the thread must have carried a real id through the
+    # dict -> message round-trip, not None (which RemoveMessage(id=m.id) can't match)
+    assert all(getattr(m, "id", None) for m in messages_after)
+
+    # the thread must still be usable for a real turn
+    out = agent.invoke({"messages": [{"role": "user", "content": "one more"}]}, config=cfg)
+    assert "worked" in (out["messages"][-1].content or "")
+
+
+def test_undo_does_not_delete_its_own_journal(tmp_path, fake_model):
+    """The FIRST /undo of a session, in a repo with no .gitignore entry for .luna/,
+    must not delete turns.json/redo.json (they're created by begin_turn AFTER pre_sha
+    is captured, so without a .luna exclusion they look like turn-created files)."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+    # deliberately NO .gitignore for .luna/, unlike this repo's own
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))  # first turn of the session
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+
+    ledger = tmp_path / ".luna" / "undo" / "sess1" / "turns.json"
+    assert ledger.is_file()  # sanity: it exists before undo
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+
+    assert ledger.is_file()  # must survive the undo that just used it
+
+
+def test_undo_does_not_touch_the_users_real_index(tmp_path, fake_model):
+    """Regression for M1: undo() must write to the worktree only (git restore
+    --worktree), not the real git index (which `git checkout` also updates) —
+    matching begin_turn's own isolated-snapshot design intent, proven for
+    begin_turn by test_begin_turn_does_not_touch_the_users_index_or_worktree.
+
+    undo() intentionally rewrites the whole *worktree* back to the turn's
+    pre_sha snapshot (that's its job), so an unrelated file the user later
+    staged also gets its worktree content reverted. What must NOT happen is
+    the real git INDEX being rewritten too — the user's staged content for
+    that file must survive in the index, exactly as `git status --porcelain`
+    reports it ("MM": staged-vs-HEAD differs, worktree-vs-index also differs)
+    rather than "M " (worktree matches the reverted index, the old `checkout`
+    behavior)."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    (tmp_path / "b.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+
+    # user has an unrelated staged change of their own, made after the turn
+    (tmp_path / "b.txt").write_text("staged-change\n")
+    _git(tmp_path, "add", "b.txt")
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+
+    # the real INDEX must still hold the user's staged content for b.txt —
+    # `git show :b.txt` reads the index blob directly, bypassing the worktree
+    indexed = subprocess.run(
+        ["git", "show", ":b.txt"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
+    assert indexed == "staged-change\n"  # index untouched by undo
+    assert (tmp_path / "a.txt").read_text() == "v0\n"  # the actual undo still happened
+
+
+def test_compact_then_undo_does_not_try_to_remove_the_summary(tmp_path, fake_model):
+    """After /compact truncates the conversation, undo()'s stale message_count must
+    not make it try to remove messages that no longer exist (the M3 fix)."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.session import compact_thread
+    from luna.undo import begin_turn, forget_messages, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+        AIMessage(content="SUMMARY: did stuff"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+    assert (tmp_path / "a.txt").read_text() == "v1\n"
+
+    import io
+
+    from rich.console import Console
+
+    compact_thread(agent, thread_id, Console(file=io.StringIO()))
+    post_compact_count = len(agent.get_state(cfg).values["messages"])
+    forget_messages(str(tmp_path), "sess1", post_compact_count)
+
+    note = undo(str(tmp_path), "sess1", agent, thread_id)
+    assert note is not None
+    assert (tmp_path / "a.txt").read_text() == "v0\n"  # the file revert still worked
+    messages_after = agent.get_state(cfg).values["messages"]
+    assert all(getattr(m, "type", "") != "remove" for m in messages_after)
+    # forget_messages reset the pending removal to 0 added messages, so the
+    # compact summary itself must have survived, untouched
+    assert any("SUMMARY" in (getattr(m, "content", "") or "") for m in messages_after)
+
+
 def test_gc_removes_the_shadow_ref_too(tmp_path):
     import os
     import time

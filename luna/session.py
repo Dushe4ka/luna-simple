@@ -92,7 +92,7 @@ def compact_thread(agent, thread_id: str, console: Console) -> None:
         {
             "messages": [
                 RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                HumanMessage(content="[compacted] Handoff note:\n" + summary),
+                HumanMessage(id=uuid.uuid4().hex, content="[compacted] Handoff note:\n" + summary),
             ]
         },
     )
@@ -233,9 +233,24 @@ def _stream_turn(
     return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen
 
 
-def _format_and_diagnose(console: Console, cfg: LunaConfig) -> str:
-    """Format then diagnose the files this turn changed. Returns diagnose text."""
-    changed = gitinfo.dirty_paths(cfg.workdir) if gitinfo.is_git_repo(cfg.workdir) else []
+def _format_and_diagnose(console: Console, cfg: LunaConfig, before: list[str] | None = None) -> str:
+    """Format then diagnose the files this turn changed. Returns diagnose text.
+
+    ``before`` is the ``dirty_paths`` snapshot captured before the turn ran; only
+    paths that became newly dirty during the turn are passed to the format/
+    diagnose commands, so a file the user had already changed before this turn
+    started is left alone. ``None`` falls back to the old whole-repo behavior
+    (used only by direct callers/tests that don't have a "before" snapshot).
+    """
+    before_set = set(before) if before is not None else None
+
+    def _touched_now() -> list[str]:
+        if not gitinfo.is_git_repo(cfg.workdir):
+            return []
+        current = gitinfo.dirty_paths(cfg.workdir)
+        return current if before_set is None else [p for p in current if p not in before_set]
+
+    changed = _touched_now()
     fmt_cmd = cfg.format_command
     if fmt_cmd == "auto":
         fmt_cmd = fmt.detect(cfg.workdir)
@@ -248,7 +263,7 @@ def _format_and_diagnose(console: Console, cfg: LunaConfig) -> str:
         diag_cmd = diagnose.detect(cfg.workdir)
     if not diag_cmd:
         return ""
-    changed = gitinfo.dirty_paths(cfg.workdir) if gitinfo.is_git_repo(cfg.workdir) else changed
+    changed = _touched_now()
     text = diagnose.run(diag_cmd, cfg.workdir, changed)
     if text:
         console.print(f"[dim]{text}[/]")
@@ -311,6 +326,7 @@ def run_once(
     except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
         current_messages = []
     undo.begin_turn(workdir, session_id, len(current_messages))
+    dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
     text, _, turn_usage, tool_names = _stream_turn(
         agent,
         payload,
@@ -321,7 +337,7 @@ def run_once(
         workdir=workdir,
     )
     if cfg is not None and tool_names & _MUTATING:
-        _format_and_diagnose(quiet, cfg)
+        _format_and_diagnose(quiet, cfg, before=dirty_before_turn)
         _run_verification(agent, config, quiet, cfg, input_fn, rules=rules)
     if index is not None:
         index.record(thread_id, workdir, make_title(prompt))
@@ -453,6 +469,7 @@ def run_repl(
             )
 
         turn_config = {"configurable": {"thread_id": thread_id}}
+        dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
         try:
             current_messages = agent.get_state(turn_config).values.get("messages", [])
         except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
@@ -484,7 +501,7 @@ def run_repl(
             indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
             console.print(f"[dim]{indicator}[/]")
         if tool_names & _MUTATING:
-            pending_diagnostics = _format_and_diagnose(console, config)
+            pending_diagnostics = _format_and_diagnose(console, config, before=dirty_before_turn)
             try:
                 _run_verification(agent, turn_config, console, config, input_fn, rules=rules)
             except KeyboardInterrupt:

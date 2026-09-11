@@ -256,12 +256,20 @@ def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
 
 def _compact(ctx: CommandContext, arg: str) -> DispatchResult | None:
     """Summarise the conversation and replace its history in place."""
+    from luna import undo
     from luna.session import compact_thread  # lazy: session imports commands
 
     try:
         compact_thread(ctx.agent, ctx.thread_id, ctx.console)
     except Exception as exc:  # noqa: BLE001 - a failed compact must not kill the REPL
         ctx.console.print(f"[{PALETTE['mauve']}]/compact failed: {exc}[/]")
+    else:
+        try:
+            config = {"configurable": {"thread_id": ctx.thread_id}}
+            count = len(ctx.agent.get_state(config).values.get("messages", []))
+        except Exception:  # noqa: BLE001 - best-effort ledger resync
+            count = 0
+        undo.forget_messages(ctx.workdir, ctx.session_id, count)
     if ctx.index is not None:
         ctx.index.touch(ctx.thread_id)
     return None
@@ -317,43 +325,53 @@ def _undo(ctx: CommandContext, arg: str) -> None:
     """Revert the last file change made this session (confirms first)."""
     from luna import gitinfo
 
-    if gitinfo.is_git_repo(ctx.workdir):
-        from luna.undo import undo as git_undo
+    try:
+        if gitinfo.is_git_repo(ctx.workdir):
+            from luna.undo import undo as git_undo
 
-        if ctx.input_fn is not None:
-            answer = (
-                ctx.input_fn("undo the last turn (files + conversation)? [y/N] ").strip().lower()
+            if ctx.input_fn is not None:
+                answer = (
+                    ctx.input_fn("undo the last turn (files + conversation)? [y/N] ")
+                    .strip()
+                    .lower()
+                )
+                if answer not in ("y", "yes"):
+                    ctx.console.print("[dim]undo cancelled[/]")
+                    return
+            note = git_undo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
+            ctx.console.print(
+                f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]"
             )
+            return
+        desc = peek_last(ctx.workdir, ctx.session_id)
+        if desc is None:
+            ctx.console.print("[dim]nothing to undo[/]")
+            return
+        if ctx.input_fn is not None:
+            answer = ctx.input_fn(f"{desc}? [y/N] ").strip().lower()
             if answer not in ("y", "yes"):
                 ctx.console.print("[dim]undo cancelled[/]")
                 return
-        note = git_undo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
+        note = undo_last(ctx.workdir, ctx.session_id)
         ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
-        return
-    desc = peek_last(ctx.workdir, ctx.session_id)
-    if desc is None:
-        ctx.console.print("[dim]nothing to undo[/]")
-        return
-    if ctx.input_fn is not None:
-        answer = ctx.input_fn(f"{desc}? [y/N] ").strip().lower()
-        if answer not in ("y", "yes"):
-            ctx.console.print("[dim]undo cancelled[/]")
-            return
-    note = undo_last(ctx.workdir, ctx.session_id)
-    ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to undo[/]")
+    except Exception as exc:  # noqa: BLE001 - a failed undo must not kill the REPL
+        ctx.console.print(f"[{PALETTE['mauve']}]/undo failed: {exc}[/]")
 
 
 def _redo(ctx: CommandContext, arg: str) -> None:
     """Re-apply the last undone turn (git repositories only)."""
     from luna import gitinfo
 
-    if not gitinfo.is_git_repo(ctx.workdir):
-        ctx.console.print("[dim]redo needs a git repository[/]")
-        return
-    from luna.undo import redo as git_redo
+    try:
+        if not gitinfo.is_git_repo(ctx.workdir):
+            ctx.console.print("[dim]redo needs a git repository[/]")
+            return
+        from luna.undo import redo as git_redo
 
-    note = git_redo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
-    ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to redo[/]")
+        note = git_redo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
+        ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to redo[/]")
+    except Exception as exc:  # noqa: BLE001 - a failed redo must not kill the REPL
+        ctx.console.print(f"[{PALETTE['mauve']}]/redo failed: {exc}[/]")
 
 
 def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
