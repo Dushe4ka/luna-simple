@@ -313,6 +313,20 @@ def _dict_to_message(data: dict):
     return HumanMessage(content=data.get("content", ""))
 
 
+def _added_paths(workdir: str, old: str, new: str) -> list[str]:
+    """Paths present in ``new`` but not in ``old`` (a checkout from new->old won't delete them)."""
+    out = _run_git(workdir, ["diff", "--name-only", "--diff-filter=A", old, new])
+    return [p for p in (out or "").splitlines() if p.strip()]
+
+
+def _unlink_stragglers(workdir: str, paths: list[str]) -> None:
+    for p in paths:
+        target = Path(workdir) / p
+        if target.is_file():
+            with contextlib.suppress(OSError):
+                target.unlink()
+
+
 def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     """Revert the last turn's files and truncate the conversation (git path)."""
     d = _git_turns_dir(workdir, session_id)
@@ -328,6 +342,10 @@ def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     added = state_messages[record["message_count"] :]
 
     _run_git(workdir, ["checkout", record["pre_sha"], "--", "."])
+    if post_sha:
+        # A checkout only restores content for paths present in pre_sha's tree —
+        # it never deletes a file the turn created, which has no counterpart there.
+        _unlink_stragglers(workdir, _added_paths(workdir, record["pre_sha"], post_sha))
     from langchain_core.messages import RemoveMessage
 
     if added:
@@ -337,6 +355,7 @@ def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     redo_stack.append(
         {
             "post_sha": post_sha,
+            "pre_sha": record["pre_sha"],  # retained for a future redo -> undo
             "message_count": record["message_count"],
             "messages": [_message_to_dict(m) for m in added],
         }
@@ -356,6 +375,12 @@ def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
 
     if record.get("post_sha"):
         _run_git(workdir, ["checkout", record["post_sha"], "--", "."])
+        if record.get("pre_sha"):
+            # The mirror case: a file the turn deleted is still sitting on disk
+            # from pre_sha's state — a checkout to post_sha won't remove it.
+            _unlink_stragglers(
+                workdir, _added_paths(workdir, record["post_sha"], record["pre_sha"])
+            )
     config = {"configurable": {"thread_id": thread_id}}
     rebuilt = [_dict_to_message(m) for m in record.get("messages", [])]
     if rebuilt:
@@ -365,7 +390,7 @@ def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     turns.append(
         {
             "turn": len(turns),
-            "pre_sha": record.get("post_sha", ""),
+            "pre_sha": record.get("pre_sha", ""),
             "message_count": record["message_count"],
         }
     )

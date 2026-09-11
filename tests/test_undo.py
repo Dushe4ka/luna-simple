@@ -401,3 +401,123 @@ def test_a_new_turn_clears_the_redo_stack(tmp_path, fake_model):
     )  # a fresh turn begins
 
     assert redo(str(tmp_path), "sess1", agent, thread_id) is None
+
+
+def test_undo_redo_undo_reverts_files_the_second_time(tmp_path, fake_model):
+    """Regression: redo() must preserve the original pre_sha for a later undo()."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, redo, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+    assert (tmp_path / "a.txt").read_text() == "v1\n"
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    assert (tmp_path / "a.txt").read_text() == "v0\n"
+
+    redo(str(tmp_path), "sess1", agent, thread_id)
+    assert (tmp_path / "a.txt").read_text() == "v1\n"
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    assert (tmp_path / "a.txt").read_text() == "v0\n"  # second undo must revert again
+
+
+def test_undo_deletes_a_file_the_turn_created(tmp_path, fake_model):
+    """Regression: `git checkout` never deletes a path absent from pre_sha's tree."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/new.txt", "content": "hi\n"},
+                }
+            ],
+        ),
+        AIMessage(content="created new.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "make new.txt"}]}, config=cfg)
+    assert (tmp_path / "new.txt").read_text() == "hi\n"
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    assert not (tmp_path / "new.txt").exists()
+
+
+def test_redo_deletes_a_file_the_turn_deleted(tmp_path, fake_model):
+    """Regression: the mirror case — redo() re-applying a deletion `git checkout` can't undo."""
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, redo, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "delete", "id": "1", "args": {"file_path": "/a.txt"}}],
+        ),
+        AIMessage(content="deleted a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "delete a.txt"}]}, config=cfg)
+    assert not (tmp_path / "a.txt").exists()
+
+    undo(str(tmp_path), "sess1", agent, thread_id)
+    assert (tmp_path / "a.txt").read_text() == "v0\n"  # deletion undone, file restored
+
+    redo(str(tmp_path), "sess1", agent, thread_id)
+    assert not (tmp_path / "a.txt").exists()  # deletion re-applied
