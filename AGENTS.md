@@ -26,10 +26,17 @@
 - `luna/context.py` — `@file` + закреплённые файлы
 - `luna/permissions.py` — правила allow/deny
 - `luna/toolguard.py` — middleware: deny + снапшоты
-- `luna/undo.py` — журнал снапшотов, `/diff` `/undo`
+- `luna/undo.py` — журнал снапшотов, `/diff` `/undo` `/redo` (в git — снапшоты
+  дерева + разговора через `git commit-tree`, вне git — файловый журнал)
 - `luna/gitinfo.py` — проверка git-дерева
 - `luna/memory.py` — `.luna/memory/*.md`
 - `luna/verify.py` — verify-команда
+- `luna/fmt.py` — автоформатирование тронутых файлов после правок
+- `luna/diagnose.py` — диагностика после правок, `/diagnose`
+- `luna/lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
+  `hover`), extra `luna-simple[lsp]`
+- `luna/usercmd.py` — пользовательские slash-команды из `.luna/commands/*.md`
+- `luna/models.toml` — реестр моделей: окно контекста, цена input/output
 - `luna/initgen.py` — `luna init`
 - `luna/registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)
 - `luna/mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов
@@ -43,7 +50,10 @@
 
 - Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
 - Все импорты `deepagents` / `langgraph` держать внутри `luna/agent.py`,
-  `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`.
+  `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`. Единственное
+  исключение — `luna/undo.py`: `undo()`/`redo()` принимают уже собранного
+  агента параметром и лениво импортируют `langchain_core.messages` только
+  внутри этих двух функций, остальной модуль framework-free.
 - ID моделей — в `luna/providers.py` или конфиге, никогда в логике агента.
 - Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
 - `subagents.toml` получил ключ `unsafe` — opt-in для мутирующих инструментов
