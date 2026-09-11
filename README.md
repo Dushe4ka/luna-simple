@@ -188,14 +188,9 @@ luna agents list              # встроенные: researcher, reviewer
   момент.
 
 Инструменты агента `goto_definition` / `find_references` / `hover` дают
-LSP-навигацию по символам вместо grep — нужен extra `lsp`:
-
-```bash
-uv pip install "luna-simple[lsp]"
-```
-
-Без него эти три инструмента просто недоступны, остальная работа Luna не
-страдает.
+LSP-навигацию по символам вместо grep. Нужен `uv pip install
+"luna-simple[lsp]"` — без него эти три инструмента просто недоступны,
+остальная работа Luna не страдает.
 
 ### Кастомные slash-команды
 

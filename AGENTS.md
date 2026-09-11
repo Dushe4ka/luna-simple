@@ -50,8 +50,10 @@
 
 - Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
 - Все импорты `deepagents` / `langgraph` держать внутри `luna/agent.py`,
-  `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`. Единственное
-  исключение — `luna/undo.py`: `undo()`/`redo()` принимают уже собранного
+  `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`. Известные
+  исключения: `luna/subagents.py` держит модульные импорты `SubAgent` /
+  `FilesystemMiddleware` из `deepagents` (нужны для сборки декларативных
+  субагентов); `luna/undo.py` — `undo()`/`redo()` принимают уже собранного
   агента параметром и лениво импортируют `langchain_core.messages` только
   внутри этих двух функций, остальной модуль framework-free.
 - ID моделей — в `luna/providers.py` или конфиге, никогда в логике агента.
