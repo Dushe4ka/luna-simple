@@ -521,3 +521,64 @@ def test_redo_deletes_a_file_the_turn_deleted(tmp_path, fake_model):
 
     redo(str(tmp_path), "sess1", agent, thread_id)
     assert not (tmp_path / "a.txt").exists()  # deletion re-applied
+
+
+def test_session_diff_uses_git_when_available(tmp_path, fake_model):
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, session_diff
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    cfg = {"configurable": {"thread_id": "t"}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+
+    diff = session_diff(str(tmp_path), "sess1")
+    assert "v0" in diff and "v1" in diff
+
+
+def test_gc_removes_the_shadow_ref_too(tmp_path):
+    import os
+    import time
+
+    from luna.undo import begin_turn, gc
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+    begin_turn(str(tmp_path), "old", message_count=0)
+
+    old_dir = tmp_path / ".luna" / "undo" / "old"
+    past = time.time() - 40 * 86400
+    for f in old_dir.glob("*.json"):
+        os.utime(f, (past, past))
+    os.utime(old_dir, (past, past))
+
+    gc(str(tmp_path), keep_days=7)
+
+    ref = subprocess.run(
+        ["git", "rev-parse", "refs/luna/undo/old"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert ref.returncode != 0  # the ref is gone

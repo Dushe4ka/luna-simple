@@ -81,7 +81,15 @@ def snapshot(workdir: str, session_id: str, tool: str, rel_path: str) -> None:
 
 
 def session_diff(workdir: str, session_id: str) -> str:
-    """Unified diff from each path's earliest pre-image to its current state."""
+    """Unified diff for this session: git tree diff, or the file-journal fallback."""
+    if gitinfo.is_git_repo(workdir):
+        d = _git_turns_dir(workdir, session_id)
+        turns = _read_json_list(d / "turns.json")
+        if not turns:
+            return ""
+        earliest_sha = turns[0]["pre_sha"]
+        out = _run_git(workdir, ["diff", earliest_sha, "--", "."])
+        return out or ""
     earliest: dict[str, tuple[str | None, bool]] = {}
     for entry in _entries(workdir, session_id):
         try:
@@ -215,6 +223,7 @@ def gc(
     for d in to_remove:
         with contextlib.suppress(OSError):
             shutil.rmtree(d)
+        _run_git(workdir, ["update-ref", "-d", f"refs/luna/undo/{d.name}"])
 
 
 def _run_git(workdir: str, args: list[str], env: dict | None = None) -> str | None:
