@@ -307,3 +307,77 @@ def test_format_only_touches_files_the_turn_actually_changed(tmp_path, fake_mode
     touched = seen_paths[0]
     assert "b.txt" in touched
     assert "a.txt" not in touched  # pre-existing dirty file was left alone
+
+
+def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_dirty_files(
+    tmp_path, fake_model, monkeypatch
+):
+    """Regression for NEW-1 (round 2 of the final review): when a turn's ONLY file
+    changes are to files that were already dirty before the turn started, the
+    scoped `changed` list comes out empty. fmt.run/diagnose.run both treat an
+    empty `paths` list as "run over the whole project" (that convention exists for
+    the non-git / before=None callers). Before the fix, the scoped (git,
+    before-is-not-None) path fell into that same whole-project branch whenever
+    `changed` came out empty — exactly backwards from M5's intent. The formatter
+    must not run at all in this case, not run bare over the whole repo.
+    """
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    _git("init", "-q")
+    # .luna/ (the undo journal begin_turn writes) must not itself count as
+    # "newly dirty" for this test — mirrors this project's own .gitignore, per
+    # the C3 finding's note that the bug (and this related pollution) only
+    # reproduces in a repo that doesn't already ignore .luna/.
+    (tmp_path / ".gitignore").write_text(".luna/\n")
+    (tmp_path / "a.txt").write_text("v0\n")
+    (tmp_path / "c.py").write_text("x = 1\n")  # "the rest of the repo"
+    _git("add", "-A")
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    # the user already had an uncommitted change to a.txt BEFORE the turn started
+    (tmp_path / "a.txt").write_text("pre-existing uncommitted change\n")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "edited by the turn too\n"},
+                }
+            ],
+        ),
+        AIMessage(content="edited a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+
+    import luna.fmt as fmt_module
+
+    fmt_calls: list[list[str]] = []
+    real_run = fmt_module.run
+
+    def _spy_run(command, workdir, paths):
+        fmt_calls.append(list(paths))
+        return real_run(command, workdir, paths)
+
+    monkeypatch.setattr(fmt_module, "run", _spy_run)
+
+    console = Console(file=io.StringIO(), force_terminal=True)
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True, format_command=f'{sys.executable} -c "pass"')
+    lines = iter(["edit a.txt again", "/exit"])
+    run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=cfg,
+        thread_id="t",
+    )
+    # the formatter must never be invoked at all — the turn's only change was to
+    # a file already dirty before it started, so the scoped delta is empty and
+    # that must NOT be treated as "format everything"
+    assert fmt_calls == []

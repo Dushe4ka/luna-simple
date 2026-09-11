@@ -655,6 +655,61 @@ def test_undo_does_not_delete_its_own_journal(tmp_path, fake_model):
     assert ledger.is_file()  # must survive the undo that just used it
 
 
+def test_undo_preserves_the_ledger_when_update_state_raises(tmp_path, fake_model):
+    """M4: turns.json must not be lost if agent.update_state blows up mid-undo —
+    the write is deferred until after the risky work succeeds, so a failed undo
+    still leaves the turn record in place (files are still reverted; only the
+    conversation truncation step, which raised, is what's rolled back to retry)."""
+    import pytest
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.undo import begin_turn, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+    pre = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre))
+    agent.invoke({"messages": [{"role": "user", "content": "change it"}]}, config=cfg)
+
+    real_update_state = agent.update_state
+
+    def _boom(*a, **k):
+        raise RuntimeError("boom")
+
+    agent.update_state = _boom
+    try:
+        with pytest.raises(RuntimeError):
+            undo(str(tmp_path), "sess1", agent, thread_id)
+    finally:
+        agent.update_state = real_update_state
+
+    ledger_path = tmp_path / ".luna" / "undo" / "sess1" / "turns.json"
+    turns = json.loads(ledger_path.read_text())
+    assert len(turns) == 1  # the turn record must survive the failed undo
+    assert (tmp_path / "a.txt").read_text() == "v0\n"  # files were still reverted
+
+
 def test_undo_does_not_touch_the_users_real_index(tmp_path, fake_model):
     """Regression for M1: undo() must write to the worktree only (git restore
     --worktree), not the real git index (which `git checkout` also updates) —
@@ -770,6 +825,104 @@ def test_compact_then_undo_does_not_try_to_remove_the_summary(tmp_path, fake_mod
     # forget_messages reset the pending removal to 0 added messages, so the
     # compact summary itself must have survived, untouched
     assert any("SUMMARY" in (getattr(m, "content", "") or "") for m in messages_after)
+
+
+def test_compact_then_double_undo_preserves_the_summary_for_every_prior_turn(tmp_path, fake_model):
+    """M3 residual: forget_messages must resync EVERY existing turn's message_count,
+    not just the most recent one.
+
+    With two turns recorded before /compact, a naive `min(original, new_count)`
+    clamp would leave the FIRST turn's message_count at its original, tiny,
+    pre-compact value (e.g. 0) — smaller than the post-compact count — so an
+    `undo()` of that earlier turn would still slice `state_messages[0:]` and
+    wrongly claim the compact summary as "added by that turn," deleting it. The
+    fix resets every recorded turn's message_count unconditionally, so removal is
+    a genuine no-op for ANY turn that predates the compact. Traced by hand: after
+    forget_messages, both turns have message_count == post_compact_count == 1, so
+    both undos compute added = state_messages[1:] == [] against the 1-message
+    post-compact state — the summary is never a removal candidate either time.
+    """
+    from langchain_core.messages import AIMessage
+
+    from luna.agent import build_agent
+    from luna.config import LunaConfig
+    from luna.session import compact_thread
+    from luna.undo import begin_turn, forget_messages, undo
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("v0\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "v1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="changed a.txt"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "2",
+                    "args": {"file_path": "/b.txt", "content": "hello\n"},
+                }
+            ],
+        ),
+        AIMessage(content="created b.txt"),
+        AIMessage(content="SUMMARY: did stuff"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    thread_id = "t"
+    cfg = {"configurable": {"thread_id": thread_id}}
+
+    # turn 1: a.txt v0 -> v1
+    pre1 = agent.get_state(cfg).values.get("messages", [])
+    begin_turn(str(tmp_path), "sess1", len(pre1))
+    agent.invoke({"messages": [{"role": "user", "content": "change a"}]}, config=cfg)
+    assert (tmp_path / "a.txt").read_text() == "v1\n"
+
+    # turn 2: create b.txt
+    pre2 = agent.get_state(cfg).values["messages"]
+    begin_turn(str(tmp_path), "sess1", len(pre2))
+    agent.invoke({"messages": [{"role": "user", "content": "create b"}]}, config=cfg)
+    assert (tmp_path / "b.txt").read_text() == "hello\n"
+
+    import io
+
+    from rich.console import Console
+
+    compact_thread(agent, thread_id, Console(file=io.StringIO()))
+    post_compact_count = len(agent.get_state(cfg).values["messages"])
+    forget_messages(str(tmp_path), "sess1", post_compact_count)
+
+    def _has_summary():
+        return any(
+            "SUMMARY" in (getattr(m, "content", "") or "")
+            for m in agent.get_state(cfg).values["messages"]
+        )
+
+    # first undo: reverts turn 2 (b.txt creation) — summary must survive
+    note1 = undo(str(tmp_path), "sess1", agent, thread_id)
+    assert note1 is not None
+    assert not (tmp_path / "b.txt").exists()
+    assert (tmp_path / "a.txt").read_text() == "v1\n"  # turn 1's change untouched
+    assert _has_summary()
+
+    # second undo: reverts turn 1 (a.txt back to v0) — summary must STILL survive
+    note2 = undo(str(tmp_path), "sess1", agent, thread_id)
+    assert note2 is not None
+    assert (tmp_path / "a.txt").read_text() == "v0\n"
+    assert _has_summary()
+    messages_after = agent.get_state(cfg).values["messages"]
+    assert all(getattr(m, "type", "") != "remove" for m in messages_after)
 
 
 def test_gc_removes_the_shadow_ref_too(tmp_path):

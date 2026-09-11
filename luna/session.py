@@ -243,14 +243,22 @@ def _format_and_diagnose(console: Console, cfg: LunaConfig, before: list[str] | 
     (used only by direct callers/tests that don't have a "before" snapshot).
     """
     before_set = set(before) if before is not None else None
+    is_repo = gitinfo.is_git_repo(cfg.workdir)
 
     def _touched_now() -> list[str]:
-        if not gitinfo.is_git_repo(cfg.workdir):
+        if not is_repo:
             return []
         current = gitinfo.dirty_paths(cfg.workdir)
         return current if before_set is None else [p for p in current if p not in before_set]
 
     changed = _touched_now()
+    if is_repo and before_set is not None and not changed:
+        # This IS a scoped (git) call and this turn didn't newly dirty anything —
+        # nothing to format/diagnose. Outside a git repo, `changed` is always []
+        # regardless of `before`, and the format/diagnose commands legitimately
+        # run bare there (there's no dirty-path scoping without git) — so this
+        # early return must not fire for that case, only for a genuine empty delta.
+        return ""
     fmt_cmd = cfg.format_command
     if fmt_cmd == "auto":
         fmt_cmd = fmt.detect(cfg.workdir)
@@ -325,8 +333,8 @@ def run_once(
         current_messages = agent.get_state(config).values.get("messages", [])
     except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
         current_messages = []
-    undo.begin_turn(workdir, session_id, len(current_messages))
     dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
+    undo.begin_turn(workdir, session_id, len(current_messages))
     text, _, turn_usage, tool_names = _stream_turn(
         agent,
         payload,

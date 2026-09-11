@@ -88,7 +88,7 @@ def session_diff(workdir: str, session_id: str) -> str:
         if not turns:
             return ""
         earliest_sha = turns[0]["pre_sha"]
-        out = _run_git(workdir, ["diff", earliest_sha, "--", ".", ":(exclude).luna"])
+        out = _run_git(workdir, ["diff", earliest_sha, "--", ".", ":(exclude).luna/undo"])
         return out or ""
     earliest: dict[str, tuple[str | None, bool]] = {}
     for entry in _entries(workdir, session_id):
@@ -242,7 +242,7 @@ def _snapshot_tree(workdir: str) -> str | None:
     with tempfile.TemporaryDirectory() as tmp:
         index_file = str(Path(tmp) / "index")
         env = {**os.environ, "GIT_INDEX_FILE": index_file}
-        if _run_git(workdir, ["add", "-A", "--", ".", ":(exclude).luna"], env=env) is None:
+        if _run_git(workdir, ["add", "-A", "--", ".", ":(exclude).luna/undo"], env=env) is None:
             return None
         return _run_git(workdir, ["write-tree"], env=env)
 
@@ -297,16 +297,21 @@ def forget_messages(workdir: str, session_id: str, message_count: int) -> None:
     """Resync the git-path ledger after the conversation itself was rewritten.
 
     (e.g. by ``/compact``), so a later ``undo()`` doesn't try to remove messages
-    that no longer exist. Files stay revertible; only the pending message-removal
-    for the most recent turn is reset to match the truncated conversation. No-op
-    outside a git repository or when there's no turn on record. Never raises.
+    that no longer exist. Files stay revertible via each turn's own ``pre_sha``;
+    every EXISTING turn's message-removal step becomes a no-op — there is no way
+    to map its stale, pre-compact ``message_count`` onto the new, collapsed
+    numbering, so every recorded turn (not just the most recent) is reset to the
+    current count — until a fresh turn begins and records its own accurate count.
+    No-op outside a git repository or when there's no turn on record. Never
+    raises.
     """
     if not gitinfo.is_git_repo(workdir):
         return
     d = _git_turns_dir(workdir, session_id)
     turns = _read_json_list(d / "turns.json")
     if turns:
-        turns[-1]["message_count"] = message_count
+        for t in turns:
+            t["message_count"] = message_count
         _write_json_list(d / "turns.json", turns)
     _write_json_list(d / "redo.json", [])
 
@@ -346,7 +351,8 @@ def _dict_to_message(data: dict):
 def _added_paths(workdir: str, old: str, new: str) -> list[str]:
     """Paths present in ``new`` but not in ``old`` (a checkout from new->old won't delete them)."""
     out = _run_git(
-        workdir, ["diff", "--name-only", "--diff-filter=A", old, new, "--", ".", ":(exclude).luna"]
+        workdir,
+        ["diff", "--name-only", "--diff-filter=A", old, new, "--", ".", ":(exclude).luna/undo"],
     )
     return [p for p in (out or "").splitlines() if p.strip()]
 
@@ -377,7 +383,7 @@ def undo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
 
     _run_git(
         workdir,
-        ["restore", "--source", record["pre_sha"], "--worktree", "--", ".", ":(exclude).luna"],
+        ["restore", "--source", record["pre_sha"], "--worktree", "--", ".", ":(exclude).luna/undo"],
     )
     if post_sha:
         # A restore only rewrites content for paths present in pre_sha's tree —
@@ -420,7 +426,15 @@ def redo(workdir: str, session_id: str, agent, thread_id: str) -> str | None:
     if record.get("post_sha"):
         _run_git(
             workdir,
-            ["restore", "--source", record["post_sha"], "--worktree", "--", ".", ":(exclude).luna"],
+            [
+                "restore",
+                "--source",
+                record["post_sha"],
+                "--worktree",
+                "--",
+                ".",
+                ":(exclude).luna/undo",
+            ],
         )
         if record.get("pre_sha"):
             # The mirror case: a file the turn deleted is still sitting on disk
