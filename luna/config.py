@@ -26,6 +26,7 @@ _SETTABLE: dict[str, str] = {
     "agent.workdir": "str",
     "agent.verify_command": "str",
     "agent.format_command": "str",
+    "agent.diagnose_command": "str",
     "agent.temperature": "float",
     "agent.max_tokens": "int",
     "ui.splash": "bool",
@@ -57,6 +58,7 @@ class LunaConfig:
     yolo: bool = False
     verify_command: str = ""
     format_command: str = "auto"
+    diagnose_command: str = "auto"
     show_splash: bool = True
     temperature: float | None = None
     max_tokens: int | None = None
@@ -95,7 +97,15 @@ def _apply_toml(data: dict, into: dict) -> None:
         into["pricing"] = {k: dict(v) for k, v in model["pricing"].items() if isinstance(v, dict)}
 
     agent = data.get("agent", {})
-    for key in ("yolo", "workdir", "verify_command", "format_command", "temperature", "max_tokens"):
+    for key in (
+        "yolo",
+        "workdir",
+        "verify_command",
+        "format_command",
+        "diagnose_command",
+        "temperature",
+        "max_tokens",
+    ):
         if key in agent:
             into[key] = agent[key]
     if isinstance(agent.get("extra"), dict):
@@ -151,6 +161,7 @@ def load_config(
         yolo=bool(merged.get("yolo", False)),
         verify_command=str(merged.get("verify_command", "")),
         format_command=str(merged.get("format_command", "auto")),
+        diagnose_command=str(merged.get("diagnose_command", "auto")),
         show_splash=bool(merged.get("show_splash", True)),
         temperature=merged.get("temperature"),
         max_tokens=merged.get("max_tokens"),

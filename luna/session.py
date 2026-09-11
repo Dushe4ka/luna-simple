@@ -20,7 +20,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
-from luna import fmt, gitinfo, permissions
+from luna import diagnose, fmt, gitinfo, permissions
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config import LunaConfig
@@ -227,10 +227,7 @@ def _stream_turn(
 
 
 def _format_and_diagnose(console: Console, cfg: LunaConfig) -> str:
-    """Run the format step for files this turn changed. Returns diagnose output.
-
-    Diagnose is wired in by Task 3; this task's version always returns ``""``.
-    """
+    """Format then diagnose the files this turn changed. Returns diagnose text."""
     changed = gitinfo.dirty_paths(cfg.workdir) if gitinfo.is_git_repo(cfg.workdir) else []
     fmt_cmd = cfg.format_command
     if fmt_cmd == "auto":
@@ -239,7 +236,16 @@ def _format_and_diagnose(console: Console, cfg: LunaConfig) -> str:
         touched = fmt.run(fmt_cmd, cfg.workdir, changed)
         if touched:
             console.print(f"[dim]⌁ formatted {len(touched)} file(s)[/]")
-    return ""
+    diag_cmd = cfg.diagnose_command
+    if diag_cmd == "auto":
+        diag_cmd = diagnose.detect(cfg.workdir)
+    if not diag_cmd:
+        return ""
+    changed = gitinfo.dirty_paths(cfg.workdir) if gitinfo.is_git_repo(cfg.workdir) else changed
+    text = diagnose.run(diag_cmd, cfg.workdir, changed)
+    if text:
+        console.print(f"[dim]{text}[/]")
+    return text
 
 
 def _run_verification(
@@ -363,6 +369,7 @@ def run_repl(
     if index is not None:
         _print_recap(agent, {"configurable": {"thread_id": thread_id}}, console)
 
+    pending_diagnostics = ""
     while True:
         try:
             line = input_fn("luna › ").strip()
@@ -389,9 +396,15 @@ def run_repl(
                 continue
 
         turn_config = {"configurable": {"thread_id": thread_id}}
+        diag_block = (
+            f"<diagnostics>\n{pending_diagnostics}\n</diagnostics>\n\n"
+            if pending_diagnostics
+            else ""
+        )
+        pending_diagnostics = ""
         pinned_block = render_pinned(pinned, workdir)
         expanded = expand_mentions(line, workdir)
-        content = pinned_block + "\n\n" + expanded if pinned_block else expanded
+        content = diag_block + (pinned_block + "\n\n" if pinned_block else "") + expanded
         payload = {"messages": [{"role": "user", "content": content}]}
         try:
             _, reload_requested, turn_usage, tool_names = _stream_turn(
@@ -409,7 +422,7 @@ def run_repl(
             indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
             console.print(f"[dim]{indicator}[/]")
         if tool_names & _MUTATING:
-            _format_and_diagnose(console, config)
+            pending_diagnostics = _format_and_diagnose(console, config)
             try:
                 _run_verification(agent, turn_config, console, config, input_fn, rules=rules)
             except KeyboardInterrupt:

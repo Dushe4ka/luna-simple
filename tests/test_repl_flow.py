@@ -90,3 +90,48 @@ def test_repl_records_prompt_not_indicator_line_as_session_title(tmp_path, fake_
     assert row.title == make_title(prompt)
     assert "ctx " not in row.title
     assert "$" not in row.title
+
+
+def test_diagnostics_are_injected_into_the_next_turn(tmp_path, fake_model):
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.py", "content": "x = 1\n"},
+                }
+            ],
+        ),
+        AIMessage(content="wrote a.py"),
+        AIMessage(content="saw the diagnostics"),
+    ]
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls), session_id="sid"
+    )
+    seen_payloads: list[str] = []
+    real_stream = agent.stream
+
+    def _spy(payload, *a, **kw):
+        if isinstance(payload, dict):
+            msgs = payload.get("messages", [])
+            if msgs:
+                seen_payloads.append(msgs[-1].get("content", ""))
+        return real_stream(payload, *a, **kw)
+
+    agent.stream = _spy
+    console = Console(file=io.StringIO(), force_terminal=True)
+    lines = iter(["write a.py", "second turn", "/exit"])
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True, diagnose_command="echo a.py:1: fake finding")
+    run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=cfg,
+        thread_id="t",
+        session_id="sid",
+    )
+    assert any("<diagnostics>" in p and "fake finding" in p for p in seen_payloads)

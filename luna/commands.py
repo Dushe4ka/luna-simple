@@ -37,6 +37,7 @@ HELP: dict[str, str] = {
     "/drop": "unpin files (/drop path ...)",
     "/context": "list pinned files",
     "/verify": "run the project's verify command now",
+    "/diagnose": "run the project's diagnostics command now",
     "/init": "generate or update AGENTS.md",
     "/model": "show or switch the model (/model <name>)",
     "/provider": "show or switch the provider (/provider <key>)",
@@ -286,6 +287,20 @@ def _verify(ctx: CommandContext, arg: str) -> None:
     ctx.console.print("[dim]✓ verify ok[/]" if ok else f"[yellow]verify failed[/]\n{tail}")
 
 
+def _diagnose(ctx: CommandContext, arg: str) -> None:
+    """Run the project's diagnostics command now."""
+    from luna import diagnose
+
+    cmd = ctx.config.diagnose_command
+    if cmd == "auto":
+        cmd = diagnose.detect(ctx.config.workdir)
+    if not cmd:
+        ctx.console.print("[dim]no diagnose command configured or detected[/]")
+        return
+    text = diagnose.run(cmd, ctx.config.workdir, [])
+    ctx.console.print(text or "[dim]no findings[/]")
+
+
 def _diff(ctx: CommandContext, arg: str) -> None:
     """Show the diff of files changed this session."""
     text = session_diff(ctx.workdir, ctx.session_id)
@@ -343,6 +358,7 @@ _TABLE: dict[str, Callable] = {
     "/diff": _diff,
     "/undo": _undo,
     "/verify": _verify,
+    "/diagnose": _diagnose,
     "/init": _init,
 }
 
