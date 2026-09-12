@@ -11,7 +11,7 @@ def test_load_reads_project_commands(tmp_path):
 
 
 def test_project_overrides_user(tmp_path, isolated_config_home):
-    from luna.config import config_dir
+    from luna.config.config import config_dir
     from luna.usercmd import load
 
     (config_dir() / "commands").mkdir(parents=True)

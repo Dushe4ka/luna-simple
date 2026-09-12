@@ -6,8 +6,8 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
-from luna.config import config_dir
-from luna.providers import LunaConfigError
+from luna.config.config import config_dir
+from luna.config.providers import LunaConfigError
 
 MCP_REGISTRY: dict[str, dict] = {
     "filesystem": {

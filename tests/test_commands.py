@@ -3,7 +3,7 @@ import io
 from rich.console import Console
 
 from luna.commands import CommandContext, dispatch
-from luna.config import LunaConfig
+from luna.config.config import LunaConfig
 
 
 def _ctx(**kw):

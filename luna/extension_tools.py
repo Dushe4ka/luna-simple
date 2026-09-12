@@ -7,8 +7,8 @@ from typing import Literal
 from langchain_core.tools import tool
 
 from luna import mcp, skills
+from luna.config.providers import LunaConfigError
 from luna.memory import append_note
-from luna.providers import LunaConfigError
 from luna.registry import known_mcp, known_skills, resolve_mcp
 
 

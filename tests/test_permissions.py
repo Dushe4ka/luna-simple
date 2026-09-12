@@ -99,7 +99,7 @@ def test_guard_blocks_deny(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
     from luna.agent import build_agent
-    from luna.config import LunaConfig
+    from luna.config.config import LunaConfig
 
     (tmp_path / ".luna").mkdir()
     (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["execute:rm *"]\n')

@@ -3,14 +3,14 @@ import stat
 
 import pytest
 
-from luna.credentials import (
+from luna.config.credentials import (
     credentials_path,
     get_api_key,
     mask_key,
     set_api_key,
     unset_api_key,
 )
-from luna.providers import LunaConfigError, build_model
+from luna.config.providers import LunaConfigError, build_model
 
 
 def test_set_get_roundtrip():

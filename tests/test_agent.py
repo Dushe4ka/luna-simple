@@ -1,8 +1,8 @@
 from langchain_core.messages import AIMessage
 
 from luna.agent import INTERRUPT_TOOLS, build_agent
-from luna.config import LunaConfig
-from luna.prompts import LUNA_SYSTEM_PROMPT
+from luna.config.config import LunaConfig
+from luna.config.prompts import LUNA_SYSTEM_PROMPT
 
 
 def test_prompt_mentions_the_four_verbs():
@@ -114,7 +114,7 @@ def test_subagent_reads_a_real_file(tmp_path, fake_model):
     """
     from langchain_core.messages import ToolMessage
 
-    from luna.config import LunaConfig
+    from luna.config.config import LunaConfig
 
     (tmp_path / "hello.txt").write_text("the-magic-string-42\n")
     model = fake_model(

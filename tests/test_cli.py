@@ -123,7 +123,7 @@ def test_config_set_key_and_show(capsys):
 
 def test_config_set_value(capsys):
     assert main(["config", "set", "model.provider", "openai"]) == 0
-    from luna.config import load_config
+    from luna.config.config import load_config
 
     assert load_config({}).provider == "openai"
 

@@ -3,8 +3,8 @@ import sys
 
 from rich.console import Console
 
-from luna.config import LunaConfig
-from luna.usage import TurnUsage
+from luna.config.config import LunaConfig
+from luna.config.usage import TurnUsage
 from luna.verify import run_verify
 
 

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from luna.providers import LunaConfigError
+from luna.config.providers import LunaConfigError
 from luna.skills import install, list_skills, remove
 
 

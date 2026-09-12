@@ -1,6 +1,6 @@
-"""Tests for :mod:`luna.usage` — best-effort token accounting."""
+"""Tests for :mod:`luna.config.usage` — best-effort token accounting."""
 
-from luna.usage import SessionUsage, TurnUsage, context_window, indicator_line
+from luna.config.usage import SessionUsage, TurnUsage, context_window, indicator_line
 
 
 def test_turn_merges_metadata():
@@ -46,7 +46,7 @@ def test_indicator_line_mentions_ctx_and_session():
 
 
 def test_registry_window_and_price():
-    from luna.usage import context_window, price
+    from luna.config.usage import context_window, price
 
     assert context_window("anthropic", "claude-sonnet-4-5") == 200_000
     p = price("anthropic", "claude-sonnet-4-5")
@@ -54,7 +54,7 @@ def test_registry_window_and_price():
 
 
 def test_registry_overrides_win_over_the_packaged_file():
-    from luna.usage import context_window, price
+    from luna.config.usage import context_window, price
 
     overrides = {"my-model": {"window": 128_000, "input": 2.0, "output": 6.0}}
     assert context_window("x", "my-model-v1", overrides) == 128_000
@@ -62,13 +62,13 @@ def test_registry_overrides_win_over_the_packaged_file():
 
 
 def test_unknown_model_has_no_price():
-    from luna.usage import price
+    from luna.config.usage import price
 
     assert price("x", "totally-unknown-model-id") is None
 
 
 def test_session_cost_uses_totals():
-    from luna.usage import SessionUsage, TurnUsage
+    from luna.config.usage import SessionUsage, TurnUsage
 
     s = SessionUsage()
     t = TurnUsage()
@@ -79,7 +79,7 @@ def test_session_cost_uses_totals():
 
 
 def test_indicator_line_shows_cost_when_known():
-    from luna.usage import SessionUsage, TurnUsage, indicator_line
+    from luna.config.usage import SessionUsage, TurnUsage, indicator_line
 
     s = SessionUsage()
     t = TurnUsage()

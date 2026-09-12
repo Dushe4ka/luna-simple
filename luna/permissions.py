@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 
-from luna.config import config_dir
+from luna.config.config import config_dir
 
 _FILE_TOOLS = {"write_file", "edit_file", "delete", "read_file"}  # used by Task 8
 

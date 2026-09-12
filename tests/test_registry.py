@@ -1,6 +1,6 @@
 import pytest
 
-from luna.providers import LunaConfigError
+from luna.config.providers import LunaConfigError
 from luna.registry import known_mcp, resolve_mcp, resolve_skill
 
 

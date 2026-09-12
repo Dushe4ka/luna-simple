@@ -40,7 +40,7 @@ def _load_registry() -> dict[str, dict]:
     if _REGISTRY_CACHE is not None:
         return _REGISTRY_CACHE
     try:
-        text = resources.files("luna").joinpath("models.toml").read_text()
+        text = resources.files("luna.config").joinpath("models.toml").read_text()
         _REGISTRY_CACHE = tomllib.loads(text)
     except (OSError, tomllib.TOMLDecodeError, ModuleNotFoundError):
         _REGISTRY_CACHE = {}

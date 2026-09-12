@@ -1,6 +1,6 @@
 import pytest
 
-from luna.providers import (
+from luna.config.providers import (
     PROVIDERS,
     LunaConfigError,
     build_model,

@@ -2,8 +2,8 @@ import io
 
 from rich.console import Console
 
-from luna.config import config_path, load_config
-from luna.credentials import credentials_path, get_api_key
+from luna.config.config import config_path, load_config
+from luna.config.credentials import credentials_path, get_api_key
 from luna.setup_wizard import run_setup
 
 
@@ -53,7 +53,7 @@ def test_wizard_skips_key_for_ollama():
 
 
 def test_wizard_keeps_existing_key_when_declined():
-    from luna.credentials import set_api_key
+    from luna.config.credentials import set_api_key
 
     set_api_key("anthropic", "sk-ant-original")
     run_setup(

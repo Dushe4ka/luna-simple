@@ -15,9 +15,9 @@ from dataclasses import dataclass
 
 from rich.console import Console
 
-from luna.config import LunaConfig
-from luna.credentials import get_api_key
-from luna.providers import PROVIDERS, LunaConfigError
+from luna.config.config import LunaConfig
+from luna.config.credentials import get_api_key
+from luna.config.providers import PROVIDERS, LunaConfigError
 from luna.subagents import subagent_summaries
 from luna.ui.theme import PALETTE
 from luna.undo import peek_last, session_diff, undo_last

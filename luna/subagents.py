@@ -9,8 +9,8 @@ from pathlib import Path
 from deepagents import SubAgent
 from deepagents.middleware import FilesystemMiddleware
 
-from luna.config import config_dir
-from luna.providers import LunaConfigError
+from luna.config.config import config_dir
+from luna.config.providers import LunaConfigError
 
 # Filesystem tools a subagent can be restricted to (deepagents FsToolName set).
 # Read-only tools are always allowed. Declarative subagents inherit the parent's

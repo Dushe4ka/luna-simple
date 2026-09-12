@@ -1,6 +1,6 @@
 import pytest
 
-from luna.providers import LunaConfigError
+from luna.config.providers import LunaConfigError
 from luna.subagents import (
     _MUTATING_TOOLS,
     _SAFE_TOOLS,

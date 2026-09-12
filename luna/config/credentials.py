@@ -12,8 +12,8 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
-from luna.config import config_dir
-from luna.providers import PROVIDERS, LunaConfigError
+from luna.config.config import config_dir
+from luna.config.providers import PROVIDERS, LunaConfigError
 
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0600
 

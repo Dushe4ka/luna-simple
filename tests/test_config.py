@@ -1,4 +1,4 @@
-from luna.config import load_config
+from luna.config.config import load_config
 
 
 def test_defaults(tmp_path):
@@ -37,28 +37,28 @@ def test_model_kwargs_composed(tmp_path):
 
 
 def test_verify_command_settable(tmp_path, isolated_config_home):
-    from luna.config import load_config, set_config_values
+    from luna.config.config import load_config, set_config_values
 
     set_config_values({"agent.verify_command": "pytest -q"})
     assert load_config({}).verify_command == "pytest -q"
 
 
 def test_fast_model_settable(isolated_config_home):
-    from luna.config import load_config, set_config_values
+    from luna.config.config import load_config, set_config_values
 
     set_config_values({"model.fast": "anthropic:claude-haiku-4-5"})
     assert load_config({}).fast_model == "anthropic:claude-haiku-4-5"
 
 
 def test_format_command_settable(isolated_config_home):
-    from luna.config import load_config, set_config_values
+    from luna.config.config import load_config, set_config_values
 
     set_config_values({"agent.format_command": "ruff format"})
     assert load_config({}).format_command == "ruff format"
 
 
 def test_pricing_table_is_loaded(isolated_config_home):
-    from luna.config import config_dir, load_config
+    from luna.config.config import config_dir, load_config
 
     (config_dir()).mkdir(parents=True, exist_ok=True)
     (config_dir() / "config.toml").write_text(

@@ -2,8 +2,8 @@ import io
 
 from rich.console import Console
 
+from luna.config.usage import TurnUsage
 from luna.session import run_repl
-from luna.usage import TurnUsage
 
 
 class _FakeAgent:

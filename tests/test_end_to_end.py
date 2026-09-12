@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 from rich.console import Console
 
 from luna.agent import build_agent
-from luna.config import LunaConfig
+from luna.config.config import LunaConfig
 from luna.session import run_once
 
 

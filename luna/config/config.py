@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from luna.providers import DEFAULT_PROVIDER, PROVIDERS, LunaConfigError
+from luna.config.providers import DEFAULT_PROVIDER, PROVIDERS, LunaConfigError
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}

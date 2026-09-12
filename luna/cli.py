@@ -11,16 +11,16 @@ import uuid
 
 from luna import __version__, mcp, skills
 from luna.agent import build_agent
-from luna.config import config_path, load_config, set_config_values
-from luna.credentials import (
+from luna.config.config import config_path, load_config, set_config_values
+from luna.config.credentials import (
     credentials_path,
     get_api_key,
     mask_key,
     set_api_key,
     unset_api_key,
 )
+from luna.config.providers import PROVIDERS, LunaConfigError
 from luna.initgen import init_prompt
-from luna.providers import PROVIDERS, LunaConfigError
 from luna.registry import known_mcp, known_skills, resolve_mcp
 from luna.session import run_once, run_repl
 from luna.setup_wizard import run_setup

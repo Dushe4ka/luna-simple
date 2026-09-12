@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 from rich.console import Console
 
 from luna.agent import build_agent
-from luna.config import LunaConfig, config_dir
+from luna.config.config import LunaConfig, config_dir
 from luna.persistence import SessionIndex, checkpointer, make_title
 from luna.session import run_once
 
@@ -58,7 +58,7 @@ def test_checkpointer_falls_back_to_memory(tmp_path, monkeypatch, fake_model):
     assert len(warned) == 1 and "sessions.db" in warned[0]
     # a real agent still works with the fallback saver
     from luna.agent import build_agent
-    from luna.config import LunaConfig
+    from luna.config.config import LunaConfig
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "good"))
     build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(), checkpointer=cp)

@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from luna.config import config_dir
+from luna.config.config import config_dir
 
 _SHELL_RE = re.compile(r"!`([^`]*)`")
 _SHELL_TIMEOUT = 30

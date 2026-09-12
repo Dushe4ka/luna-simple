@@ -15,7 +15,7 @@ from pathlib import Path
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from luna.config import config_dir
+from luna.config.config import config_dir
 
 Row = namedtuple("Row", "thread_id workdir created updated title")
 

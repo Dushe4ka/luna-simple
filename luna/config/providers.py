@@ -67,7 +67,7 @@ def build_model(
     """
     spec = _spec(provider)
     if spec.env_var and not os.environ.get(spec.env_var):
-        from luna.credentials import apply_stored_key
+        from luna.config.credentials import apply_stored_key
 
         apply_stored_key(provider, spec.env_var)
     if spec.env_var and not os.environ.get(spec.env_var):

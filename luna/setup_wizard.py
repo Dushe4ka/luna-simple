@@ -7,9 +7,9 @@ from collections.abc import Callable, Mapping
 
 from rich.console import Console
 
-from luna.config import set_config_values
-from luna.credentials import get_api_key, mask_key, set_api_key
-from luna.providers import DEFAULT_PROVIDER, PROVIDERS
+from luna.config.config import set_config_values
+from luna.config.credentials import get_api_key, mask_key, set_api_key
+from luna.config.providers import DEFAULT_PROVIDER, PROVIDERS
 from luna.ui.theme import PALETTE
 
 

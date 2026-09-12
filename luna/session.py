@@ -26,7 +26,8 @@ from rich.console import Console
 from luna import diagnose, fmt, gitinfo, permissions, undo, usercmd
 from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
-from luna.config import LunaConfig
+from luna.config.config import LunaConfig
+from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
 from luna.context import PinnedFiles, expand_mentions, render_pinned
 from luna.permissions import load_rules
 from luna.persistence import SessionIndex, make_title
@@ -34,7 +35,6 @@ from luna.subagents import subagent_summaries
 from luna.ui.approve import prompt_decision
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn, tool_line
-from luna.usage import SessionUsage, TurnUsage, indicator_line, price
 from luna.verify import run_verify
 
 __all__ = [

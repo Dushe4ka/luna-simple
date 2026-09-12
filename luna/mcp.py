@@ -8,8 +8,8 @@ import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from luna.config import config_dir
-from luna.providers import LunaConfigError
+from luna.config.config import config_dir
+from luna.config.providers import LunaConfigError
 
 try:  # optional: pip install "luna-simple[mcp]"
     from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: F401
