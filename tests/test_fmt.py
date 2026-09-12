@@ -2,13 +2,13 @@ import sys
 
 
 def test_detect_returns_empty_with_no_markers(tmp_path):
-    from luna.fmt import detect
+    from luna.turn.fmt import detect
 
     assert detect(str(tmp_path)) == ""
 
 
 def test_run_executes_and_reports_paths(tmp_path):
-    from luna.fmt import run
+    from luna.turn.fmt import run
 
     f = tmp_path / "a.txt"
     f.write_text("x")
@@ -20,19 +20,19 @@ def test_run_executes_and_reports_paths(tmp_path):
 
 
 def test_run_never_raises_on_a_bad_command(tmp_path):
-    from luna.fmt import run
+    from luna.turn.fmt import run
 
     assert run("this-command-does-not-exist-xyz", str(tmp_path), ["a.txt"]) == []
 
 
 def test_run_with_empty_command_is_a_noop(tmp_path):
-    from luna.fmt import run
+    from luna.turn.fmt import run
 
     assert run("", str(tmp_path), ["a.txt"]) == []
 
 
 def test_run_does_not_execute_shell_metacharacters_in_a_path(tmp_path):
-    from luna.fmt import run
+    from luna.turn.fmt import run
 
     marker = tmp_path / "PWNED"
     evil_path = f"x$(touch {marker}).py"
@@ -52,7 +52,7 @@ def test_run_prefixes_paths_so_a_dash_prefixed_filename_is_never_read_as_an_opti
     every path with ``./`` so it can never be mistaken for an option, even by a
     real argparse-style CLI.
     """
-    from luna.fmt import run
+    from luna.turn.fmt import run
 
     stub = tmp_path / "toolstub.py"
     stub.write_text(

@@ -19,9 +19,9 @@ from luna.config.config import LunaConfig
 from luna.config.credentials import get_api_key
 from luna.config.providers import PROVIDERS, LunaConfigError
 from luna.subagents import subagent_summaries
+from luna.turn.undo import peek_last, session_diff, undo_last
+from luna.turn.verify import run_verify
 from luna.ui.theme import PALETTE
-from luna.undo import peek_last, session_diff, undo_last
-from luna.verify import run_verify
 
 HELP: dict[str, str] = {
     "/help": "show this help",
@@ -256,8 +256,8 @@ def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
 
 def _compact(ctx: CommandContext, arg: str) -> DispatchResult | None:
     """Summarise the conversation and replace its history in place."""
-    from luna import undo
     from luna.session import compact_thread  # lazy: session imports commands
+    from luna.turn import undo
 
     try:
         compact_thread(ctx.agent, ctx.thread_id, ctx.console)
@@ -303,7 +303,7 @@ def _verify(ctx: CommandContext, arg: str) -> None:
 
 def _diagnose(ctx: CommandContext, arg: str) -> None:
     """Run the project's diagnostics command now."""
-    from luna import diagnose
+    from luna.turn import diagnose
 
     cmd = ctx.config.diagnose_command
     if cmd == "auto":
@@ -323,11 +323,11 @@ def _diff(ctx: CommandContext, arg: str) -> None:
 
 def _undo(ctx: CommandContext, arg: str) -> None:
     """Revert the last file change made this session (confirms first)."""
-    from luna import gitinfo
+    from luna.turn import gitinfo
 
     try:
         if gitinfo.is_git_repo(ctx.workdir):
-            from luna.undo import undo as git_undo
+            from luna.turn.undo import undo as git_undo
 
             if ctx.input_fn is not None:
                 answer = (
@@ -360,13 +360,13 @@ def _undo(ctx: CommandContext, arg: str) -> None:
 
 def _redo(ctx: CommandContext, arg: str) -> None:
     """Re-apply the last undone turn (git repositories only)."""
-    from luna import gitinfo
+    from luna.turn import gitinfo
 
     try:
         if not gitinfo.is_git_repo(ctx.workdir):
             ctx.console.print("[dim]redo needs a git repository[/]")
             return
-        from luna.undo import redo as git_redo
+        from luna.turn.undo import redo as git_redo
 
         note = git_redo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
         ctx.console.print(f"[{PALETTE['blue']}]{note}[/]" if note else "[dim]nothing to redo[/]")

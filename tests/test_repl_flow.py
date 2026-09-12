@@ -280,7 +280,7 @@ def test_format_only_touches_files_the_turn_actually_changed(tmp_path, fake_mode
     ]
     agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
 
-    import luna.fmt as fmt_module
+    import luna.turn.fmt as fmt_module
 
     seen_paths: list[list[str]] = []
     real_run = fmt_module.run
@@ -354,7 +354,7 @@ def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_dirty_
     ]
     agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
 
-    import luna.fmt as fmt_module
+    import luna.turn.fmt as fmt_module
 
     fmt_calls: list[list[str]] = []
     real_run = fmt_module.run

@@ -1,6 +1,6 @@
 import pytest
 
-from luna.memory import append_note, memory_files
+from luna.turn.memory import append_note, memory_files
 
 
 def test_append_creates_dated_section(tmp_path):

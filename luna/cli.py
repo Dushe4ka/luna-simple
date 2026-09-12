@@ -368,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(_overrides(args))
         # non-interactive: fall through; build_agent raises the clean error.
 
-    from luna.gitinfo import dirty_paths
+    from luna.turn.gitinfo import dirty_paths
 
     _dirty = dirty_paths(config.workdir) if interactive and not prompt else []
     if _dirty:
@@ -393,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     session_id = start_thread  # the undo journal follows the session across --continue
     plan_state = [False]
 
-    from luna import undo
+    from luna.turn import undo
 
     undo.gc(config.workdir, keep=session_id)  # after session_id: never gc the journal we resume
 

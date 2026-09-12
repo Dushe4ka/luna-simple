@@ -22,9 +22,9 @@ from luna.config.config import LunaConfig
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
 from luna.config.providers import build_model
 from luna.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
-from luna.memory import memory_files
 from luna.permissions import load_rules
 from luna.toolguard import tool_guard
+from luna.turn.memory import memory_files
 
 # Tools that mutate the workspace and therefore pause for approval.
 INTERRUPT_TOOLS: dict = {

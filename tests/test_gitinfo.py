@@ -1,6 +1,6 @@
 import subprocess
 
-from luna.gitinfo import dirty_paths, is_git_repo
+from luna.turn.gitinfo import dirty_paths, is_git_repo
 
 
 def test_not_a_repo(tmp_path):

@@ -141,7 +141,7 @@ def test_sessions_without_index_is_graceful():
 
 
 def test_undo_declined_does_not_revert(tmp_path):
-    from luna.undo import journal_dir, snapshot
+    from luna.turn.undo import journal_dir, snapshot
 
     f = tmp_path / "a.py"
     f.write_text("old\n")
@@ -154,7 +154,7 @@ def test_undo_declined_does_not_revert(tmp_path):
 
 
 def test_undo_confirmed_reverts(tmp_path):
-    from luna.undo import snapshot
+    from luna.turn.undo import snapshot
 
     f = tmp_path / "a.py"
     f.write_text("old\n")
@@ -166,7 +166,7 @@ def test_undo_confirmed_reverts(tmp_path):
 
 
 def test_undo_without_input_fn_proceeds(tmp_path):
-    from luna.undo import snapshot
+    from luna.turn.undo import snapshot
 
     f = tmp_path / "a.py"
     f.write_text("old\n")
@@ -231,7 +231,7 @@ def test_compact_replaces_history_in_place(tmp_path, fake_model):
 
 
 def test_add_drop_context_handlers(tmp_path):
-    from luna.context import PinnedFiles
+    from luna.turn.context import PinnedFiles
 
     (tmp_path / "p.py").write_text("P = 1\n")
     pins = PinnedFiles()

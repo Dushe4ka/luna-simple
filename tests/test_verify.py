@@ -5,7 +5,7 @@ from rich.console import Console
 
 from luna.config.config import LunaConfig
 from luna.config.usage import TurnUsage
-from luna.verify import run_verify
+from luna.turn.verify import run_verify
 
 
 def _console() -> Console:
@@ -75,7 +75,7 @@ def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
 
 def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
     from luna import session
-    from luna.verify import run_verify as real_run_verify
+    from luna.turn.verify import run_verify as real_run_verify
 
     verify_calls: list = []
 

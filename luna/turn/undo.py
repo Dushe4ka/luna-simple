@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from luna import gitinfo
+from luna.turn import gitinfo
 
 
 def journal_dir(workdir: str, session_id: str) -> Path:

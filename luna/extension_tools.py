@@ -8,8 +8,8 @@ from langchain_core.tools import tool
 
 from luna import mcp, skills
 from luna.config.providers import LunaConfigError
-from luna.memory import append_note
 from luna.registry import known_mcp, known_skills, resolve_mcp
+from luna.turn.memory import append_note
 
 
 @tool

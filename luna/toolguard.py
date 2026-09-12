@@ -5,9 +5,9 @@ from __future__ import annotations
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
 
-from luna import gitinfo
 from luna.permissions import RuleSet
-from luna.undo import snapshot
+from luna.turn import gitinfo
+from luna.turn.undo import snapshot
 
 _MUTATING = {"write_file", "edit_file", "delete"}
 

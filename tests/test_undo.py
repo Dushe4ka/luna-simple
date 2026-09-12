@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 
 from luna.agent import build_agent
 from luna.config.config import LunaConfig
-from luna.undo import journal_dir, peek_last, session_diff, snapshot, undo_last
+from luna.turn.undo import journal_dir, peek_last, session_diff, snapshot, undo_last
 
 
 def test_snapshot_and_undo_modify(tmp_path):
@@ -155,7 +155,7 @@ def test_denied_write_makes_no_journal_entry(tmp_path, fake_model):
 
 
 def test_undo_refuses_to_delete_a_changed_binary(tmp_path):
-    from luna.undo import peek_last, snapshot, undo_last
+    from luna.turn.undo import peek_last, snapshot, undo_last
 
     f = tmp_path / "logo.bin"
     f.write_bytes(b"\x89PNG\x00original")
@@ -168,7 +168,7 @@ def test_undo_refuses_to_delete_a_changed_binary(tmp_path):
 
 
 def test_undo_still_deletes_a_created_file(tmp_path):
-    from luna.undo import snapshot, undo_last
+    from luna.turn.undo import snapshot, undo_last
 
     snapshot(str(tmp_path), "s", "write_file", "new.py")  # existed=False
     (tmp_path / "new.py").write_text("x\n")
@@ -177,7 +177,7 @@ def test_undo_still_deletes_a_created_file(tmp_path):
 
 
 def test_read_paths_do_not_create_the_journal_dir(tmp_path):
-    from luna.undo import session_diff, undo_last
+    from luna.turn.undo import session_diff, undo_last
 
     assert session_diff(str(tmp_path), "none") == ""
     assert undo_last(str(tmp_path), "none") is None
@@ -185,7 +185,7 @@ def test_read_paths_do_not_create_the_journal_dir(tmp_path):
 
 
 def test_session_diff_marks_binary_entries(tmp_path):
-    from luna.undo import session_diff, snapshot
+    from luna.turn.undo import session_diff, snapshot
 
     (tmp_path / "b.bin").write_bytes(b"\xff\x00\xfe")
     snapshot(str(tmp_path), "s", "edit_file", "b.bin")
@@ -194,7 +194,7 @@ def test_session_diff_marks_binary_entries(tmp_path):
 
 
 def test_gc_removes_old_journals(tmp_path):
-    from luna.undo import gc, journal_dir
+    from luna.turn.undo import gc, journal_dir
 
     old = journal_dir(str(tmp_path), "old")
     (old / "0000.json").write_text("{}")
@@ -208,7 +208,7 @@ def test_gc_removes_old_journals(tmp_path):
 
 
 def test_gc_never_removes_the_kept_session(tmp_path):
-    from luna.undo import gc, journal_dir
+    from luna.turn.undo import gc, journal_dir
 
     keepme = journal_dir(str(tmp_path), "keepme")
     (keepme / "0000.json").write_text("{}")
@@ -224,7 +224,7 @@ def _git(tmp_path, *args):
 
 
 def test_begin_turn_creates_a_shadow_ref(tmp_path):
-    from luna.undo import begin_turn
+    from luna.turn.undo import begin_turn
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -242,14 +242,14 @@ def test_begin_turn_creates_a_shadow_ref(tmp_path):
 
 
 def test_begin_turn_is_a_noop_outside_git(tmp_path):
-    from luna.undo import begin_turn
+    from luna.turn.undo import begin_turn
 
     begin_turn(str(tmp_path), "sess1", message_count=1)  # must not raise
     assert not (tmp_path / ".luna" / "undo").exists()
 
 
 def test_begin_turn_handles_an_unborn_head(tmp_path):
-    from luna.undo import begin_turn
+    from luna.turn.undo import begin_turn
 
     _git(tmp_path, "init", "-q")  # no commits yet
     begin_turn(str(tmp_path), "sess1", message_count=0)  # must not raise
@@ -267,7 +267,7 @@ def test_snapshot_tree_returns_none_on_a_genuine_add_failure_not_an_empty_tree(t
     one, on a perfectly successful exit 0."""
     import stat
 
-    from luna.undo import _snapshot_tree
+    from luna.turn.undo import _snapshot_tree
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "keep.txt").write_text("keep\n")
@@ -295,7 +295,7 @@ def test_snapshot_tree_still_detects_failure_under_add_ignore_errors(tmp_path):
     silently incomplete) snapshot."""
     import stat
 
-    from luna.undo import _snapshot_tree
+    from luna.turn.undo import _snapshot_tree
 
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "add.ignoreErrors", "true")
@@ -315,7 +315,7 @@ def test_snapshot_tree_still_detects_failure_under_add_ignore_errors(tmp_path):
 
 
 def test_begin_turn_does_not_touch_the_users_index_or_worktree(tmp_path):
-    from luna.undo import begin_turn
+    from luna.turn.undo import begin_turn
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -338,7 +338,7 @@ def test_undo_restores_files_and_truncates_the_conversation(tmp_path, fake_model
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, undo
+    from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -376,7 +376,7 @@ def test_undo_restores_files_and_truncates_the_conversation(tmp_path, fake_model
 
 
 def test_undo_with_no_turns_returns_none(tmp_path):
-    from luna.undo import undo
+    from luna.turn.undo import undo
 
     _git(tmp_path, "init", "-q")
     assert undo(str(tmp_path), "sess-empty", agent=None, thread_id="t") is None
@@ -387,7 +387,7 @@ def test_redo_restores_files_and_messages(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, redo, undo
+    from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -424,7 +424,7 @@ def test_redo_restores_files_and_messages(tmp_path, fake_model):
 
 
 def test_redo_with_nothing_to_redo_returns_none(tmp_path):
-    from luna.undo import redo
+    from luna.turn.undo import redo
 
     _git(tmp_path, "init", "-q")
     assert redo(str(tmp_path), "sess-empty", agent=None, thread_id="t") is None
@@ -435,7 +435,7 @@ def test_a_new_turn_clears_the_redo_stack(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, redo, undo
+    from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -466,7 +466,7 @@ def test_undo_redo_undo_reverts_files_the_second_time(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, redo, undo
+    from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -511,7 +511,7 @@ def test_undo_deletes_a_file_the_turn_created(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, undo
+    from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -550,7 +550,7 @@ def test_redo_deletes_a_file_the_turn_deleted(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, redo, undo
+    from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -585,7 +585,7 @@ def test_session_diff_uses_git_when_available(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, session_diff
+    from luna.turn.undo import begin_turn, session_diff
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -624,7 +624,7 @@ def test_undo_redo_undo_leaves_the_thread_usable(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, redo, undo
+    from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -676,7 +676,7 @@ def test_undo_does_not_delete_its_own_journal(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, undo
+    from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -726,7 +726,7 @@ def test_begin_turn_keeps_recording_every_turn_when_luna_is_gitignored(tmp_path,
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, undo
+    from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / ".gitignore").write_text(".luna/\n")
@@ -781,7 +781,7 @@ def test_undo_preserves_the_ledger_when_update_state_raises(tmp_path, fake_model
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, undo
+    from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -844,7 +844,7 @@ def test_undo_does_not_touch_the_users_real_index(tmp_path, fake_model):
 
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.undo import begin_turn, undo
+    from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -895,7 +895,7 @@ def test_compact_then_undo_does_not_try_to_remove_the_summary(tmp_path, fake_mod
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
     from luna.session import compact_thread
-    from luna.undo import begin_turn, forget_messages, undo
+    from luna.turn.undo import begin_turn, forget_messages, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -963,7 +963,7 @@ def test_compact_then_double_undo_preserves_the_summary_for_every_prior_turn(tmp
     from luna.agent import build_agent
     from luna.config.config import LunaConfig
     from luna.session import compact_thread
-    from luna.undo import begin_turn, forget_messages, undo
+    from luna.turn.undo import begin_turn, forget_messages, undo
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
@@ -1045,7 +1045,7 @@ def test_gc_removes_the_shadow_ref_too(tmp_path):
     import os
     import time
 
-    from luna.undo import begin_turn, gc
+    from luna.turn.undo import begin_turn, gc
 
     _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
