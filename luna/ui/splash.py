@@ -33,7 +33,7 @@ RGB = tuple[int, int, int]
 # Big "L U N A" wordmark (5 rows), painted with a left-to-right gradient.
 _WORDMARK = [
     "█        █    █    █    █     ███  ",
-    "█        █    █    █    ██   █   █ ",
+    "█        █    █    ██   █    █   █ ",
     "█        █    █    █ █  █    ██████",
     "█        █    █    █  █ █    █    █",
     "██████    ████     █   ██    █    █",
