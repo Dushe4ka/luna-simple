@@ -251,11 +251,26 @@ def _add_all_excluding_undo_journal(workdir: str, env: dict) -> bool:
     treating it as fine would let ``write-tree`` silently produce an EMPTY tree —
     which ``undo()`` would then read as "every file in the worktree was added by
     this turn" and delete all of them. Exit 1 alongside exit 0 is accepted here;
-    anything else is treated as a real failure.
+    anything else is treated as a real failure — but only because ``add.ignoreErrors``
+    is forced off: with it set to true (a real, if unusual, user/global git config),
+    a genuine indexing failure ALSO exits 1 (rather than 128) while still leaving
+    the failed path out of the index, which would otherwise slip past this exact
+    check and cause the same silent-deletion outcome this function exists to
+    prevent. Pinning it here makes the exit code meaningful regardless of the
+    caller's git config.
     """
     try:
         proc = subprocess.run(
-            ["git", "add", "-A", "--", ".", ":(exclude).luna/undo"],
+            [
+                "git",
+                "-c",
+                "add.ignoreErrors=false",
+                "add",
+                "-A",
+                "--",
+                ".",
+                ":(exclude).luna/undo",
+            ],
             cwd=workdir,
             capture_output=True,
             text=True,

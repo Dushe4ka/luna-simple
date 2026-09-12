@@ -260,9 +260,11 @@ def test_begin_turn_handles_an_unborn_head(tmp_path):
 def test_snapshot_tree_returns_none_on_a_genuine_add_failure_not_an_empty_tree(tmp_path):
     """A GENUINE `git add` failure (e.g. an unreadable file) must not produce an
     EMPTY tree that a later undo() would read as "every file was added by this
-    turn" and delete. Unlike the ignored-paths warning (which still writes a
-    correct temp index despite a nonzero exit), a real failure never writes the
-    index at all — that's the signal _snapshot_tree uses to tell them apart."""
+    turn" and delete. `_snapshot_tree` tells this apart from the benign
+    ignored-paths warning by exit code (0/1 is fine, anything else — e.g. 128,
+    "fatal: adding files failed" — is a real failure), not by whether the temp
+    index file exists: a brand-new repo with nothing to stage also never writes
+    one, on a perfectly successful exit 0."""
     import stat
 
     from luna.undo import _snapshot_tree
@@ -279,6 +281,35 @@ def test_snapshot_tree_returns_none_on_a_genuine_add_failure_not_an_empty_tree(t
         tree = _snapshot_tree(str(tmp_path))
     finally:
         locked.chmod(stat.S_IRUSR | stat.S_IWUSR)  # restore so tmp_path cleanup works
+
+    assert tree is None
+
+
+def test_snapshot_tree_still_detects_failure_under_add_ignore_errors(tmp_path):
+    """With the repo's ``add.ignoreErrors`` set to true (a real, if unusual, git
+    config a user or CI environment might have), a genuine indexing failure exits
+    1 instead of 128 while still leaving the failed path out of the index —
+    exactly the exit code `_snapshot_tree` otherwise treats as the benign
+    ignored-paths warning. `_snapshot_tree` pins `add.ignoreErrors=false` on its
+    own invocation so this doesn't slip through as a falsely "successful" (but
+    silently incomplete) snapshot."""
+    import stat
+
+    from luna.undo import _snapshot_tree
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "add.ignoreErrors", "true")
+    (tmp_path / "keep.txt").write_text("keep\n")
+    (tmp_path / "locked.txt").write_text("locked\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    locked = tmp_path / "locked.txt"
+    locked.chmod(0o000)
+    try:
+        tree = _snapshot_tree(str(tmp_path))
+    finally:
+        locked.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     assert tree is None
 
