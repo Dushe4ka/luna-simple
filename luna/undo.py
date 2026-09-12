@@ -237,21 +237,43 @@ def _run_git(workdir: str, args: list[str], env: dict | None = None) -> str | No
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def _snapshot_tree(workdir: str) -> str | None:
-    """Write the current worktree to a tree object without touching the real index.
+def _add_all_excluding_undo_journal(workdir: str, env: dict) -> bool:
+    """Stage everything except ``.luna/undo`` into the temp index; report success.
 
-    ``git add``'s exit code is deliberately ignored here: when ``.luna`` itself is
-    gitignored (the documented default — ``/init`` adds it to the project's
-    ``.gitignore``), git exits 1 with an "ignored paths" warning even though the
-    ``:(exclude).luna/undo`` pathspec still builds the index correctly — verified
-    by inspecting the resulting tree directly. Gating on that exit code made
-    ``begin_turn`` silently stop recording turns from the moment ``.luna/`` first
-    exists on disk, in exactly the setup Luna itself recommends.
+    ``git add -A -- . ":(exclude).luna/undo"`` exits 1 with an "ignored paths"
+    warning whenever ``.luna`` itself is gitignored (the documented default —
+    ``/init`` adds it to the project's ``.gitignore``): git validates an
+    ``:(exclude)`` pathspec segment against ``.gitignore`` even though it names a
+    path to leave OUT, not one to add. The temp index is still built correctly
+    despite that exit code — verified by inspecting the resulting tree directly.
+    A genuine I/O/permission failure is a different story (exit 128, "fatal:
+    adding files failed"): git never finishes writing the index in that case, and
+    treating it as fine would let ``write-tree`` silently produce an EMPTY tree —
+    which ``undo()`` would then read as "every file in the worktree was added by
+    this turn" and delete all of them. Exit 1 alongside exit 0 is accepted here;
+    anything else is treated as a real failure.
     """
+    try:
+        proc = subprocess.run(
+            ["git", "add", "-A", "--", ".", ":(exclude).luna/undo"],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode in (0, 1)
+
+
+def _snapshot_tree(workdir: str) -> str | None:
+    """Write the current worktree to a tree object without touching the real index."""
     with tempfile.TemporaryDirectory() as tmp:
         index_file = str(Path(tmp) / "index")
         env = {**os.environ, "GIT_INDEX_FILE": index_file}
-        _run_git(workdir, ["add", "-A", "--", ".", ":(exclude).luna/undo"], env=env)
+        if not _add_all_excluding_undo_journal(workdir, env):
+            return None
         return _run_git(workdir, ["write-tree"], env=env)
 
 

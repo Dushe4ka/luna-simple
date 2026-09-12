@@ -257,6 +257,32 @@ def test_begin_turn_handles_an_unborn_head(tmp_path):
     assert ledger.is_file()
 
 
+def test_snapshot_tree_returns_none_on_a_genuine_add_failure_not_an_empty_tree(tmp_path):
+    """A GENUINE `git add` failure (e.g. an unreadable file) must not produce an
+    EMPTY tree that a later undo() would read as "every file was added by this
+    turn" and delete. Unlike the ignored-paths warning (which still writes a
+    correct temp index despite a nonzero exit), a real failure never writes the
+    index at all — that's the signal _snapshot_tree uses to tell them apart."""
+    import stat
+
+    from luna.undo import _snapshot_tree
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "keep.txt").write_text("keep\n")
+    (tmp_path / "locked.txt").write_text("locked\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+    locked = tmp_path / "locked.txt"
+    locked.chmod(0o000)
+    try:
+        tree = _snapshot_tree(str(tmp_path))
+    finally:
+        locked.chmod(stat.S_IRUSR | stat.S_IWUSR)  # restore so tmp_path cleanup works
+
+    assert tree is None
+
+
 def test_begin_turn_does_not_touch_the_users_index_or_worktree(tmp_path):
     from luna.undo import begin_turn
 
