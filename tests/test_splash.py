@@ -47,7 +47,7 @@ def test_gradient_stops_single_step_returns_first_color():
 
 
 def _console(width):
-    # force_terminal so the scene path runs; no_color so assertions see plain text
+    # force_terminal so the wordmark path runs; no_color so assertions see plain text
     return Console(file=io.StringIO(), width=width, force_terminal=True, no_color=True)
 
 
@@ -56,56 +56,33 @@ def test_renders_at_various_widths():
         c = _console(w)
         render_splash(c, steps=["loading modules", "connecting to tools"], animate=False)
         out = c.file.getvalue()
-        assert "LUNA" in out
         assert "loading modules" in out
 
 
-def test_scene_has_wordmark_and_taglines():
+def test_full_splash_has_wordmark_version_and_tagline():
     c = _console(118)
     render_splash(c, animate=False)
     out = c.file.getvalue()
     assert "YOUR AI AGENT COMPANION" in out
     assert "INITIALIZING ..." in out
-    assert "SAME MOON" in out
-    assert "IDEAS" in out and "HUMAN" in out
+    assert "AI AGENT HARNESS" in out
+    # the block-letter wordmark itself: no literal "LUNA" text, just glyphs
+    assert "█" in out
 
 
 def test_compact_fallback_is_used_when_narrow():
     c = _console(70)
     render_splash(c, animate=False)
     out = c.file.getvalue()
+    assert "LUNA" in out
     assert "YOUR AI AGENT COMPANION" in out
     assert "> loading modules ..." in out
 
 
-def test_scene_emits_truecolor_ansi_codes():
+def test_wordmark_emits_truecolor_ansi_codes():
     """Guards against a silent regression to flat/no color: the whole point
-    of the pixel-scene rewrite is a real RGB gradient, not a small named
-    palette — so real truecolor escape codes must show up in the output."""
+    of the gradient wordmark is a real RGB gradient, not a flat color."""
     c = Console(file=io.StringIO(), width=118, force_terminal=True, color_system="truecolor")
     render_splash(c, animate=False)
     out = c.file.getvalue()
     assert "\x1b[38;2;" in out  # a 24-bit truecolor foreground escape
-
-
-def test_moon_shading_falls_off_from_center_to_edge():
-    """The moon must be a smooth gradient, not the old binary
-    "one glyph inside, another outside" disc — brightness should decrease
-    monotonically-ish from center to edge, not jump in two flat bands."""
-    from luna.ui.splash import _moon, _Scene
-
-    scene = _Scene(60, 30, (0, 0, 0))
-    cx, cy, r = 30, 30, 15
-    _moon(scene, cx, cy, r)
-    center = sum(scene.pixel_at(cx, cy))
-    mid = sum(scene.pixel_at(cx + r // 2, cy))
-    edge = sum(scene.pixel_at(cx + r - 1, cy))
-    assert center >= mid >= edge
-
-
-def test_sky_gradient_top_and_bottom_differ():
-    from luna.ui.splash import _Scene, _sky
-
-    scene = _Scene(40, 20, (0, 0, 0))
-    _sky(scene, "#0b1026", "#161c3d")
-    assert scene.pixel_at(0, 0) != scene.pixel_at(0, scene.h - 1)
