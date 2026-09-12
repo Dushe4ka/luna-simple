@@ -8,8 +8,8 @@ from rich.console import Console
 from luna.agent import build_agent
 from luna.config.config import LunaConfig
 from luna.persistence import SessionIndex, make_title
+from luna.repl.usercmd import load as load_user_commands
 from luna.session import run_repl
-from luna.usercmd import load as load_user_commands
 
 
 def test_repl_flow_at_expansion_diff_undo(tmp_path, fake_model):
@@ -157,7 +157,7 @@ def test_user_command_fallthrough_expands_at_mentions_exactly_once(tmp_path, fak
     row = idx.latest_for(str(tmp_path))
     assert row is not None
     user_commands = load_user_commands(str(tmp_path))
-    from luna.usercmd import expand as usercmd_expand
+    from luna.repl.usercmd import expand as usercmd_expand
 
     expanded_once = usercmd_expand(user_commands["greet"], "world", str(tmp_path))
     assert expanded_once == "hi @notes.txt world"

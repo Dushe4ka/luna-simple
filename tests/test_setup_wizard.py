@@ -4,7 +4,7 @@ from rich.console import Console
 
 from luna.config.config import config_path, load_config
 from luna.config.credentials import credentials_path, get_api_key
-from luna.setup_wizard import run_setup
+from luna.repl.setup_wizard import run_setup
 
 
 def _console():

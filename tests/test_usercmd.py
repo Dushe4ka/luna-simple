@@ -1,5 +1,5 @@
 def test_load_reads_project_commands(tmp_path):
-    from luna.usercmd import load
+    from luna.repl.usercmd import load
 
     d = tmp_path / ".luna" / "commands"
     d.mkdir(parents=True)
@@ -12,7 +12,7 @@ def test_load_reads_project_commands(tmp_path):
 
 def test_project_overrides_user(tmp_path, isolated_config_home):
     from luna.config.config import config_dir
-    from luna.usercmd import load
+    from luna.repl.usercmd import load
 
     (config_dir() / "commands").mkdir(parents=True)
     (config_dir() / "commands" / "x.md").write_text("user version")
@@ -24,7 +24,7 @@ def test_project_overrides_user(tmp_path, isolated_config_home):
 
 
 def test_malformed_frontmatter_is_skipped_gracefully(tmp_path):
-    from luna.usercmd import load
+    from luna.repl.usercmd import load
 
     d = tmp_path / ".luna" / "commands"
     d.mkdir(parents=True)
@@ -35,7 +35,7 @@ def test_malformed_frontmatter_is_skipped_gracefully(tmp_path):
 
 
 def test_load_skips_undecodable_files_gracefully(tmp_path):
-    from luna.usercmd import load
+    from luna.repl.usercmd import load
 
     d = tmp_path / ".luna" / "commands"
     d.mkdir(parents=True)
@@ -47,7 +47,7 @@ def test_load_skips_undecodable_files_gracefully(tmp_path):
 
 
 def test_expand_substitutes_arguments(tmp_path):
-    from luna.usercmd import UserCommand, expand
+    from luna.repl.usercmd import UserCommand, expand
 
     cmd = UserCommand(name="x", description="", body="do: $ARGUMENTS")
     assert expand(cmd, "the thing", str(tmp_path)) == "do: the thing"
@@ -56,7 +56,7 @@ def test_expand_substitutes_arguments(tmp_path):
 def test_expand_runs_shell_injection(tmp_path):
     import sys
 
-    from luna.usercmd import UserCommand, expand
+    from luna.repl.usercmd import UserCommand, expand
 
     cmd = UserCommand(name="x", description="", body=f"say: !`{sys.executable} -c \"print('hi')\"`")
     assert "hi" in expand(cmd, "", str(tmp_path))
@@ -66,7 +66,7 @@ def test_expand_leaves_file_mentions_for_the_caller(tmp_path):
     """@file/@agent resolution is the caller's job (run_repl), not usercmd.expand's —
     see the M2 fix in the final whole-branch review: expanding mentions here would
     corrupt an @agent-prefixed command body before run_repl's @agent check ever runs."""
-    from luna.usercmd import UserCommand, expand
+    from luna.repl.usercmd import UserCommand, expand
 
     cmd = UserCommand(name="x", description="", body="look at @f.py")
     assert expand(cmd, "", str(tmp_path)) == "look at @f.py"

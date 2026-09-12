@@ -23,14 +23,15 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
-from luna import permissions, usercmd
-from luna.commands import HELP as SLASH_COMMANDS
-from luna.commands import CommandContext, dispatch
+from luna import permissions
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
 from luna.extensions.subagents import subagent_summaries
 from luna.permissions import load_rules
 from luna.persistence import SessionIndex, make_title
+from luna.repl import usercmd
+from luna.repl.commands import HELP as SLASH_COMMANDS
+from luna.repl.commands import CommandContext, dispatch
 from luna.turn import diagnose, fmt, gitinfo, undo
 from luna.turn.context import PinnedFiles, expand_mentions, render_pinned
 from luna.turn.verify import run_verify

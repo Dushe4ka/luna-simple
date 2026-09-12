@@ -452,7 +452,7 @@ def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
     if handler is None:
         bare = name[1:]
         if ctx.user_commands and bare in ctx.user_commands:
-            from luna.usercmd import expand
+            from luna.repl.usercmd import expand
 
             prompt = expand(ctx.user_commands[bare], arg, ctx.workdir)
             return DispatchResult(prompt=prompt)

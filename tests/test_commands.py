@@ -2,8 +2,8 @@ import io
 
 from rich.console import Console
 
-from luna.commands import CommandContext, dispatch
 from luna.config.config import LunaConfig
+from luna.repl.commands import CommandContext, dispatch
 
 
 def _ctx(**kw):
@@ -34,7 +34,7 @@ def test_non_command_not_handled():
 
 
 def test_user_command_falls_through_to_a_prompt(tmp_path):
-    from luna.usercmd import UserCommand
+    from luna.repl.usercmd import UserCommand
 
     ctx = _ctx(
         workdir=str(tmp_path),

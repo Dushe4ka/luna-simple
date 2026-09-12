@@ -24,8 +24,8 @@ from luna.extensions import mcp, skills
 from luna.extensions.initgen import init_prompt
 from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
 from luna.extensions.subagents import subagent_summaries
+from luna.repl.setup_wizard import run_setup
 from luna.session import run_once, run_repl
-from luna.setup_wizard import run_setup
 from luna.ui.console import get_console
 from luna.ui.splash import render_splash
 
