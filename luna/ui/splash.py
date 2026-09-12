@@ -132,6 +132,13 @@ class _Scene:
 
     # -- text overlay --
 
+    def is_overlaid(self, row: int, col: int) -> bool:
+        """Check whether this cell already carries label/wordmark text.
+
+        Used to keep sparkle accents from landing on top of readable text.
+        """
+        return 0 <= row < self.rows and 0 <= col < self.w and self._overlay[row][col] is not None
+
     def put_text(self, row: int, col: int, ch: str, fg_hex: str) -> None:
         if 0 <= row < self.rows and 0 <= col < self.w:
             self._overlay[row][col] = (ch, fg_hex)
@@ -196,13 +203,14 @@ def _starfield(scene: _Scene, rnd: random.Random, cx: int, cy: int, rx: int, ry:
         PALETTE["moon_dim"],
         PALETTE["moon"],
     ]
-    for _ in range(int(scene.w * scene.h * 0.03)):
+    for _ in range(int(scene.w * scene.h * 0.01)):
         x = rnd.randrange(scene.w)
         y = rnd.randrange(2, scene.h - 14)
         if ((x - cx) / (rx * 2 + 6)) ** 2 + ((y - cy) / (ry * 2 + 4)) ** 2 < 1:
             continue
         color = glyph_colors[min(len(glyph_colors) - 1, int(rnd.random() ** 2 * len(glyph_colors)))]
-        brightness = 0.5 + 0.5 * rnd.random()
+        # most stars stay faint; only the rare one reads as properly bright
+        brightness = 0.15 + 0.55 * rnd.random() ** 2
         scene.blend_pixel(x, y, _hex_to_rgb(color), brightness)
 
 
@@ -213,10 +221,13 @@ def _sparkles(scene: _Scene, rnd: random.Random, cx: int, cy: int, r: int) -> No
     points are what actually read as "stars" up close.
     """
     glyphs = [("✦", PALETTE["accent"]), ("✧", PALETTE["moon"]), ("+", PALETTE["peri"])]
-    for _ in range(int(scene.rows * scene.w * 0.006)):
-        row = rnd.randrange(1, scene.rows - 12)
+    attempts = int(scene.rows * scene.w * 0.0018)
+    for _ in range(attempts):
+        row = rnd.randrange(4, scene.rows - 16)
         col = rnd.randrange(scene.w)
         if ((col - cx) / (r * 2 + 3)) ** 2 + ((row * 2 - cy) / (r * 2 + 3)) ** 2 < 1:
+            continue
+        if scene.is_overlaid(row, col):
             continue
         glyph, color = rnd.choice(glyphs)
         scene.put_text(row, col, glyph, color)
@@ -306,37 +317,33 @@ def _clouds(scene: _Scene, rnd: random.Random, y0: int, *, left: bool) -> None:
 
 
 def _horizon(scene: _Scene, cx: int, sky_bottom_hex: str) -> None:
-    ridge_rgb = _hex_to_rgb("#1c2148")
-    rim_rgb = _hex_to_rgb(PALETTE["mauve"])
-    water_rgb = _hex_to_rgb("#11142c")
+    """Paint a calm sea meeting the sky, with the moon's glow reflected in it.
+
+    Deliberately no land silhouette or hard edge — a smooth continuation of
+    the sky gradient into a darker water tone reads as calmer and closer to
+    the reference art than a mountain ridge did.
+    """
+    sky_bottom = _hex_to_rgb(sky_bottom_hex)
+    water_rgb = _hex_to_rgb("#12162e")
     glow_rgb = _hex_to_rgb(PALETTE["moon"])
 
-    # A rolling hill skyline (two sine harmonics keep it irregular but
-    # smooth) with a warm rim-light catching its topmost pixel, like a
-    # moonlit ridge — this replaces a single flat "ground" row.
-    base_row = scene.h - 16
-    heights = [
-        base_row - round(3 * math.sin(x * 0.05) + 1.5 * math.sin(x * 0.13 + 1.7))
-        for x in range(scene.w)
-    ]
-    for x, ridge_top in enumerate(heights):
-        scene.set_pixel(x, ridge_top, _lerp_rgb(ridge_rgb, rim_rgb, 0.65))
-        scene.set_pixel(x, ridge_top + 1, _lerp_rgb(ridge_rgb, rim_rgb, 0.25))
-        for y in range(ridge_top + 2, scene.h):
-            t = (y - ridge_top) / max(1, scene.h - 1 - ridge_top)
-            scene.set_pixel(x, y, _lerp_rgb(ridge_rgb, water_rgb, min(1.0, t * 1.6)))
+    water_top = scene.h - 14
+    for y in range(water_top, scene.h):
+        t = (y - water_top) / max(1, scene.h - 1 - water_top)
+        for x in range(scene.w):
+            ripple = 0.04 * math.sin(x * 0.25 + y * 0.5)
+            scene.set_pixel(x, y, _lerp_rgb(sky_bottom, water_rgb, max(0.0, min(1.0, t + ripple))))
 
     # The moon's reflection: a soft, rippled glow column with smooth
     # Gaussian falloff in both axes — no hard edges, unlike a fixed-width
     # taper would give.
-    water_top = min(heights)
-    for y in range(water_top + 2, scene.h):
+    for y in range(water_top, scene.h):
         t = (y - water_top) / max(1, scene.h - 1 - water_top)
         ripple = round(math.sin(y * 0.7) * 3)
-        depth_falloff = math.exp(-t * 1.1)
-        for dx in range(-14, 15):
-            width_falloff = math.exp(-((dx / 9) ** 2))
-            scene.blend_pixel(cx + dx + ripple, y, glow_rgb, width_falloff * depth_falloff * 0.75)
+        depth_falloff = math.exp(-t * 1.3)
+        for dx in range(-12, 13):
+            width_falloff = math.exp(-((dx / 8) ** 2))
+            scene.blend_pixel(cx + dx + ripple, y, glow_rgb, width_falloff * depth_falloff * 0.6)
 
 
 def _paint_scene(width: int) -> list[Text]:
@@ -347,16 +354,10 @@ def _paint_scene(width: int) -> list[Text]:
     rnd = random.Random(20)
 
     _sky(scene, "#0b1026", "#161c3d")
-    _starfield(scene, rnd, cx, cy, r, r)
-    _sparkles(scene, rnd, cx, cy, r)
-    _comet(scene, min(w - 20, cx + 36), 12)
-    _constellation(scene, _CONSTELLATION_L, 5, 12)
-    _constellation(scene, _CONSTELLATION_R, w - 27, 14)
-    _clouds(scene, rnd, scene.h - 34, left=True)
-    _clouds(scene, rnd, scene.h - 34, left=False)
-    _horizon(scene, cx, "#161c3d")
-    _moon(scene, cx, cy, r)
 
+    # Labels go up first (before the sparkle pass): _sparkles skips any cell
+    # that already carries text, so text must exist before it runs, or a
+    # sparkle can land right on top of a letter.
     scene.label(0, 0, f"LUNA v{__version__}", PALETTE["peri"])
     scene.label(1, 0, "AI AGENT HARNESS", PALETTE["peri"])
     scene.label(2, 0, "EXPLORE • PLAN • BUILD • TOGETHER", PALETTE["blue"])
@@ -367,12 +368,21 @@ def _paint_scene(width: int) -> list[Text]:
     for i, s in enumerate(("HUMAN", "AND AI", "FURTHER", "TOGETHER")):
         scene.label(8 + i * 2, w - len(s) - 2, s, PALETTE["blue"])
 
-    wy = rows - 11
-    scene.center(wy - 1, "·   ˖   ✦   ˖   ·", PALETTE["mauve"])
+    wy = rows - 10
     for i, row in enumerate(_WORDMARK):
         scene.center_gradient(wy + i, row, _WORDMARK_GRADIENT)
-    scene.center(wy + 5, f"✦    {_TAGLINE}    ✦", PALETTE["peri"])
-    scene.center(wy + 7, "INITIALIZING ...", PALETTE["accent"])
+    scene.center(wy + 6, f"✦    {_TAGLINE}    ✦", PALETTE["peri"])
+    scene.center(wy + 8, "INITIALIZING ...", PALETTE["accent"])
+
+    _starfield(scene, rnd, cx, cy, r, r)
+    _sparkles(scene, rnd, cx, cy, r)
+    _comet(scene, min(w - 20, cx + 36), 12)
+    _constellation(scene, _CONSTELLATION_L, 5, 12)
+    _constellation(scene, _CONSTELLATION_R, w - 27, 14)
+    _clouds(scene, rnd, scene.h - 34, left=True)
+    _clouds(scene, rnd, scene.h - 34, left=False)
+    _horizon(scene, cx, "#161c3d")
+    _moon(scene, cx, cy, r)
 
     return scene.render()
 
