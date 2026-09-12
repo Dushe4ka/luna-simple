@@ -1,4 +1,4 @@
-from luna.initgen import existing_action, init_prompt
+from luna.extensions.initgen import existing_action, init_prompt
 
 
 def test_existing_action(tmp_path):

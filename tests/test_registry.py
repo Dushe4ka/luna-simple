@@ -1,7 +1,7 @@
 import pytest
 
 from luna.config.providers import LunaConfigError
-from luna.registry import known_mcp, resolve_mcp, resolve_skill
+from luna.extensions.registry import known_mcp, resolve_mcp, resolve_skill
 
 
 def test_builtin_mcp_lookup():

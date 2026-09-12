@@ -9,7 +9,7 @@ import os
 import sys
 import uuid
 
-from luna import __version__, mcp, skills
+from luna import __version__
 from luna.agent import build_agent
 from luna.config.config import config_path, load_config, set_config_values
 from luna.config.credentials import (
@@ -20,11 +20,12 @@ from luna.config.credentials import (
     unset_api_key,
 )
 from luna.config.providers import PROVIDERS, LunaConfigError
-from luna.initgen import init_prompt
-from luna.registry import known_mcp, known_skills, resolve_mcp
+from luna.extensions import mcp, skills
+from luna.extensions.initgen import init_prompt
+from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
+from luna.extensions.subagents import subagent_summaries
 from luna.session import run_once, run_repl
 from luna.setup_wizard import run_setup
-from luna.subagents import subagent_summaries
 from luna.ui.console import get_console
 from luna.ui.splash import render_splash
 

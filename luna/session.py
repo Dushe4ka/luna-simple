@@ -28,9 +28,9 @@ from luna.commands import HELP as SLASH_COMMANDS
 from luna.commands import CommandContext, dispatch
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
+from luna.extensions.subagents import subagent_summaries
 from luna.permissions import load_rules
 from luna.persistence import SessionIndex, make_title
-from luna.subagents import subagent_summaries
 from luna.turn import diagnose, fmt, gitinfo, undo
 from luna.turn.context import PinnedFiles, expand_mentions, render_pinned
 from luna.turn.verify import run_verify

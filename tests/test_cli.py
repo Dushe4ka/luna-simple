@@ -73,7 +73,7 @@ def test_mcp_add_explicit_command(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.chdir(tmp_path)
     assert main(["mcp", "add", "custom", "--", "node", "srv.js"]) == 0
-    from luna.mcp import load_mcp_config
+    from luna.extensions.mcp import load_mcp_config
 
     assert load_mcp_config(".")["custom"]["command"] == "node"
 

@@ -18,7 +18,7 @@ from rich.console import Console
 from luna.config.config import LunaConfig
 from luna.config.credentials import get_api_key
 from luna.config.providers import PROVIDERS, LunaConfigError
-from luna.subagents import subagent_summaries
+from luna.extensions.subagents import subagent_summaries
 from luna.turn.undo import peek_last, session_diff, undo_last
 from luna.turn.verify import run_verify
 from luna.ui.theme import PALETTE
@@ -376,7 +376,7 @@ def _redo(ctx: CommandContext, arg: str) -> None:
 
 def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
     """Generate or update AGENTS.md for this repo."""
-    from luna.initgen import init_prompt
+    from luna.extensions.initgen import init_prompt
     from luna.session import run_once  # lazy: session imports commands
 
     run_once(

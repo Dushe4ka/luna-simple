@@ -1,5 +1,10 @@
-from luna.extension_tools import EXTENSION_INTERRUPTS, manage_mcp, manage_skills, remember
-from luna.mcp import load_mcp_config
+from luna.extensions.extension_tools import (
+    EXTENSION_INTERRUPTS,
+    manage_mcp,
+    manage_skills,
+    remember,
+)
+from luna.extensions.mcp import load_mcp_config
 
 
 def test_manage_mcp_add_from_registry(tmp_path, monkeypatch):

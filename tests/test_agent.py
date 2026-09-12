@@ -62,8 +62,8 @@ def test_subagent_deny_rule_is_enforced(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
     from langgraph.checkpoint.memory import InMemorySaver
 
+    from luna.extensions.subagents import load_subagents
     from luna.permissions import load_rules
-    from luna.subagents import load_subagents
     from luna.toolguard import tool_guard
 
     (tmp_path / ".luna").mkdir()

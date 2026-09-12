@@ -14,14 +14,14 @@ from deepagents.backends import LocalShellBackend
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
-from luna import lspnav
-from luna import mcp as mcp_mod
-from luna import skills as skills_mod
-from luna import subagents as subagents_mod
 from luna.config.config import LunaConfig
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
 from luna.config.providers import build_model
-from luna.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
+from luna.extensions import lspnav
+from luna.extensions import mcp as mcp_mod
+from luna.extensions import skills as skills_mod
+from luna.extensions import subagents as subagents_mod
+from luna.extensions.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
 from luna.permissions import load_rules
 from luna.toolguard import tool_guard
 from luna.turn.memory import memory_files

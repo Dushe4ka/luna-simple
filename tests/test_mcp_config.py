@@ -1,6 +1,6 @@
 import json
 
-from luna.mcp import (
+from luna.extensions.mcp import (
     add_server,
     load_mcp_config,
     remove_server,
@@ -64,7 +64,7 @@ def test_project_scope_wins(tmp_path, monkeypatch):
 
 
 def test_load_tools_without_adapter_returns_empty(monkeypatch):
-    import luna.mcp as m
+    import luna.extensions.mcp as m
 
     monkeypatch.setattr(m, "MCP_AVAILABLE", False)
     warned = []

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from luna.config.config import config_dir
 from luna.config.providers import LunaConfigError
-from luna.registry import resolve_skill
+from luna.extensions.registry import resolve_skill
 
 
 def skills_dirs(workdir: str = ".", *, env: Mapping[str, str] | None = None) -> list[Path]:

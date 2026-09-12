@@ -3,7 +3,7 @@ import subprocess
 import pytest
 
 from luna.config.providers import LunaConfigError
-from luna.skills import install, list_skills, remove
+from luna.extensions.skills import install, list_skills, remove
 
 
 def _git(cwd, *args):
