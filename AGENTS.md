@@ -13,50 +13,57 @@
 
 ## Структура
 
-- `luna/config.py` — слоистое разрешение настроек в `LunaConfig`; запись `config.toml`
-- `luna/credentials.py` — API-ключи в `~/.config/luna/credentials.toml` (права 0600)
-- `luna/setup_wizard.py` — интерактивный мастер `luna setup`
-- `luna/providers.py` — реестр провайдеров → chat-модель LangChain
-- `luna/prompts.py` — системный промпт Luna
-- `luna/agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
-- `luna/session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
-- `luna/commands.py` — диспетчер slash-команд
-- `luna/persistence.py` — SqliteSaver + индекс сессий
-- `luna/usage.py` — учёт токенов
-- `luna/context.py` — `@file` + закреплённые файлы
-- `luna/permissions.py` — правила allow/deny
-- `luna/toolguard.py` — middleware: deny + снапшоты
-- `luna/undo.py` — журнал снапшотов, `/diff` `/undo` `/redo` (в git — снапшоты
-  дерева + разговора через `git commit-tree`, вне git — файловый журнал)
-- `luna/gitinfo.py` — проверка git-дерева
-- `luna/memory.py` — `.luna/memory/*.md`
-- `luna/verify.py` — verify-команда
-- `luna/fmt.py` — автоформатирование тронутых файлов после правок
-- `luna/diagnose.py` — диагностика после правок, `/diagnose`
-- `luna/lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
-  `hover`), extra `luna-simple[lsp]`
-- `luna/usercmd.py` — пользовательские slash-команды из `.luna/commands/*.md`
-- `luna/models.toml` — реестр моделей: окно контекста, цена input/output
-- `luna/initgen.py` — `luna init`
-- `luna/registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)
-- `luna/mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов
-- `luna/skills.py` — установка/список/удаление скилов в стиле Anthropic
-- `luna/subagents.py` — встроенные субагенты + из `subagents.toml`
-- `luna/extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills`
+- `luna/cli.py` — точка входа на argparse (`setup`/`config`/`mcp`/`skills`/`agents`/`init`)
+- `luna/core/` — рантайм агента и его защита
+  - `agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
+  - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
+  - `persistence.py` — SqliteSaver + индекс сессий
+  - `toolguard.py` — middleware: deny-правила + снапшоты + `/plan`
+  - `permissions.py` — правила allow/deny
+- `luna/repl/` — интерактивный слой поверх core
+  - `commands.py` — диспетчер slash-команд
+  - `setup_wizard.py` — интерактивный мастер `luna setup`
+  - `usercmd.py` — пользовательские slash-команды из `.luna/commands/*.md`
+- `luna/config/` — настройки, ключи, провайдеры, цены
+  - `config.py` — слоистое разрешение настроек в `LunaConfig`; запись `config.toml`
+  - `credentials.py` — API-ключи в `~/.config/luna/credentials.toml` (права 0600)
+  - `providers.py` — реестр провайдеров → chat-модель LangChain
+  - `prompts.py` — системный промпт Luna
+  - `usage.py` — учёт токенов, `$`-стоимость (`models.toml`)
+  - `models.toml` — реестр моделей: окно контекста, цена input/output
+- `luna/turn/` — всё, что крутится вокруг одного хода
+  - `context.py` — `@file` + закреплённые файлы
+  - `memory.py` — `.luna/memory/*.md`
+  - `undo.py` — журнал снапшотов, `/diff` `/undo` `/redo` (в git — снапшоты
+    дерева + разговора через `git commit-tree`, вне git — файловый журнал)
+  - `gitinfo.py` — проверка git-дерева
+  - `fmt.py` — автоформатирование тронутых файлов после правок
+  - `diagnose.py` — диагностика после правок, `/diagnose`
+  - `verify.py` — verify-команда
+- `luna/extensions/` — подключаемые возможности
+  - `subagents.py` — встроенные субагенты + из `subagents.toml`
+  - `extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills`
+  - `mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов
+  - `skills.py` — установка/список/удаление скилов в стиле Anthropic
+  - `registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)
+  - `lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
+    `hover`), extra `luna-simple[lsp]`
+  - `initgen.py` — `luna init` / `/init`
 - `luna/ui/` — тема `rich`, заставка, консоль, диалог подтверждения, оформление реплик
-- `luna/cli.py` — точка входа на argparse (`setup`/`config`/`mcp`/`skills`/`agents`)
 
 ## Соглашения
 
 - Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
-- Все импорты `deepagents` / `langgraph` держать внутри `luna/agent.py`,
-  `luna/session.py`, `luna/persistence.py` и `luna/toolguard.py`. Известные
-  исключения: `luna/subagents.py` держит модульные импорты `SubAgent` /
+- Все импорты `deepagents` / `langgraph` держать внутри `luna/core/agent.py`,
+  `luna/core/session.py`, `luna/core/persistence.py` и
+  `luna/core/toolguard.py`. Известные исключения:
+  `luna/extensions/subagents.py` держит модульные импорты `SubAgent` /
   `FilesystemMiddleware` из `deepagents` (нужны для сборки декларативных
-  субагентов); `luna/undo.py` — `undo()`/`redo()` принимают уже собранного
-  агента параметром и лениво импортируют `langchain_core.messages` только
-  внутри этих двух функций, остальной модуль framework-free.
-- ID моделей — в `luna/providers.py` или конфиге, никогда в логике агента.
+  субагентов); `luna/turn/undo.py` — `undo()`/`redo()` принимают уже
+  собранного агента параметром и лениво импортируют
+  `langchain_core.messages` только внутри этих двух функций, остальной
+  модуль framework-free.
+- ID моделей — в `luna/config/providers.py` или конфиге, никогда в логике агента.
 - Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
 - `subagents.toml` получил ключ `unsafe` — opt-in для мутирующих инструментов
   (`write_file` / `edit_file` / `delete` / `execute`) у субагента; правки
