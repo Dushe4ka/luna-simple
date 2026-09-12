@@ -6,7 +6,7 @@ import io
 from rich.console import Console
 
 from luna.cli import _resolve_resume
-from luna.persistence import SessionIndex
+from luna.core.persistence import SessionIndex
 
 
 def _console() -> Console:
@@ -49,7 +49,7 @@ def test_resume_list_non_interactive_returns_none(tmp_path):
 
 def test_session_id_follows_resumed_thread(tmp_path, monkeypatch):
     import luna.cli as cli
-    from luna.persistence import SessionIndex
+    from luna.core.persistence import SessionIndex
 
     idx = SessionIndex()
     idx.record("thread-abc", str(tmp_path), "earlier work")

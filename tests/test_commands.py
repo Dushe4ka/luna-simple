@@ -99,7 +99,7 @@ def test_provider_without_key_does_not_swap(monkeypatch):
 
 
 def test_sessions_lists(monkeypatch, capsys):
-    from luna.persistence import SessionIndex
+    from luna.core.persistence import SessionIndex
 
     idx = SessionIndex()
     idx.record("t-old", ".", "older task")
@@ -112,7 +112,7 @@ def test_sessions_lists(monkeypatch, capsys):
 
 
 def test_resume_by_number_swaps_thread():
-    from luna.persistence import SessionIndex
+    from luna.core.persistence import SessionIndex
 
     idx = SessionIndex()
     idx.record("t-old", ".", "older")
@@ -124,7 +124,7 @@ def test_resume_by_number_swaps_thread():
 
 
 def test_resume_no_arg_lists_and_hints():
-    from luna.persistence import SessionIndex
+    from luna.core.persistence import SessionIndex
 
     idx = SessionIndex()
     idx.record("t1", ".", "one")
@@ -211,7 +211,7 @@ def test_compact_failure_does_not_raise(tmp_path):
 def test_compact_replaces_history_in_place(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
+    from luna.core.agent import build_agent
 
     agent = build_agent(
         LunaConfig(workdir=str(tmp_path)),
@@ -256,7 +256,7 @@ def test_add_drop_context_handlers(tmp_path):
 def test_compact_no_summary_is_graceful(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
+    from luna.core.agent import build_agent
 
     agent = build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(AIMessage(content="")))
     ctx = _ctx(agent=agent, thread_id="t", workdir=str(tmp_path), index=None)
@@ -267,7 +267,7 @@ def test_compact_no_summary_is_graceful(tmp_path, fake_model):
 def test_compact_empty_summary_trims_the_instruction_turn(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
+    from luna.core.agent import build_agent
 
     # first turn produces no reusable AI text; the summary turn is empty too
     agent = build_agent(

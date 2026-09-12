@@ -22,7 +22,7 @@ def test_init_subcommand_runs_agent(tmp_path, fake_model, monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
         "build_agent",
-        lambda *a, **k: __import__("luna.agent", fromlist=["build_agent"]).build_agent(
+        lambda *a, **k: __import__("luna.core.agent", fromlist=["build_agent"]).build_agent(
             *a,
             model=fake_model(AIMessage(content="wrote AGENTS.md")),
             **{kk: vv for kk, vv in k.items() if kk != "model"},

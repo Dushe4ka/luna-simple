@@ -1,8 +1,8 @@
 from langchain_core.messages import AIMessage
 
-from luna.agent import INTERRUPT_TOOLS, build_agent
 from luna.config.config import LunaConfig
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
+from luna.core.agent import INTERRUPT_TOOLS, build_agent
 
 
 def test_prompt_mentions_the_four_verbs():
@@ -35,7 +35,7 @@ def test_interrupt_tools_cover_mutations():
 
 def test_build_agent_wires_extensions(tmp_path, fake_model, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    from luna.agent import describe_capabilities
+    from luna.core.agent import describe_capabilities
 
     cfg = LunaConfig(workdir=str(tmp_path))
     agent = build_agent(cfg, model=fake_model())
@@ -62,9 +62,9 @@ def test_subagent_deny_rule_is_enforced(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
     from langgraph.checkpoint.memory import InMemorySaver
 
+    from luna.core.permissions import load_rules
+    from luna.core.toolguard import tool_guard
     from luna.extensions.subagents import load_subagents
-    from luna.permissions import load_rules
-    from luna.toolguard import tool_guard
 
     (tmp_path / ".luna").mkdir()
     (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["execute:*"]\n')

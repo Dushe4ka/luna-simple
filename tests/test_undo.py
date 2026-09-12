@@ -5,8 +5,8 @@ import time
 
 from langchain_core.messages import AIMessage
 
-from luna.agent import build_agent
 from luna.config.config import LunaConfig
+from luna.core.agent import build_agent
 from luna.turn.undo import journal_dir, peek_last, session_diff, snapshot, undo_last
 
 
@@ -336,8 +336,8 @@ def test_begin_turn_does_not_touch_the_users_index_or_worktree(tmp_path):
 def test_undo_restores_files_and_truncates_the_conversation(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
@@ -385,8 +385,8 @@ def test_undo_with_no_turns_returns_none(tmp_path):
 def test_redo_restores_files_and_messages(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
@@ -433,8 +433,8 @@ def test_redo_with_nothing_to_redo_returns_none(tmp_path):
 def test_a_new_turn_clears_the_redo_stack(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
@@ -464,8 +464,8 @@ def test_undo_redo_undo_reverts_files_the_second_time(tmp_path, fake_model):
     """Regression: redo() must preserve the original pre_sha for a later undo()."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
@@ -509,8 +509,8 @@ def test_undo_deletes_a_file_the_turn_created(tmp_path, fake_model):
     """Regression: `git checkout` never deletes a path absent from pre_sha's tree."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
@@ -548,8 +548,8 @@ def test_redo_deletes_a_file_the_turn_deleted(tmp_path, fake_model):
     """Regression: the mirror case — redo() re-applying a deletion `git checkout` can't undo."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
@@ -583,8 +583,8 @@ def test_redo_deletes_a_file_the_turn_deleted(tmp_path, fake_model):
 def test_session_diff_uses_git_when_available(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, session_diff
 
     _git(tmp_path, "init", "-q")
@@ -622,8 +622,8 @@ def test_undo_redo_undo_leaves_the_thread_usable(tmp_path, fake_model):
     actually succeed rather than raising "Unknown BaseMessage type"."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, redo, undo
 
     _git(tmp_path, "init", "-q")
@@ -674,8 +674,8 @@ def test_undo_does_not_delete_its_own_journal(tmp_path, fake_model):
     is captured, so without a .luna exclusion they look like turn-created files)."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
@@ -724,8 +724,8 @@ def test_begin_turn_keeps_recording_every_turn_when_luna_is_gitignored(tmp_path,
     once jumps straight from v3 to v0 instead of v3 to v2)."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
@@ -779,8 +779,8 @@ def test_undo_preserves_the_ledger_when_update_state_raises(tmp_path, fake_model
     import pytest
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
@@ -842,8 +842,8 @@ def test_undo_does_not_touch_the_users_real_index(tmp_path, fake_model):
     behavior)."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
     from luna.turn.undo import begin_turn, undo
 
     _git(tmp_path, "init", "-q")
@@ -892,9 +892,9 @@ def test_compact_then_undo_does_not_try_to_remove_the_summary(tmp_path, fake_mod
     not make it try to remove messages that no longer exist (the M3 fix)."""
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.session import compact_thread
+    from luna.core.agent import build_agent
+    from luna.core.session import compact_thread
     from luna.turn.undo import begin_turn, forget_messages, undo
 
     _git(tmp_path, "init", "-q")
@@ -960,9 +960,9 @@ def test_compact_then_double_undo_preserves_the_summary_for_every_prior_turn(tmp
     """
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
-    from luna.session import compact_thread
+    from luna.core.agent import build_agent
+    from luna.core.session import compact_thread
     from luna.turn.undo import begin_turn, forget_messages, undo
 
     _git(tmp_path, "init", "-q")

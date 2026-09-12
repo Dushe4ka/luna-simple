@@ -3,9 +3,9 @@ import io
 from langchain_core.messages import AIMessage
 from rich.console import Console
 
-from luna.agent import build_agent
 from luna.config.config import LunaConfig
-from luna.session import SLASH_COMMANDS, collect_decisions, run_once
+from luna.core.agent import build_agent
+from luna.core.session import SLASH_COMMANDS, collect_decisions, run_once
 
 
 def _console():
@@ -47,7 +47,7 @@ def test_slash_help_registered():
 
 
 def test_at_agent_mention_is_rewritten_to_a_delegation_instruction(tmp_path, fake_model):
-    from luna.session import run_repl
+    from luna.core.session import run_repl
 
     agent = build_agent(
         LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content="ok"))

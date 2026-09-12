@@ -10,7 +10,6 @@ import sys
 import uuid
 
 from luna import __version__
-from luna.agent import build_agent
 from luna.config.config import config_path, load_config, set_config_values
 from luna.config.credentials import (
     credentials_path,
@@ -20,12 +19,13 @@ from luna.config.credentials import (
     unset_api_key,
 )
 from luna.config.providers import PROVIDERS, LunaConfigError
+from luna.core.agent import build_agent
+from luna.core.session import run_once, run_repl
 from luna.extensions import mcp, skills
 from luna.extensions.initgen import init_prompt
 from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
 from luna.extensions.subagents import subagent_summaries
 from luna.repl.setup_wizard import run_setup
-from luna.session import run_once, run_repl
 from luna.ui.console import get_console
 from luna.ui.splash import render_splash
 
@@ -381,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
-    from luna.persistence import SessionIndex, checkpointer
+    from luna.core.persistence import SessionIndex, checkpointer
 
     index = SessionIndex()
     cp = checkpointer(on_warn=lambda m: console.print(f"[yellow]{m}[/]"))

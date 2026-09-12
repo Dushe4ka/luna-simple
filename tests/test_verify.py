@@ -38,7 +38,7 @@ def _flaky_command(sentinel) -> str:
 
 
 def test_run_verification_one_retry_then_ok(tmp_path, monkeypatch):
-    from luna import session
+    from luna.core import session
 
     calls: list = []
 
@@ -61,7 +61,7 @@ def test_run_verification_one_retry_then_ok(tmp_path, monkeypatch):
 
 
 def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
-    from luna import session
+    from luna.core import session
 
     calls: list = []
     monkeypatch.setattr(session, "_stream_turn", lambda *a, **k: calls.append(1))
@@ -74,7 +74,7 @@ def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
 
 
 def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
-    from luna import session
+    from luna.core import session
     from luna.turn.verify import run_verify as real_run_verify
 
     verify_calls: list = []
@@ -108,7 +108,7 @@ def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
 
 
 def test_verification_gated_on_mutating_tool(tmp_path, monkeypatch):
-    from luna import session
+    from luna.core import session
 
     verify_calls: list = []
     monkeypatch.setattr(

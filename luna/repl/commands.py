@@ -1,6 +1,6 @@
 """REPL slash-command dispatch table.
 
-``run_repl`` in :mod:`luna.session` delegates every ``/command`` line to
+``run_repl`` in :mod:`luna.core.session` delegates every ``/command`` line to
 :func:`dispatch`. Each handler takes ``(ctx, arg)`` and either returns a
 :class:`DispatchResult` or ``None`` (treated as handled/no-op). Later tasks
 register additional handlers by adding an entry to ``_TABLE``.
@@ -256,7 +256,7 @@ def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
 
 def _compact(ctx: CommandContext, arg: str) -> DispatchResult | None:
     """Summarise the conversation and replace its history in place."""
-    from luna.session import compact_thread  # lazy: session imports commands
+    from luna.core.session import compact_thread  # lazy: session imports commands
     from luna.turn import undo
 
     try:
@@ -376,8 +376,8 @@ def _redo(ctx: CommandContext, arg: str) -> None:
 
 def _init(ctx: CommandContext, arg: str) -> DispatchResult | None:
     """Generate or update AGENTS.md for this repo."""
+    from luna.core.session import run_once  # lazy: session imports commands
     from luna.extensions.initgen import init_prompt
-    from luna.session import run_once  # lazy: session imports commands
 
     run_once(
         ctx.agent,

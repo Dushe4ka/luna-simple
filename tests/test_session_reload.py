@@ -3,7 +3,7 @@ import io
 from rich.console import Console
 
 from luna.config.usage import TurnUsage
-from luna.session import run_repl
+from luna.core.session import run_repl
 
 
 class _FakeAgent:
@@ -33,7 +33,7 @@ def test_reload_swaps_agent():
 
 
 def test_reload_refreshes_allow_rules(monkeypatch):
-    from luna import session
+    from luna.core import session
 
     calls = []
     monkeypatch.setattr(session, "load_rules", lambda wd: calls.append(wd) or f"rules-{len(calls)}")
@@ -49,7 +49,7 @@ def test_reload_refreshes_allow_rules(monkeypatch):
 
 
 def test_turn_failure_does_not_kill_the_session(monkeypatch):
-    from luna import session
+    from luna.core import session
 
     calls = []
 
@@ -71,7 +71,7 @@ def test_turn_failure_does_not_kill_the_session(monkeypatch):
 
 
 def test_auto_reload_failure_keeps_old_agent(monkeypatch):
-    from luna import session
+    from luna.core import session
 
     def fake_stream(*a, **k):
         return "", True, TurnUsage(), set()

@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from luna.permissions import suggest_rule
+from luna.core.permissions import suggest_rule
 from luna.ui.theme import PALETTE
 
 _MAX_PREVIEW_LINES = 40

@@ -151,7 +151,7 @@ def test_json_output_is_one_parseable_object(tmp_path, fake_model, monkeypatch, 
     monkeypatch.setattr(
         cli,
         "build_agent",
-        lambda *a, **k: __import__("luna.agent", fromlist=["build_agent"]).build_agent(
+        lambda *a, **k: __import__("luna.core.agent", fromlist=["build_agent"]).build_agent(
             *a,
             model=fake_model(AIMessage(content="hi")),
             **{kk: vv for kk, vv in k.items() if kk != "model"},

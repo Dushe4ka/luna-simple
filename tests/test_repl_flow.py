@@ -5,11 +5,11 @@ import sys
 from langchain_core.messages import AIMessage
 from rich.console import Console
 
-from luna.agent import build_agent
 from luna.config.config import LunaConfig
-from luna.persistence import SessionIndex, make_title
+from luna.core.agent import build_agent
+from luna.core.persistence import SessionIndex, make_title
+from luna.core.session import run_repl
 from luna.repl.usercmd import load as load_user_commands
-from luna.session import run_repl
 
 
 def test_repl_flow_at_expansion_diff_undo(tmp_path, fake_model):

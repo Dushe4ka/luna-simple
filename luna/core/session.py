@@ -1,6 +1,6 @@
 """Streaming REPL / one-shot session loop with approval handling.
 
-Together with :mod:`luna.agent` this is the only module that touches
+Together with :mod:`luna.core.agent` this is the only module that touches
 ``deepagents`` / ``langgraph`` directly.
 """
 
@@ -23,12 +23,12 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
 
-from luna import permissions
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
+from luna.core import permissions
+from luna.core.permissions import load_rules
+from luna.core.persistence import SessionIndex, make_title
 from luna.extensions.subagents import subagent_summaries
-from luna.permissions import load_rules
-from luna.persistence import SessionIndex, make_title
 from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
 from luna.repl.commands import CommandContext, dispatch
@@ -111,7 +111,7 @@ def collect_decisions(
 ) -> dict:
     """Turn an interrupt payload into a ``Command(resume=...)`` argument.
 
-    ``rules`` (a :class:`~luna.permissions.RuleSet`) auto-approves any request
+    ``rules`` (a :class:`~luna.core.permissions.RuleSet`) auto-approves any request
     whose ``(tool, args)`` matches an ``allow`` rule. A decision carrying an
     ``"always"`` key is persisted as a project rule and folded into ``rules``.
     """

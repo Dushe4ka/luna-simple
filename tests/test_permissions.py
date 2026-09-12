@@ -1,4 +1,4 @@
-from luna.permissions import RuleSet, append_project_rule, load_rules, suggest_rule
+from luna.core.permissions import RuleSet, append_project_rule, load_rules, suggest_rule
 
 
 def test_match_execute_prefix():
@@ -98,8 +98,8 @@ def test_exact_tool_rules_unchanged():
 def test_guard_blocks_deny(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.agent import build_agent
     from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
 
     (tmp_path / ".luna").mkdir()
     (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["execute:rm *"]\n')

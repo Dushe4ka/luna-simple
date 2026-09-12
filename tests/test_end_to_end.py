@@ -3,9 +3,9 @@ import io
 from langchain_core.messages import AIMessage
 from rich.console import Console
 
-from luna.agent import build_agent
 from luna.config.config import LunaConfig
-from luna.session import run_once
+from luna.core.agent import build_agent
+from luna.core.session import run_once
 
 
 def test_agent_writes_a_file_after_approval(tmp_path, fake_model):

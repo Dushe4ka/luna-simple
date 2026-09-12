@@ -1,7 +1,7 @@
 """Assemble the Luna deep agent from a resolved config.
 
 All ``deepagents`` / ``langgraph`` / ``langchain_mcp_adapters`` imports are
-confined to this module and ``luna.session``.
+confined to this module and ``luna.core.session``.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from luna.config.config import LunaConfig
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
 from luna.config.providers import build_model
+from luna.core.permissions import load_rules
+from luna.core.toolguard import tool_guard
 from luna.extensions import lspnav
 from luna.extensions import mcp as mcp_mod
 from luna.extensions import skills as skills_mod
 from luna.extensions import subagents as subagents_mod
 from luna.extensions.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
-from luna.permissions import load_rules
-from luna.toolguard import tool_guard
 from luna.turn.memory import memory_files
 
 # Tools that mutate the workspace and therefore pause for approval.
