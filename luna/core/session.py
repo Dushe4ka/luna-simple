@@ -223,6 +223,13 @@ def _stream_turn(
     reload_requested = False
     turn_usage = TurnUsage()
     progress = ToolProgress(console)
+    # True whenever streamed text has left the cursor mid-line (no trailing
+    # newline printed yet). If a tool call follows prose in the same turn —
+    # e.g. "Sure, I'll read the config first." then a `read_file` call — the
+    # live progress indicator's first render lands on that same line, and its
+    # next refresh erases it. A newline must be flushed before any
+    # tool-progress output starts.
+    line_open = False
 
     open_turn(console)
     try:
@@ -241,8 +248,12 @@ def _stream_turn(
                         if text:
                             parts.append(text)
                             console.print(text, end="", soft_wrap=True)
+                            line_open = not text.endswith("\n")
                 elif mode == "updates":
                     interrupts.extend(_iter_interrupts(chunk))
+                    if line_open:
+                        console.print()
+                        line_open = False
                     _report_tool_calls(chunk, progress, requested_tools)
                     reload_requested |= _report_tools(chunk, progress, seen_tools, tool_names_seen)
 

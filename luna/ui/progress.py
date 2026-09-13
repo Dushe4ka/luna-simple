@@ -147,7 +147,14 @@ class ToolProgress:
             # ``clock()`` invocation.
             return out
         now = self._clock()
-        for i, pending in enumerate(self._pending.values()):
+        # Snapshot into a list before iterating: `rich.live.Live`'s background
+        # refresh thread calls this ~10x/second while `start()`/`finish()`/
+        # `close()` mutate `self._pending` from the main thread with no lock.
+        # `list(dict.values())` is atomic under the GIL, so this closes the
+        # race (a raw `.values()` iterator can raise "dictionary changed size
+        # during iteration" if a mutation lands mid-refresh, silently killing
+        # the background thread and freezing the pulse for the rest of the turn).
+        for i, pending in enumerate(list(self._pending.values())):
             if i:
                 out.append("\n")
             elapsed = now - pending.started_at

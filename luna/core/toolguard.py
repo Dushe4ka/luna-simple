@@ -32,11 +32,13 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
             return ToolMessage(
                 content=f"blocked by a Luna permission rule ({name})",
                 tool_call_id=call.get("id", "blocked"),
+                status="error",
             )
         if plan is not None and plan() and name in {"write_file", "edit_file", "delete", "execute"}:
             return ToolMessage(
                 content=f"plan mode is on — refusing to {name}. Run /plan off to make changes.",
                 tool_call_id=call.get("id", "blocked"),
+                status="error",
             )
         if use_journal and name in _MUTATING:
             rel = (args.get("file_path") or args.get("path") or "").lstrip("/")

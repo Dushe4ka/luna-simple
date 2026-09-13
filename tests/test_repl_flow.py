@@ -450,3 +450,94 @@ def test_tool_progress_handles_two_parallel_tool_calls(tmp_path, fake_model):
     out = console.file.getvalue()
     assert "write_file(/a.txt) · done" in out
     assert "write_file(/b.txt) · done" in out
+
+
+def test_tool_progress_does_not_erase_prose_that_precedes_a_tool_call(tmp_path, fake_model):
+    """Regression for the CRITICAL finding from the final whole-branch review:
+    when the model's response is prose followed by a tool call in the SAME
+    message (e.g. "Sure, I'll check that." then a `read_file`/`write_file`
+    call — the most common tool-use shape), the streamed text is printed with
+    ``end=""`` and no trailing newline. Before the fix, `ToolProgress`'s
+    `rich.live.Live` then rendered its first frame on that same line, and its
+    next refresh erased the prose with ANSI erase-line sequences. `_stream_turn`
+    must flush a newline before any tool-progress output starts whenever the
+    cursor was left mid-line.
+    """
+    prose = "Sure, I'll check that."
+    calls = [
+        AIMessage(
+            content=prose,
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
+    lines = iter(["check and write notes.txt", "/exit"])
+    rc = run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=True),
+        thread_id="t",
+    )
+    assert rc == 0
+    out = console.file.getvalue()
+    assert prose in out
+    assert "write_file(/notes.txt) · done" in out
+    # The prose must be immediately followed by a newline (a flushed cursor
+    # position), not run directly into the tool-progress label on the same
+    # line — that adjacency is exactly what the erase-line bug produced.
+    prose_end = out.index(prose) + len(prose)
+    assert out[prose_end] == "\n"
+    # ...and the tool label must appear strictly after that newline, never
+    # sharing the prose's line.
+    label_idx = out.index("write_file(/notes.txt)")
+    assert label_idx > prose_end
+
+
+def test_tool_progress_renders_error_line_when_user_rejects_approval(tmp_path, fake_model):
+    """Regression for the IMPORTANT finding from the final whole-branch review:
+    no test exercised the real end-to-end path where a user rejects an
+    approval prompt (yolo=False) and the resulting `ToolMessage(status="error")`
+    — real langchain human-in-the-loop middleware behavior — renders as a
+    `· error ·` line via `ToolProgress.finish`.
+    """
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
+                }
+            ],
+        ),
+        AIMessage(content="ok, not writing it"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=False), model=fake_model(*calls))
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
+    # "n" rejects the pending action_request; the follow-up line is the reject reason.
+    lines = iter(["write notes.txt please", "n", "not needed", "/exit"])
+    rc = run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=False),
+        thread_id="t",
+    )
+    assert rc == 0
+    out = console.file.getvalue()
+    assert "write_file(/notes.txt) · error" in out
+    assert not (tmp_path / "notes.txt").exists()
