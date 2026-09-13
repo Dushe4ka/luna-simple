@@ -134,21 +134,46 @@ def test_resume_no_arg_lists_and_hints():
     assert "one" in ctx.console.file.getvalue()
 
 
-def test_resume_by_number_prints_a_recap():
+def test_resume_by_number_prints_a_recap_of_the_target_thread():
+    from types import SimpleNamespace
+
     from luna.core.persistence import SessionIndex
+
+    class _StubAgent:
+        """Fake agent with real conversation history, recording which
+        thread's config it was asked to recap."""
+
+        def __init__(self):
+            self.seen_configs = []
+
+        def get_state(self, config):
+            self.seen_configs.append(config)
+            return SimpleNamespace(
+                values={
+                    "messages": [
+                        SimpleNamespace(type="human", content="what does the old code do?"),
+                        SimpleNamespace(type="ai", content="it parses the config file"),
+                    ]
+                }
+            )
 
     idx = SessionIndex()
     idx.record("t-old", ".", "older")
     idx.record("t-new", ".", "newer")
-    ctx = _ctx(index=idx, workdir=".")
+    agent = _StubAgent()
+    ctx = _ctx(index=idx, workdir=".", agent=agent, thread_id="t-active")
+    # newest first → [1] = t-new, [2] = t-old
     dispatch("/resume 2", ctx)
     out = ctx.console.file.getvalue()
-    # _ctx()'s default agent is a bare object() with no get_state(), so
-    # _print_recap's own broad except-and-return-silently makes this a
-    # no-crash check rather than a content check — the real content case
-    # is exercised end-to-end via run_repl in tests/test_repl_flow.py-style
-    # coverage elsewhere in this suite, not duplicated here.
-    assert "resumed session" in out  # existing behavior, still present
+
+    assert "— resuming, last" in out
+    assert "it parses the config file" in out
+    assert "resumed session" in out
+
+    # the recap must be for the thread being switched TO, not the one
+    # that was active before the switch.
+    assert agent.seen_configs[-1]["configurable"]["thread_id"] == "t-old"
+    assert agent.seen_configs[-1]["configurable"]["thread_id"] != ctx.thread_id
 
 
 def test_sessions_without_index_is_graceful():
