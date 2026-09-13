@@ -27,6 +27,7 @@ from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
 from luna.extensions.subagents import subagent_summaries
 from luna.repl.setup_wizard import run_setup
 from luna.ui.console import get_console
+from luna.ui.interact import arrow_pick
 from luna.ui.splash import render_splash
 
 _SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init"}
@@ -110,11 +111,16 @@ def _resolve_resume(args, index, workdir, console, interactive):
     if not rows:
         print("luna: no sessions recorded for this directory", file=sys.stderr)
         return None
-    for n, r in enumerate(rows, 1):
-        console.print(f"  [{n}] {r.title}")
     if not interactive:
+        for n, r in enumerate(rows, 1):
+            console.print(f"  [{n}] {r.title}")
         print("luna: --resume needs a value in non-interactive mode", file=sys.stderr)
         return None
+    picked = arrow_pick(console, input, [(r.thread_id, r.title) for r in rows], default=None)
+    if picked is not None:
+        return picked
+    for n, r in enumerate(rows, 1):
+        console.print(f"  [{n}] {r.title}")
     choice = input("resume which? > ").strip()
     if choice.isdigit() and 1 <= int(choice) <= len(rows):
         return rows[int(choice) - 1].thread_id

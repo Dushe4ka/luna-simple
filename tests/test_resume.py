@@ -68,3 +68,41 @@ def test_session_id_follows_resumed_thread(tmp_path, monkeypatch):
     cli.main(["-c"])
     assert seen["thread_id"] == "thread-abc"
     assert seen["session_id"] == "thread-abc"
+
+
+def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkeypatch):
+    """The interactive `--resume` (no id) branch has a real bug today: it
+    calls the bare `input()` builtin directly (not an injectable
+    input_fn), so this is the only way to exercise it in a test — patch
+    the real builtin. Confirms arrow_pick is consulted first, and that a
+    stubbed arrow_pick's return value is used directly."""
+    import luna.cli as cli
+    from luna.core.persistence import SessionIndex
+
+    idx = SessionIndex()
+    idx.record("thread-a", str(tmp_path), "a task")
+
+    monkeypatch.setattr(
+        cli, "arrow_pick", lambda console, input_fn, options, default=None: "thread-a"
+    )
+    got = _resolve_resume(
+        _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
+    )
+    assert got == "thread-a"
+
+
+def test_resume_list_interactive_falls_back_to_input_when_arrow_pick_declines(
+    tmp_path, monkeypatch
+):
+    import luna.cli as cli
+    from luna.core.persistence import SessionIndex
+
+    idx = SessionIndex()
+    idx.record("thread-a", str(tmp_path), "a task")
+
+    monkeypatch.setattr(cli, "arrow_pick", lambda console, input_fn, options, default=None: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+    got = _resolve_resume(
+        _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
+    )
+    assert got == "thread-a"
