@@ -128,12 +128,19 @@ Internals:
   PALETTE["peri"], brightness)` — the same two colors already used for
   "quiet secondary text" vs. "readable accent text" elsewhere in the UI,
   so the pulse reads as on-brand rather than a generic loader.
-- `finish()` removes the entry from `_pending`, then
-  `console.print(Text(f"  ⎿ {detail}", style=PALETTE["blue"]))` — a
-  *permanent* line (plain `console.print`, not part of the Live
-  renderable), left in the scrollback. If `_pending` is now empty, the
-  `Live` is stopped (nothing left to animate); it restarts lazily on the
-  next `start()` if the model issues another call before the turn ends.
+- `finish()` removes the entry from `_pending`, then prints a *permanent*
+  line repeating the same `label` the pending line showed —
+  `console.print(Text(f"  ⎿ {label} · done · {elapsed:.1f}s · {detail}", ...))`
+  — via plain `console.print` (not part of the Live renderable), left in
+  the scrollback. The label is repeated here deliberately, not left to the
+  transient pending line alone: `Live.start()` defaults to `refresh=False`,
+  so its first frame only paints on the background thread's first tick
+  (~100ms at this refresh rate) or on `stop()` — by which point `finish()`
+  has already popped the entry, so a call fast enough to complete inside
+  that window (most calls) would otherwise never show its label anywhere.
+  If `_pending` is now empty, the `Live` is stopped (nothing left to
+  animate); it restarts lazily on the next `start()` if the model issues
+  another call before the turn ends.
 - `pause()`/`resume()` wrap `Live.stop()`/`Live.start()` — needed because
   an approval prompt uses blocking `input()` on the same console, which
   must not race the Live's background refresh thread for control of the
@@ -205,9 +212,10 @@ degrade to today's plain behavior, never crash a turn.
 ```
 ⏺ write_file(luna/ui/progress.py)  ● ● ●  2s
 ```
-resolves to:
+resolves to (the label is repeated here — see the `finish()` note above
+for why it can't rely on the pending line alone):
 ```
-  ⎿ done · 0.4s
+  ⎿ write_file(luna/ui/progress.py) · done · 0.4s
 ```
 
 A subagent call:
@@ -218,7 +226,7 @@ A subagent call:
 resolves to (the detail is the first line of the subagent's final answer,
 the same value `_report_tools` already extracts today):
 ```
-  ⎿ done in 14s · found 3 files, proposed a plan
+  ⎿ task(researcher) · done in 14s · found 3 files, proposed a plan
 ```
 
 Two parallel calls render as two stacked pending lines, each with its own
