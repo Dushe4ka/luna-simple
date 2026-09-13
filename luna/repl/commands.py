@@ -21,6 +21,7 @@ from luna.config.providers import PROVIDERS, LunaConfigError
 from luna.extensions.subagents import subagent_summaries
 from luna.turn.undo import peek_last, session_diff, undo_last
 from luna.turn.verify import run_verify
+from luna.ui.interact import arrow_confirm, arrow_pick
 from luna.ui.theme import PALETTE
 
 HELP: dict[str, str] = {
@@ -174,7 +175,7 @@ def _sessions(ctx: CommandContext, arg: str) -> None:
 
 
 def _resume(ctx: CommandContext, arg: str) -> DispatchResult | None:
-    """Resume a past session: /resume <number> (no arg lists them)."""
+    """Resume a past session: /resume <number> (no arg picks interactively)."""
     if ctx.index is None:
         ctx.console.print("[dim]session history is not available here[/]")
         return None
@@ -183,6 +184,15 @@ def _resume(ctx: CommandContext, arg: str) -> DispatchResult | None:
         if not rows:
             ctx.console.print("[dim]no sessions recorded for this directory[/]")
             return None
+        if ctx.input_fn is not None:
+            picked = arrow_pick(
+                ctx.console,
+                ctx.input_fn,
+                [(r.thread_id, r.title) for r in rows],
+                default=None,
+            )
+            if picked is not None:
+                return _do_resume(ctx, picked)
         for n, r in enumerate(rows, 1):
             ctx.console.print(f"  [{n}] {r.title}")
         ctx.console.print("[dim]usage: /resume <number>[/]")
@@ -192,6 +202,14 @@ def _resume(ctx: CommandContext, arg: str) -> DispatchResult | None:
         target = rows[int(arg) - 1].thread_id
     else:
         target = arg  # treat as a thread id
+    return _do_resume(ctx, target)
+
+
+def _do_resume(ctx: CommandContext, target: str) -> DispatchResult:
+    from luna.core.session import _print_recap  # lazy: session imports commands
+
+    config = {"configurable": {"thread_id": target}}
+    _print_recap(ctx.agent, config, ctx.console)
     ctx.console.print(f"[{PALETTE['blue']}]resumed session {target[:8]}[/]")
     return DispatchResult(thread_id=target)
 
@@ -330,12 +348,14 @@ def _undo(ctx: CommandContext, arg: str) -> None:
             from luna.turn.undo import undo as git_undo
 
             if ctx.input_fn is not None:
-                answer = (
-                    ctx.input_fn("undo the last turn (files + conversation)? [y/N] ")
-                    .strip()
-                    .lower()
+                confirmed = arrow_confirm(
+                    ctx.console, ctx.input_fn, "undo the last turn (files + conversation)?"
                 )
-                if answer not in ("y", "yes"):
+                if confirmed is None:
+                    confirmed = ctx.input_fn(
+                        "undo the last turn (files + conversation)? [y/N] "
+                    ).strip().lower() in ("y", "yes")
+                if not confirmed:
                     ctx.console.print("[dim]undo cancelled[/]")
                     return
             note = git_undo(ctx.workdir, ctx.session_id, ctx.agent, ctx.thread_id)
@@ -348,8 +368,10 @@ def _undo(ctx: CommandContext, arg: str) -> None:
             ctx.console.print("[dim]nothing to undo[/]")
             return
         if ctx.input_fn is not None:
-            answer = ctx.input_fn(f"{desc}? [y/N] ").strip().lower()
-            if answer not in ("y", "yes"):
+            confirmed = arrow_confirm(ctx.console, ctx.input_fn, f"{desc}?")
+            if confirmed is None:
+                confirmed = ctx.input_fn(f"{desc}? [y/N] ").strip().lower() in ("y", "yes")
+            if not confirmed:
                 ctx.console.print("[dim]undo cancelled[/]")
                 return
         note = undo_last(ctx.workdir, ctx.session_id)
