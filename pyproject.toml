@@ -28,6 +28,7 @@ dependencies = [
     "rich>=13.7",
     "langchain-anthropic>=1.7",
     "langgraph-checkpoint-sqlite>=2.0",
+    "questionary>=2.1",
 ]
 
 [project.optional-dependencies]
