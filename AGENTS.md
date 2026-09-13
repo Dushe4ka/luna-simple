@@ -49,7 +49,14 @@
   - `lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
     `hover`), extra `luna-simple[lsp]`
   - `initgen.py` — `luna init` / `/init`
-- `luna/ui/` — тема `rich`, заставка, консоль, диалог подтверждения, оформление реплик
+- `luna/ui/` — тема `rich` и весь визуальный слой REPL
+  - `theme.py` — цветовая палитра и `rich`-тема
+  - `colors.py` — чистая RGB-математика (используется `splash.py` и `progress.py`)
+  - `splash.py` — стартовая заставка (градиентный wordmark)
+  - `progress.py` — живой индикатор выполнения инструментов во время хода
+  - `turn.py` — рамка хода (открывающая/закрывающая линия)
+  - `console.py` — консоль `rich`
+  - `approve.py` — диалог подтверждения мутирующих действий
 
 ## Соглашения
 
