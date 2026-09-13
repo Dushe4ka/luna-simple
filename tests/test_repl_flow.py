@@ -541,3 +541,33 @@ def test_tool_progress_renders_error_line_when_user_rejects_approval(tmp_path, f
     out = console.file.getvalue()
     assert "write_file(/notes.txt) · error" in out
     assert not (tmp_path / "notes.txt").exists()
+
+
+def test_tool_progress_omits_content_dump_for_a_successful_read(tmp_path, fake_model):
+    """A successful read_file/ls/glob/grep gets no content-excerpt detail —
+    the label already says what ran, and dumping the first line of the
+    result (a code line, a directory listing) is noise, not information."""
+    (tmp_path / "notes.txt").write_text("first line of the file\nsecond line\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/notes.txt"}}],
+        ),
+        AIMessage(content="read it"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
+    lines = iter(["read notes.txt please", "/exit"])
+    rc = run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=True),
+        thread_id="t",
+    )
+    assert rc == 0
+    out = console.file.getvalue()
+    assert "read_file(/notes.txt) · done" in out
+    assert "first line of the file" not in out

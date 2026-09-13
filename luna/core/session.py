@@ -53,6 +53,10 @@ _RELOAD_MARKER = "Run /reload"
 #: Tool names whose use marks a turn as mutating and triggers verification.
 _MUTATING = {"write_file", "edit_file", "delete", "execute"}
 
+#: Read-only navigation tools whose own progress-line label already says what
+#: happened — a successful call gets no extra detail line, only a failure does.
+_QUIET_ON_SUCCESS = {"read_file", "ls", "glob", "grep"}
+
 #: Matches a non-slash line invoking a subagent by name, e.g. ``@researcher do X``.
 _AT_AGENT_RE = re.compile(r"^@([\w-]+)\s+(.+)$", re.DOTALL)
 
@@ -196,6 +200,12 @@ def _report_tools(chunk: dict, progress: ToolProgress, seen: set[str], names: se
                 body = str(msg.content) if msg.content else ""
                 detail = body.splitlines()[0][:120] if body else ""
                 ok = getattr(msg, "status", "success") != "error"
+                if ok and msg.name in _QUIET_ON_SUCCESS:
+                    # The label already says what ran (e.g. "read_file(/a.py)");
+                    # dumping the first line of a successful read's own content
+                    # (often a code line or a directory listing) is noise, not
+                    # information. A failure is always worth showing why.
+                    detail = ""
                 progress.finish(msg.tool_call_id, ok, detail)
                 if msg.name in ("manage_mcp", "manage_skills") and _RELOAD_MARKER in body:
                     reload_requested = True
