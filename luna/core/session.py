@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import Callable
 
@@ -291,6 +292,53 @@ def _stream_turn(
     return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen
 
 
+#: A turn that fails outright gets this many extra automatic attempts before
+#: the caller sees the exception — each attempt waits this many seconds.
+_MAX_TURN_RETRIES = 2
+_RETRY_BACKOFF_SECONDS = (2, 5)
+
+
+def _stream_turn_resilient(
+    agent,
+    payload,
+    config: dict,
+    console: Console,
+    input_fn: Callable[[str], str],
+    *,
+    rules=None,
+    workdir: str = ".",
+) -> tuple[str, bool, TurnUsage, set[str]]:
+    """Like :func:`_stream_turn`, but retries a failed turn before giving up.
+
+    A network/provider error (a request timeout, a dropped connection) used
+    to end the turn outright — the user's message was answered with nothing.
+    Retrying is safe: LangGraph resumes the same checkpointed thread from
+    where it left off rather than replaying it, so re-sending the same
+    ``payload`` neither duplicates the human message nor re-runs a tool call
+    that already executed (verified directly against this project's own
+    ``build_agent()`` — a step that already completed before the failure
+    is not repeated). ``KeyboardInterrupt`` is never retried.
+    """
+    attempt = 0
+    while True:
+        try:
+            return _stream_turn(
+                agent, payload, config, console, input_fn, rules=rules, workdir=workdir
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 - retried transparently, re-raised past the cap
+            if attempt >= _MAX_TURN_RETRIES:
+                raise
+            wait = _RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)]
+            console.print(
+                f"[{PALETTE['mauve']}]turn failed ({exc}) — retrying in {wait}s "
+                f"(attempt {attempt + 2}/{_MAX_TURN_RETRIES + 1})...[/]"
+            )
+            time.sleep(wait)
+            attempt += 1
+
+
 def _format_and_diagnose(console: Console, cfg: LunaConfig, before: list[str] | None = None) -> str:
     """Format then diagnose the files this turn changed. Returns diagnose text.
 
@@ -367,7 +415,9 @@ def _run_verification(
             }
         ]
     }
-    _stream_turn(agent, payload, turn_config, console, input_fn, rules=rules, workdir=cfg.workdir)
+    _stream_turn_resilient(
+        agent, payload, turn_config, console, input_fn, rules=rules, workdir=cfg.workdir
+    )
     ok, tail = run_verify(cfg.verify_command, cfg.workdir)
     console.print(
         "[dim]✓ verify ok[/]" if ok else f"[yellow]⚠ verify still failing after 1 retry[/]\n{tail}"
@@ -401,7 +451,7 @@ def run_once(
     # captured *after* begin_turn so its own journal writes don't register as
     # "newly dirty" when .luna/ isn't gitignored
     dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
-    text, _, turn_usage, tool_names = _stream_turn(
+    text, _, turn_usage, tool_names = _stream_turn_resilient(
         agent,
         payload,
         config,
@@ -562,7 +612,7 @@ def run_repl(
         content = diag_block + (pinned_block + "\n\n" if pinned_block else "") + expanded
         payload = {"messages": [{"role": "user", "content": content}]}
         try:
-            _, reload_requested, turn_usage, tool_names = _stream_turn(
+            _, reload_requested, turn_usage, tool_names = _stream_turn_resilient(
                 agent, payload, turn_config, console, input_fn, rules=rules, workdir=workdir
             )
         except KeyboardInterrupt:

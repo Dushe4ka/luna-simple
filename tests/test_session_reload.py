@@ -58,6 +58,7 @@ def test_turn_failure_does_not_kill_the_session(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(session, "_stream_turn", boom)
+    monkeypatch.setattr(session.time, "sleep", lambda seconds: None)
     answers = iter(["do a thing", "/exit"])
     out = io.StringIO()
     code = run_repl(
@@ -66,8 +67,42 @@ def test_turn_failure_does_not_kill_the_session(monkeypatch):
         input_fn=lambda _: next(answers),
     )
     assert code == 0
-    assert "turn failed" in out.getvalue()
-    assert calls == [1]
+    assert "turn failed:" in out.getvalue()  # the final give-up message, after the cap
+    # a persistently-failing turn is retried up to _MAX_TURN_RETRIES (2) times
+    # — 3 total attempts — before the caller finally sees the exception.
+    assert calls == [1, 1, 1]
+    assert "retrying in" in out.getvalue()
+
+
+def test_turn_retries_and_recovers_from_a_transient_failure(monkeypatch):
+    """A turn that fails once and then succeeds must not surface any error —
+    the retry is transparent to the user beyond the one "retrying" notice."""
+    from luna.core import session
+
+    calls = []
+    real_result = ("ok", False, TurnUsage(), set())
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("simulated network timeout")
+        return real_result
+
+    monkeypatch.setattr(session, "_stream_turn", flaky)
+    monkeypatch.setattr(session.time, "sleep", lambda seconds: None)
+    answers = iter(["do a thing", "/exit"])
+    out = io.StringIO()
+    code = run_repl(
+        _FakeAgent(0),
+        console=Console(file=out, force_terminal=True, no_color=True),
+        input_fn=lambda _: next(answers),
+    )
+    assert code == 0
+    assert calls == [1, 1]
+    assert "retrying in" in out.getvalue()
+    # the final give-up message ("turn failed: <exc>") from run_repl's own
+    # except-block must never fire — the retry recovered before the cap
+    assert "turn failed:" not in out.getvalue()
 
 
 def test_auto_reload_failure_keeps_old_agent(monkeypatch):
