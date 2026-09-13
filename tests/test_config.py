@@ -33,7 +33,21 @@ def test_yolo_from_env_truthy(tmp_path):
 
 def test_model_kwargs_composed(tmp_path):
     cfg = load_config({"temperature": 0.2, "max_tokens": 1000}, env={}, cwd=str(tmp_path))
-    assert cfg.model_kwargs == {"temperature": 0.2, "max_tokens": 1000}
+    assert cfg.model_kwargs == {"max_retries": 0, "temperature": 0.2, "max_tokens": 1000}
+
+
+def test_model_kwargs_defaults_max_retries_to_zero(tmp_path):
+    """The provider SDK's own retry silently restarts a whole streamed
+    generation on a transient mid-stream error, duplicating already-shown
+    content — Luna's own turn-level retry replaces it, so max_retries
+    defaults to 0 unless the user sets their own in [agent.extra]."""
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    assert cfg.model_kwargs["max_retries"] == 0
+
+
+def test_model_kwargs_lets_extra_override_max_retries(tmp_path):
+    cfg = load_config({"extra_model_kwargs": {"max_retries": 3}}, env={}, cwd=str(tmp_path))
+    assert cfg.model_kwargs["max_retries"] == 3
 
 
 def test_verify_command_settable(tmp_path, isolated_config_home):

@@ -68,8 +68,21 @@ class LunaConfig:
 
     @property
     def model_kwargs(self) -> dict:
-        """Keyword arguments forwarded to ``init_chat_model``."""
+        """Keyword arguments forwarded to ``init_chat_model``.
+
+        ``max_retries`` defaults to 0: LangChain chat models otherwise retry
+        a failed call themselves (``ChatAnthropic`` defaults to 2), and for a
+        *streaming* call that retry restarts the whole generation from
+        scratch rather than resuming it — a transient mid-stream error can
+        silently re-emit the entire response on top of what was already
+        shown, duplicating it. Luna's own turn-level retry
+        (``_stream_turn_resilient``) handles this instead: it starts a
+        genuinely fresh turn and is visible to the user ("retrying in
+        Xs..."), so the provider SDK's own silent retry is only a liability
+        here. A user's own ``max_retries`` in ``[agent.extra]`` still wins.
+        """
         kwargs: dict = dict(self.extra_model_kwargs)
+        kwargs.setdefault("max_retries", 0)
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if self.max_tokens is not None:
