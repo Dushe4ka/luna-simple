@@ -36,8 +36,9 @@ from luna.turn import diagnose, fmt, gitinfo, undo
 from luna.turn.context import PinnedFiles, expand_mentions, render_pinned
 from luna.turn.verify import run_verify
 from luna.ui.approve import prompt_decision
+from luna.ui.progress import ToolProgress
 from luna.ui.theme import PALETTE
-from luna.ui.turn import close_turn, open_turn, tool_line
+from luna.ui.turn import close_turn, open_turn
 
 __all__ = [
     "SLASH_COMMANDS",
@@ -154,10 +155,34 @@ def _iter_interrupts(chunk: object):
         yield from chunk["__interrupt__"]
 
 
-def _report_tools(chunk: dict, console: Console, seen: set[str], names: set[str]) -> bool:
-    """Print tool lines; return True if a tool asked for /reload.
+def _report_tool_calls(chunk: dict, progress: ToolProgress, requested: set[str]) -> None:
+    """Register newly-requested tool calls with the live progress indicator.
 
-    Every reported tool's name is added to ``names``.
+    Scans generically (no hardcoded node name), matching ``_report_tools``'s
+    existing style — verified empirically that the model's own node update
+    carries the ``AIMessage`` with populated ``tool_calls`` before the
+    matching ``ToolMessage`` shows up in a later chunk, but this does not
+    hardcode that node's name.
+    """
+    for update in chunk.values():
+        if not isinstance(update, dict):
+            continue
+        for msg in update.get("messages", []) or []:
+            if not isinstance(msg, AIMessage):
+                continue
+            for call in msg.tool_calls or []:
+                call_id = call.get("id")
+                if not call_id or call_id in requested:
+                    continue
+                requested.add(call_id)
+                progress.start(call_id, call["name"], call.get("args") or {})
+
+
+def _report_tools(chunk: dict, progress: ToolProgress, seen: set[str], names: set[str]) -> bool:
+    """Report finished tool calls to the progress indicator.
+
+    Returns True if a tool asked for /reload. Every reported tool's name is
+    added to ``names``.
     """
     reload_requested = False
     for update in chunk.values():
@@ -169,7 +194,9 @@ def _report_tools(chunk: dict, console: Console, seen: set[str], names: set[str]
                 if msg.name:
                     names.add(msg.name)
                 body = str(msg.content) if msg.content else ""
-                tool_line(console, msg.name or "tool", body.splitlines()[0][:120])
+                detail = body.splitlines()[0][:120] if body else ""
+                ok = getattr(msg, "status", "success") != "error"
+                progress.finish(msg.tool_call_id, ok, detail)
                 if msg.name in ("manage_mcp", "manage_skills") and _RELOAD_MARKER in body:
                     reload_requested = True
     return reload_requested
@@ -191,45 +218,53 @@ def _stream_turn(
     """
     parts: list[str] = []
     seen_tools: set[str] = set()
+    requested_tools: set[str] = set()
     tool_names_seen: set[str] = set()
     reload_requested = False
     turn_usage = TurnUsage()
+    progress = ToolProgress(console)
 
     open_turn(console)
-    while True:
-        interrupts: list = []
-        for mode, chunk in agent.stream(
-            payload, config=config, stream_mode=["messages", "updates"]
-        ):
-            if mode == "messages":
-                msg, meta = chunk
-                if meta.get("langgraph_node") == "model" and isinstance(
-                    msg, (AIMessage, AIMessageChunk)
-                ):
-                    turn_usage.merge(getattr(msg, "usage_metadata", None))
-                    text = msg.content if isinstance(msg.content, str) else ""
-                    if text:
-                        parts.append(text)
-                        console.print(text, end="", soft_wrap=True)
-            elif mode == "updates":
-                interrupts.extend(_iter_interrupts(chunk))
-                reload_requested |= _report_tools(chunk, console, seen_tools, tool_names_seen)
+    try:
+        while True:
+            interrupts: list = []
+            for mode, chunk in agent.stream(
+                payload, config=config, stream_mode=["messages", "updates"]
+            ):
+                if mode == "messages":
+                    msg, meta = chunk
+                    if meta.get("langgraph_node") == "model" and isinstance(
+                        msg, (AIMessage, AIMessageChunk)
+                    ):
+                        turn_usage.merge(getattr(msg, "usage_metadata", None))
+                        text = msg.content if isinstance(msg.content, str) else ""
+                        if text:
+                            parts.append(text)
+                            console.print(text, end="", soft_wrap=True)
+                elif mode == "updates":
+                    interrupts.extend(_iter_interrupts(chunk))
+                    _report_tool_calls(chunk, progress, requested_tools)
+                    reload_requested |= _report_tools(chunk, progress, seen_tools, tool_names_seen)
 
-        if not interrupts:
-            state = agent.get_state(config)
-            interrupts = list(getattr(state, "interrupts", ()) or [])
-        if not interrupts:
-            break
+            if not interrupts:
+                state = agent.get_state(config)
+                interrupts = list(getattr(state, "interrupts", ()) or [])
+            if not interrupts:
+                break
 
-        console.print()
-        resume = collect_decisions(
-            console,
-            interrupts[0].value,
-            input_fn=input_fn,
-            rules=rules,
-            workdir=workdir,
-        )
-        payload = Command(resume=resume)
+            progress.pause()
+            console.print()
+            resume = collect_decisions(
+                console,
+                interrupts[0].value,
+                input_fn=input_fn,
+                rules=rules,
+                workdir=workdir,
+            )
+            progress.resume()
+            payload = Command(resume=resume)
+    finally:
+        progress.close()
 
     close_turn(console)
     return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen

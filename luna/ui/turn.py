@@ -18,15 +18,6 @@ def open_turn(console: Console) -> None:
     )
 
 
-def tool_line(console: Console, name: str, summary: str = "") -> None:
-    """One dim, indented line describing a tool call/result."""
-    text = Text("  ⚙ ", style=PALETTE["blue"])
-    text.append(name, style=f"bold {PALETTE['accent']}")
-    if summary:
-        text.append(f" · {summary}", style=PALETTE["blue"])
-    console.print(text)
-
-
 def close_turn(console: Console) -> None:
     """End Luna's reply with a thin rule and a blank line."""
     console.rule(style=PALETTE["blue"])

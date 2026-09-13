@@ -76,3 +76,65 @@ def test_at_agent_mention_is_rewritten_to_a_delegation_instruction(tmp_path, fak
     )
     assert seen and "researcher" in seen[0] and "task tool" in seen[0]
     assert "find the entry point" in seen[0]
+
+
+def test_stream_turn_pauses_and_resumes_progress_around_an_interrupt(monkeypatch):
+    from types import SimpleNamespace
+
+    from luna.core import session
+
+    events: list[str] = []
+
+    class _SpyProgress:
+        def __init__(self, console):
+            events.append("created")
+
+        def start(self, *a, **k):
+            events.append("start")
+
+        def finish(self, *a, **k):
+            events.append("finish")
+
+        def pause(self):
+            events.append("pause")
+
+        def resume(self):
+            events.append("resume")
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(session, "ToolProgress", _SpyProgress)
+
+    tool_call = AIMessage(
+        content="", tool_calls=[{"name": "write_file", "id": "1", "args": {"file_path": "/a"}}]
+    )
+    interrupt = SimpleNamespace(
+        value={"action_requests": [{"name": "write_file", "args": {"file_path": "/a"}}]}
+    )
+
+    class _FakeAgent:
+        def __init__(self):
+            self._resumed = False
+
+        def stream(self, payload, config, stream_mode):
+            if not self._resumed:
+                yield "updates", {"model": {"messages": [tool_call]}}
+            else:
+                yield "messages", (AIMessage(content="done"), {"langgraph_node": "model"})
+
+        def get_state(self, config):
+            if not self._resumed:
+                self._resumed = True
+                return SimpleNamespace(values={}, interrupts=[interrupt])
+            return SimpleNamespace(values={}, interrupts=[])
+
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
+    session._stream_turn(
+        _FakeAgent(),
+        {"messages": [{"role": "user", "content": "hi"}]},
+        {"configurable": {"thread_id": "t"}},
+        console,
+        input_fn=lambda _: "",
+    )
+    assert events == ["created", "start", "pause", "resume", "close"]

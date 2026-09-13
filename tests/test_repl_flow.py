@@ -381,3 +381,72 @@ def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_dirty_
     # a file already dirty before it started, so the scoped delta is empty and
     # that must NOT be treated as "format everything"
     assert fmt_calls == []
+
+
+def test_tool_progress_prints_an_informative_label_and_done_line(tmp_path, fake_model):
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
+                }
+            ],
+        ),
+        AIMessage(content="wrote notes.txt"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
+    lines = iter(["write notes.txt please", "/exit"])
+    rc = run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=True),
+        thread_id="t",
+    )
+    assert rc == 0
+    out = console.file.getvalue()
+    assert "write_file(/notes.txt) · done" in out
+    assert "Updated file /notes.txt" in out
+
+
+def test_tool_progress_handles_two_parallel_tool_calls(tmp_path, fake_model):
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "1",
+                    "args": {"file_path": "/a.txt", "content": "a\n"},
+                },
+                {
+                    "name": "write_file",
+                    "id": "2",
+                    "args": {"file_path": "/b.txt", "content": "b\n"},
+                },
+            ],
+        ),
+        AIMessage(content="wrote both files"),
+    ]
+    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
+    lines = iter(["write a.txt and b.txt", "/exit"])
+    rc = run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=True),
+        thread_id="t",
+    )
+    assert rc == 0
+    out = console.file.getvalue()
+    assert "write_file(/a.txt) · done" in out
+    assert "write_file(/b.txt) · done" in out
