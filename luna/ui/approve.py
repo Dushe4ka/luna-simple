@@ -12,6 +12,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from luna.core.permissions import suggest_rule
+from luna.ui.interact import arrow_pick
 from luna.ui.theme import PALETTE
 
 _MAX_PREVIEW_LINES = 40
@@ -72,7 +73,15 @@ def prompt_decision(
     Returns a decision dict for ``Command(resume={"decisions": [...]})``.
     """
     console.print(_panel(action_request))
-    choice = input_fn("[Enter] approve · [e] edit · [a] always · [n] reject > ").strip().lower()
+    picked = arrow_pick(
+        console,
+        input_fn,
+        [("", "approve"), ("e", "edit"), ("a", "always allow"), ("n", "reject")],
+        default="",
+    )
+    if picked is None:
+        picked = input_fn("[Enter] approve · [e] edit · [a] always · [n] reject > ").strip().lower()
+    choice = picked
 
     if choice in ("", "y", "yes"):
         return {"type": "approve"}
