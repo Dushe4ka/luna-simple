@@ -457,11 +457,12 @@ def test_tool_progress_does_not_erase_prose_that_precedes_a_tool_call(tmp_path, 
     when the model's response is prose followed by a tool call in the SAME
     message (e.g. "Sure, I'll check that." then a `read_file`/`write_file`
     call — the most common tool-use shape), the streamed text is printed with
-    ``end=""`` and no trailing newline. Before the fix, `ToolProgress`'s
+    ``end=""`` and no trailing newline. Before the original fix, `ToolProgress`'s
     `rich.live.Live` then rendered its first frame on that same line, and its
     next refresh erased the prose with ANSI erase-line sequences. `_stream_turn`
-    must flush a newline before any tool-progress output starts whenever the
-    cursor was left mid-line.
+    now renders answer text via `AnswerRenderer` (its own `Live`, stopped —
+    finalizing that line — before any tool-progress output starts), so the
+    prose and the tool label must always land on separate terminal lines.
     """
     prose = "Sure, I'll check that."
     calls = [
@@ -493,15 +494,15 @@ def test_tool_progress_does_not_erase_prose_that_precedes_a_tool_call(tmp_path, 
     out = console.file.getvalue()
     assert prose in out
     assert "write_file(/notes.txt) · done" in out
-    # The prose must be immediately followed by a newline (a flushed cursor
-    # position), not run directly into the tool-progress label on the same
-    # line — that adjacency is exactly what the erase-line bug produced.
+    # The prose and the tool label must never share a terminal line — that
+    # adjacency (with no line break between them) is exactly what the
+    # erase-line bug produced. A rendered Markdown paragraph may pad its
+    # last line with spaces before the newline, so check for a newline
+    # ANYWHERE between the two, not strict character-adjacency.
     prose_end = out.index(prose) + len(prose)
-    assert out[prose_end] == "\n"
-    # ...and the tool label must appear strictly after that newline, never
-    # sharing the prose's line.
     label_idx = out.index("write_file(/notes.txt)")
     assert label_idx > prose_end
+    assert "\n" in out[prose_end:label_idx]
 
 
 def test_tool_progress_renders_error_line_when_user_rejects_approval(tmp_path, fake_model):
@@ -571,3 +572,28 @@ def test_tool_progress_omits_content_dump_for_a_successful_read(tmp_path, fake_m
     out = console.file.getvalue()
     assert "read_file(/notes.txt) · done" in out
     assert "first line of the file" not in out
+
+
+def test_answer_text_is_rendered_as_live_markdown(tmp_path, fake_model):
+    """The assistant's answer text renders through rich.markdown.Markdown —
+    a real truecolor bold escape for **bold**, not the literal asterisks."""
+    text = "**Done.** See the list:\n\n- one\n- two"
+    agent = build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content=text))
+    )
+    console = Console(file=io.StringIO(), width=60, force_terminal=True, color_system="truecolor")
+    lines = iter(["hi", "/exit"])
+    rc = run_repl(
+        agent,
+        console=console,
+        input_fn=lambda _: next(lines),
+        rebuild=lambda: agent,
+        workdir=str(tmp_path),
+        config=LunaConfig(workdir=str(tmp_path), yolo=True),
+        thread_id="t",
+    )
+    assert rc == 0
+    out = console.file.getvalue()
+    assert "\x1b[1mDone.\x1b[0m" in out  # bold ANSI, not literal "**Done.**"
+    assert "**Done.**" not in out
+    assert "one" in out and "two" in out
