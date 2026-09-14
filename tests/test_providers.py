@@ -9,10 +9,6 @@ from luna.config.providers import (
 )
 
 
-def test_registry_has_five_providers():
-    assert set(PROVIDERS) == {"anthropic", "deepseek", "openai", "google", "ollama"}
-
-
 def test_anthropic_is_reference_default():
     assert PROVIDERS["anthropic"].default_model == "claude-sonnet-4-5"
     assert PROVIDERS["google"].init_prefix == "google_genai"
@@ -105,3 +101,77 @@ def test_build_model_does_not_override_an_explicit_base_url_kwarg(monkeypatch):
     }
     build_model("fake", model_kwargs={"base_url": "https://override.example/v1"}, registry=custom)
     assert captured["kwargs"]["base_url"] == "https://override.example/v1"
+
+
+def test_registry_has_thirteen_providers():
+    assert set(PROVIDERS) == {
+        "anthropic",
+        "deepseek",
+        "openai",
+        "google",
+        "ollama",
+        "mistral",
+        "xai",
+        "groq",
+        "fireworks",
+        "together",
+        "openrouter",
+        "perplexity",
+        "cerebras",
+    }
+
+
+def test_mistral_uses_mistralai_prefix():
+    assert PROVIDERS["mistral"].init_prefix == "mistralai"
+    assert resolve_model_string("mistral", None) == "mistralai:mistral-large-latest"
+
+
+def test_xai_uses_xai_prefix():
+    assert PROVIDERS["xai"].init_prefix == "xai"
+    assert resolve_model_string("xai", None) == "xai:grok-4"
+
+
+def test_groq_uses_groq_prefix():
+    assert PROVIDERS["groq"].init_prefix == "groq"
+    assert resolve_model_string("groq", None) == "groq:openai/gpt-oss-120b"
+
+
+def test_fireworks_uses_fireworks_prefix():
+    assert PROVIDERS["fireworks"].init_prefix == "fireworks"
+    assert resolve_model_string("fireworks", None) == (
+        "fireworks:accounts/fireworks/models/qwen3p5-397b-a17b"
+    )
+
+
+def test_together_uses_together_prefix():
+    assert PROVIDERS["together"].init_prefix == "together"
+    assert resolve_model_string("together", None) == "together:Qwen/Qwen2.5-Coder-32B-Instruct"
+
+
+def test_openrouter_uses_openrouter_prefix():
+    assert PROVIDERS["openrouter"].init_prefix == "openrouter"
+    assert resolve_model_string("openrouter", None) == "openrouter:anthropic/claude-sonnet-4-6"
+
+
+def test_perplexity_uses_perplexity_prefix():
+    assert PROVIDERS["perplexity"].init_prefix == "perplexity"
+    assert resolve_model_string("perplexity", None) == "perplexity:sonar"
+
+
+def test_new_native_providers_have_no_base_url():
+    for key in ("mistral", "xai", "groq", "fireworks", "together", "openrouter", "perplexity"):
+        assert PROVIDERS[key].base_url is None
+
+
+def test_new_native_providers_each_use_their_own_pip_extra():
+    expected = {
+        "mistral": "mistral",
+        "xai": "xai",
+        "groq": "groq",
+        "fireworks": "fireworks",
+        "together": "together",
+        "openrouter": "openrouter",
+        "perplexity": "perplexity",
+    }
+    for key, extra in expected.items():
+        assert PROVIDERS[key].pip_extra == extra

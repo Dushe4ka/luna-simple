@@ -42,6 +42,33 @@ PROVIDERS: dict[str, ProviderSpec] = {
     "openai": ProviderSpec("openai", "openai", "gpt-4.1", "OPENAI_API_KEY", "openai"),
     "google": ProviderSpec("google", "google_genai", "gemini-2.5-pro", "GOOGLE_API_KEY", "google"),
     "ollama": ProviderSpec("ollama", "ollama", "qwen2.5-coder", None, "ollama"),
+    "mistral": ProviderSpec(
+        "mistral", "mistralai", "mistral-large-latest", "MISTRAL_API_KEY", "mistral"
+    ),
+    "xai": ProviderSpec("xai", "xai", "grok-4", "XAI_API_KEY", "xai"),
+    "groq": ProviderSpec("groq", "groq", "openai/gpt-oss-120b", "GROQ_API_KEY", "groq"),
+    "fireworks": ProviderSpec(
+        "fireworks",
+        "fireworks",
+        "accounts/fireworks/models/qwen3p5-397b-a17b",
+        "FIREWORKS_API_KEY",
+        "fireworks",
+    ),
+    "together": ProviderSpec(
+        "together",
+        "together",
+        "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "TOGETHER_API_KEY",
+        "together",
+    ),
+    "openrouter": ProviderSpec(
+        "openrouter",
+        "openrouter",
+        "anthropic/claude-sonnet-4-6",
+        "OPENROUTER_API_KEY",
+        "openrouter",
+    ),
+    "perplexity": ProviderSpec("perplexity", "perplexity", "sonar", "PPLX_API_KEY", "perplexity"),
 }
 
 DEFAULT_PROVIDER = "anthropic"

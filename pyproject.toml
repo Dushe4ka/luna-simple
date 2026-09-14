@@ -36,6 +36,13 @@ deepseek = ["langchain-deepseek>=0.1"]
 openai = ["langchain-openai>=1.0"]
 google = ["langchain-google-genai>=3.0"]
 ollama = ["langchain-ollama>=1.0"]
+mistral = ["langchain-mistralai>=1.0"]
+xai = ["langchain-xai>=1.0"]
+groq = ["langchain-groq>=1.0"]
+fireworks = ["langchain-fireworks>=1.0"]
+together = ["langchain-together>=0.1"]
+openrouter = ["langchain-openrouter>=0.1"]
+perplexity = ["langchain-perplexity>=1.0"]
 mcp = ["langchain-mcp-adapters>=0.3"]
 lsp = ["multilspy>=0.0.15"]
 all = [
@@ -43,6 +50,13 @@ all = [
     "langchain-openai>=1.0",
     "langchain-google-genai>=3.0",
     "langchain-ollama>=1.0",
+    "langchain-mistralai>=1.0",
+    "langchain-xai>=1.0",
+    "langchain-groq>=1.0",
+    "langchain-fireworks>=1.0",
+    "langchain-together>=0.1",
+    "langchain-openrouter>=0.1",
+    "langchain-perplexity>=1.0",
     "langchain-mcp-adapters>=0.3",
     "multilspy>=0.0.15",
 ]
