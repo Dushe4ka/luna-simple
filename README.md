@@ -35,7 +35,8 @@ Luna — это **CLI-агент для кода** на фреймворке
 ## Установка
 
 ```bash
-# со всеми провайдерами
+# почти со всеми провайдерами (кроме Together — конфликт зависимостей,
+# ставится отдельно: uv pip install "luna-simple[together]")
 uv pip install "luna-simple[all]"
 
 # или только провайдер по умолчанию (Anthropic)
@@ -135,6 +136,35 @@ API-ключ (см. `.env.example`) и выберите провайдера ф�
 | OpenAI | `openai` | `gpt-4.1` | `OPENAI_API_KEY` | `luna-simple[openai]` |
 | Google | `google` | `gemini-2.5-pro` | `GOOGLE_API_KEY` | `luna-simple[google]` |
 | Ollama | `ollama` | `qwen2.5-coder` | — (локально) | `luna-simple[ollama]` |
+| Mistral | `mistral` | `mistral-large-latest` | `MISTRAL_API_KEY` | `luna-simple[mistral]` |
+| xAI (Grok) | `xai` | `grok-4` | `XAI_API_KEY` | `luna-simple[xai]` |
+| Groq | `groq` | `openai/gpt-oss-120b` | `GROQ_API_KEY` | `luna-simple[groq]` |
+| Fireworks | `fireworks` | `accounts/fireworks/models/qwen3p5-397b-a17b` | `FIREWORKS_API_KEY` | `luna-simple[fireworks]` |
+| Together | `together` | `Qwen/Qwen2.5-Coder-32B-Instruct` | `TOGETHER_API_KEY` | `luna-simple[together]` |
+| OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` | `OPENROUTER_API_KEY` | `luna-simple[openrouter]` |
+| Perplexity | `perplexity` | `sonar` | `PPLX_API_KEY` | `luna-simple[perplexity]` |
+| Cerebras | `cerebras` | `gpt-oss-120b` | `CEREBRAS_API_KEY` | `luna-simple[openai]` |
+
+### Свой OpenAI-совместимый провайдер
+
+Любой OpenAI-совместимый эндпоинт (vLLM, LM Studio, корпоративный прокси и
+т. п.) можно подключить без изменения кода Luna — через `.luna.toml` или
+`~/.config/luna/config.toml`:
+
+```toml
+[provider.custom.mylocal]
+base_url = "http://localhost:8000/v1"
+env_var = "MYLOCAL_API_KEY"
+default_model = "local-model"  # необязательно
+```
+
+```bash
+luna --provider mylocal "..."
+luna config set-key mylocal   # спросит ключ скрытым вводом
+```
+
+Имя встроенного провайдера (`anthropic`, `openai`, ...) занять таким
+способом нельзя — встроенная запись всегда побеждает при совпадении имён.
 
 ```bash
 luna --provider deepseek --model deepseek-reasoner "отрефактори utils.py"

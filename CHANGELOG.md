@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- 8 новых провайдеров: Mistral, xAI (Grok), Groq, Fireworks, Together,
+  OpenRouter, Perplexity (нативные интеграции LangChain) и Cerebras
+  (через новый `base_url`-механизм) — реестр вырос с 5 до 13. Плюс
+  пользовательские провайдеры: секция `[provider.custom.<name>]` в
+  `.luna.toml`/`config.toml` подключает любой OpenAI-совместимый эндпоинт
+  (vLLM, LM Studio, корпоративный прокси) без изменения кода Luna.
+
 ### Изменено
 
 - Пакет `luna/` реорганизован из плоского списка в 28 файлов в 5 подпакетов

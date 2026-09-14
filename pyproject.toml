@@ -70,8 +70,8 @@ luna = "luna.cli:main"
 luna-simple = "luna.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/earendil-works/pi"
-Repository = "https://github.com/earendil-works/pi"
+Homepage = "https://github.com/Dushe4ka/luna-simple"
+Repository = "https://github.com/Dushe4ka/luna-simple"
 
 [tool.uv]
 conflicts = [
