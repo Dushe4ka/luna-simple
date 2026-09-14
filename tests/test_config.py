@@ -139,3 +139,11 @@ def test_custom_provider_missing_env_var_raises(tmp_path):
 def test_no_custom_providers_section_gives_empty_dict(tmp_path):
     cfg = load_config({}, env={}, cwd=str(tmp_path))
     assert cfg.custom_providers == {}
+
+
+def test_set_config_values_still_validates_provider_against_builtin(isolated_config_home):
+    from luna.config.config import set_config_values
+    from luna.config.providers import LunaConfigError
+
+    with pytest.raises(LunaConfigError):
+        set_config_values({"model.provider": "not-a-real-provider"})

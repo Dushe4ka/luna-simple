@@ -10,7 +10,7 @@ from luna.config.credentials import (
     set_api_key,
     unset_api_key,
 )
-from luna.config.providers import LunaConfigError, build_model
+from luna.config.providers import LunaConfigError, ProviderSpec, build_model
 
 
 def test_set_get_roundtrip():
@@ -74,3 +74,49 @@ def test_error_hint_mentions_setup(monkeypatch):
     with pytest.raises(LunaConfigError) as exc:
         build_model("anthropic")
     assert "luna setup" in str(exc.value)
+
+
+def test_set_api_key_accepts_a_provider_from_a_custom_registry():
+    custom_registry = {
+        "mylocal": ProviderSpec(
+            "mylocal",
+            "openai",
+            "local-model",
+            "MYLOCAL_API_KEY",
+            "openai",
+            "http://localhost:8000/v1",
+        )
+    }
+    set_api_key("mylocal", "sk-local-test", registry=custom_registry)
+    assert get_api_key("mylocal") == "sk-local-test"
+
+
+def test_set_api_key_still_rejects_unknown_provider_against_a_custom_registry():
+    custom_registry = {
+        "mylocal": ProviderSpec(
+            "mylocal",
+            "openai",
+            "local-model",
+            "MYLOCAL_API_KEY",
+            "openai",
+            "http://localhost:8000/v1",
+        )
+    }
+    with pytest.raises(LunaConfigError):
+        set_api_key("not-in-either-registry", "sk-test", registry=custom_registry)
+
+
+def test_unset_api_key_works_with_a_custom_registry():
+    custom_registry = {
+        "mylocal": ProviderSpec(
+            "mylocal",
+            "openai",
+            "local-model",
+            "MYLOCAL_API_KEY",
+            "openai",
+            "http://localhost:8000/v1",
+        )
+    }
+    set_api_key("mylocal", "sk-local-test", registry=custom_registry)
+    assert unset_api_key("mylocal") is True
+    assert get_api_key("mylocal") is None

@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from luna.config.config import config_dir
-from luna.config.providers import PROVIDERS, LunaConfigError
+from luna.config.providers import PROVIDERS, LunaConfigError, ProviderSpec
 
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0600
 
@@ -61,11 +61,13 @@ def set_api_key(
     api_key: str,
     *,
     env: Mapping[str, str] | None = None,
+    registry: dict[str, ProviderSpec] | None = None,
 ) -> Path:
     """Store ``api_key`` for ``provider``. Returns the credentials file path."""
-    if provider not in PROVIDERS:
+    reg = PROVIDERS if registry is None else registry
+    if provider not in reg:
         raise LunaConfigError(
-            f"Unknown provider {provider!r}. Choose one of: {', '.join(PROVIDERS)}."
+            f"Unknown provider {provider!r}. Choose one of: {', '.join(sorted(reg))}."
         )
     if not api_key.strip():
         raise LunaConfigError("API key must not be empty.")
@@ -76,7 +78,12 @@ def set_api_key(
     return path
 
 
-def unset_api_key(provider: str, *, env: Mapping[str, str] | None = None) -> bool:
+def unset_api_key(
+    provider: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    registry: dict[str, ProviderSpec] | None = None,
+) -> bool:
     """Remove the stored key for ``provider``. Returns True if one was removed."""
     data = {k: dict(v) for k, v in load_credentials(env).items()}
     if data.pop(provider, None) is None:
