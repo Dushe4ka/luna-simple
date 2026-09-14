@@ -73,6 +73,22 @@ luna-simple = "luna.cli:main"
 Homepage = "https://github.com/earendil-works/pi"
 Repository = "https://github.com/earendil-works/pi"
 
+[tool.uv]
+conflicts = [
+    [
+      { extra = "together" },
+      { extra = "openai" },
+    ],
+    [
+      { extra = "together" },
+      { extra = "lsp" },
+    ],
+    [
+      { extra = "together" },
+      { extra = "all" },
+    ],
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["luna"]
 
