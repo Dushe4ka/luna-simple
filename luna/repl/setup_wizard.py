@@ -1,4 +1,11 @@
-"""Interactive ``luna setup`` wizard: pick a provider, model, and API key."""
+"""Interactive ``luna setup`` wizard: pick a provider, model, and API key.
+
+Only lists built-in providers (``luna.config.providers.PROVIDERS``) — a
+user-defined ``[provider.custom.<name>]`` (see ``config.py``) is configured
+by hand in ``.luna.toml``/``config.toml``, not offered here, since the
+wizard has no way to prompt for an arbitrary provider's base_url/env_var
+pair sensibly.
+"""
 
 from __future__ import annotations
 

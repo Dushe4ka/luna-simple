@@ -82,6 +82,20 @@ PROVIDERS: dict[str, ProviderSpec] = {
 DEFAULT_PROVIDER = "anthropic"
 
 
+def merge_providers(custom: dict[str, ProviderSpec]) -> dict[str, ProviderSpec]:
+    """Combine user-defined custom providers with the built-in registry.
+
+    A custom entry can never shadow a built-in provider name — if a user's
+    ``[provider.custom.<name>]`` collides with a built-in key, the built-in
+    ``ProviderSpec`` wins silently (no error): this keeps well-known names
+    like ``anthropic``/``openai`` from ever being redirected to an
+    unexpected endpoint by a stray config entry.
+    """
+    merged = dict(custom)
+    merged.update(PROVIDERS)
+    return merged
+
+
 def _spec(provider: str, registry: dict[str, ProviderSpec] | None = None) -> ProviderSpec:
     reg = PROVIDERS if registry is None else registry
     try:

@@ -1,4 +1,7 @@
+import pytest
+
 from luna.config.config import load_config
+from luna.config.providers import LunaConfigError
 
 
 def test_defaults(tmp_path):
@@ -89,3 +92,50 @@ def test_user_config_is_lowest_layer(tmp_path, monkeypatch):
     (tmp_path / ".luna.toml").write_text('[model]\nprovider = "deepseek"\n')
     cfg = load_config({}, env={"XDG_CONFIG_HOME": str(cfg_home)}, cwd=str(tmp_path))
     assert cfg.provider == "deepseek"  # project toml overrides user toml
+
+
+def test_custom_provider_parsed_from_project_toml(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        "[provider.custom.mylocal]\n"
+        'base_url = "http://localhost:8000/v1"\n'
+        'env_var = "MYLOCAL_API_KEY"\n'
+        'default_model = "local-model"\n'
+    )
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    assert "mylocal" in cfg.custom_providers
+    spec = cfg.custom_providers["mylocal"]
+    assert spec.base_url == "http://localhost:8000/v1"
+    assert spec.env_var == "MYLOCAL_API_KEY"
+    assert spec.default_model == "local-model"
+    assert spec.init_prefix == "openai"
+    assert spec.pip_extra == "openai"
+
+
+def test_custom_provider_default_model_is_optional(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        "[provider.custom.mylocal]\n"
+        'base_url = "http://localhost:8000/v1"\n'
+        'env_var = "MYLOCAL_API_KEY"\n'
+    )
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    # non-empty fallback, exact value not asserted here
+    assert cfg.custom_providers["mylocal"].default_model
+
+
+def test_custom_provider_missing_base_url_raises(tmp_path):
+    (tmp_path / ".luna.toml").write_text('[provider.custom.mylocal]\nenv_var = "MYLOCAL_API_KEY"\n')
+    with pytest.raises(LunaConfigError):
+        load_config({}, env={}, cwd=str(tmp_path))
+
+
+def test_custom_provider_missing_env_var_raises(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        '[provider.custom.mylocal]\nbase_url = "http://localhost:8000/v1"\n'
+    )
+    with pytest.raises(LunaConfigError):
+        load_config({}, env={}, cwd=str(tmp_path))
+
+
+def test_no_custom_providers_section_gives_empty_dict(tmp_path):
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    assert cfg.custom_providers == {}

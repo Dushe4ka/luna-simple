@@ -12,7 +12,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from luna.config.providers import DEFAULT_PROVIDER, PROVIDERS, LunaConfigError
+from luna.config.providers import (
+    DEFAULT_PROVIDER,
+    PROVIDERS,
+    LunaConfigError,
+    ProviderSpec,
+    merge_providers,
+)
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
@@ -65,6 +71,7 @@ class LunaConfig:
     temperature: float | None = None
     max_tokens: int | None = None
     extra_model_kwargs: dict = field(default_factory=dict)
+    custom_providers: dict[str, ProviderSpec] = field(default_factory=dict)
 
     @property
     def model_kwargs(self) -> dict:
@@ -131,6 +138,12 @@ def _apply_toml(data: dict, into: dict) -> None:
     if "splash" in ui:
         into["show_splash"] = bool(ui["splash"])
 
+    provider = data.get("provider", {})
+    if isinstance(provider.get("custom"), dict):
+        into["custom_providers"] = {
+            k: dict(v) for k, v in provider["custom"].items() if isinstance(v, dict)
+        }
+
 
 def _apply_env(env: Mapping[str, str], into: dict) -> None:
     if env.get("LUNA_PROVIDER"):
@@ -162,10 +175,32 @@ def load_config(
         if value is not None:
             merged[key] = value
 
+    custom_providers: dict[str, ProviderSpec] = {}
+    for name, fields in merged.get("custom_providers", {}).items():
+        base_url = fields.get("base_url")
+        env_var = fields.get("env_var")
+        if not base_url:
+            raise LunaConfigError(
+                f"Custom provider {name!r} needs base_url in [provider.custom.{name}]."
+            )
+        if not env_var:
+            raise LunaConfigError(
+                f"Custom provider {name!r} needs env_var in [provider.custom.{name}]."
+            )
+        custom_providers[name] = ProviderSpec(
+            key=name,
+            init_prefix="openai",
+            default_model=fields.get("default_model") or "gpt-4o",
+            env_var=env_var,
+            pip_extra="openai",
+            base_url=base_url,
+        )
+
+    registry = merge_providers(custom_providers)
     provider = merged.get("provider", DEFAULT_PROVIDER)
-    if provider not in PROVIDERS:
+    if provider not in registry:
         raise LunaConfigError(
-            f"Unknown provider {provider!r}. Choose one of: {', '.join(PROVIDERS)}."
+            f"Unknown provider {provider!r}. Choose one of: {', '.join(sorted(registry))}."
         )
 
     return LunaConfig(
@@ -183,6 +218,7 @@ def load_config(
         temperature=merged.get("temperature"),
         max_tokens=merged.get("max_tokens"),
         extra_model_kwargs=dict(merged.get("extra_model_kwargs", {})),
+        custom_providers=custom_providers,
     )
 
 
