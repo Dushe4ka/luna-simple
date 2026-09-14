@@ -393,7 +393,11 @@ def main(argv: list[str] | None = None) -> int:
     cp = checkpointer(on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
     start_thread = uuid.uuid4().hex
     if args.cont or args.resume:
-        target = _resolve_resume(args, index, config.workdir, console, interactive)
+        try:
+            target = _resolve_resume(args, index, config.workdir, console, interactive)
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
         if target is None:
             return 2
         start_thread = target

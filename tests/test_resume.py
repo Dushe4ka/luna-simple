@@ -106,3 +106,34 @@ def test_resume_list_interactive_falls_back_to_input_when_arrow_pick_declines(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
     )
     assert got == "thread-a"
+
+
+def test_main_handles_keyboard_interrupt_during_resume_list(tmp_path, monkeypatch):
+    """Regression test: Ctrl-C during `luna --resume` (interactive list) must return 130,
+    not propagate as raw KeyboardInterrupt traceback. The try/except around
+    _resolve_resume in main() should catch this."""
+    import sys
+
+    import luna.cli as cli
+    from luna.core.persistence import SessionIndex
+    from luna.ui.console import get_console
+
+    idx = SessionIndex()
+    idx.record("thread-a", str(tmp_path), "a task")
+
+    # Make arrow_pick raise KeyboardInterrupt to simulate Ctrl-C
+    def _raise_keyboard_interrupt(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "arrow_pick", _raise_keyboard_interrupt)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    # Ensure interactive detection works: console must be terminal, stdin must be tty
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "get_console", lambda: get_console(force_terminal=True))
+    # Dummy agent so we don't hit build errors
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+
+    # Call main() with --resume (no id) to trigger interactive list branch
+    result = cli.main(["--resume"])
+    assert result == 130
