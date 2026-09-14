@@ -103,6 +103,64 @@ def test_build_model_does_not_override_an_explicit_base_url_kwarg(monkeypatch):
     assert captured["kwargs"]["base_url"] == "https://override.example/v1"
 
 
+def test_build_model_injects_the_providers_own_api_key_into_kwargs(monkeypatch):
+    captured = {}
+
+    def fake_init_chat_model(model_string, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("langchain.chat_models.init_chat_model", fake_init_chat_model)
+    monkeypatch.setenv("FAKE_API_KEY", "sk-fake")
+    # A stray OPENAI_API_KEY must never be what reaches the custom endpoint:
+    # the base_url path always resolves to the "openai:" prefix, so without an
+    # explicit api_key kwarg ChatOpenAI would silently fall back to this one.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-wrong-openai")
+    custom = {
+        "fake": ProviderSpec(
+            "fake", "openai", "fake-model", "FAKE_API_KEY", "openai", "https://fake.example/v1"
+        )
+    }
+    build_model("fake", registry=custom)
+    assert captured["kwargs"]["api_key"] == "sk-fake"
+
+
+def test_build_model_does_not_override_an_explicit_api_key_kwarg(monkeypatch):
+    captured = {}
+
+    def fake_init_chat_model(model_string, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("langchain.chat_models.init_chat_model", fake_init_chat_model)
+    monkeypatch.setenv("FAKE_API_KEY", "sk-fake")
+    custom = {
+        "fake": ProviderSpec(
+            "fake", "openai", "fake-model", "FAKE_API_KEY", "openai", "https://fake.example/v1"
+        )
+    }
+    build_model("fake", model_kwargs={"api_key": "sk-explicit"}, registry=custom)
+    assert captured["kwargs"]["api_key"] == "sk-explicit"
+
+
+def test_build_model_sends_no_api_key_for_a_keyless_base_url_provider(monkeypatch):
+    captured = {}
+
+    def fake_init_chat_model(model_string, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("langchain.chat_models.init_chat_model", fake_init_chat_model)
+    custom = {
+        "fake": ProviderSpec(
+            "fake", "openai", "fake-model", None, "openai", "http://localhost:8000/v1"
+        )
+    }
+    build_model("fake", registry=custom)
+    assert captured["kwargs"]["base_url"] == "http://localhost:8000/v1"
+    assert "api_key" not in captured["kwargs"]
+
+
 def test_registry_has_thirteen_providers():
     assert set(PROVIDERS) == {
         "anthropic",
@@ -181,5 +239,6 @@ def test_cerebras_uses_base_url_path():
     spec = PROVIDERS["cerebras"]
     assert spec.init_prefix == "openai"
     assert spec.base_url == "https://api.cerebras.ai/v1"
+    assert spec.env_var == "CEREBRAS_API_KEY"
     assert spec.pip_extra == "openai"
     assert resolve_model_string("cerebras", None) == "openai:gpt-oss-120b"

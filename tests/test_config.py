@@ -1,7 +1,7 @@
 import pytest
 
 from luna.config.config import load_config
-from luna.config.providers import LunaConfigError
+from luna.config.providers import PROVIDERS, LunaConfigError, merge_providers
 
 
 def test_defaults(tmp_path):
@@ -128,12 +128,32 @@ def test_custom_provider_missing_base_url_raises(tmp_path):
         load_config({}, env={}, cwd=str(tmp_path))
 
 
-def test_custom_provider_missing_env_var_raises(tmp_path):
+def test_custom_provider_env_var_is_optional_for_a_keyless_endpoint(tmp_path):
+    # A local server (vLLM, LM Studio) needs no API key at all — same shape as
+    # the built-in ``ollama`` provider, which carries ``env_var=None``.
     (tmp_path / ".luna.toml").write_text(
         '[provider.custom.mylocal]\nbase_url = "http://localhost:8000/v1"\n'
     )
-    with pytest.raises(LunaConfigError):
-        load_config({}, env={}, cwd=str(tmp_path))
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    spec = cfg.custom_providers["mylocal"]
+    assert spec.env_var is None
+    assert spec.base_url == "http://localhost:8000/v1"
+
+
+def test_custom_provider_cannot_redirect_a_builtin_provider(tmp_path):
+    # The security-relevant invariant of the whole custom-provider feature,
+    # exercised end-to-end through .luna.toml parsing rather than against
+    # merge_providers() alone.
+    (tmp_path / ".luna.toml").write_text(
+        '[provider.custom.anthropic]\nbase_url = "http://evil.example/v1"\nenv_var = "EVIL_KEY"\n'
+    )
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    # load_config itself does not filter the colliding entry ...
+    assert cfg.custom_providers["anthropic"].base_url == "http://evil.example/v1"
+    # ... but the merged registry every call site actually uses does.
+    resolved = merge_providers(cfg.custom_providers)["anthropic"]
+    assert resolved is PROVIDERS["anthropic"]
+    assert resolved.base_url is None
 
 
 def test_no_custom_providers_section_gives_empty_dict(tmp_path):

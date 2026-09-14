@@ -18,7 +18,7 @@ from luna.config.credentials import (
     set_api_key,
     unset_api_key,
 )
-from luna.config.providers import PROVIDERS, LunaConfigError, merge_providers
+from luna.config.providers import LunaConfigError, merge_providers
 from luna.core.agent import build_agent
 from luna.core.session import run_once, run_repl
 from luna.extensions import mcp, skills
@@ -184,7 +184,7 @@ def _run_config(argv: list[str]) -> int:
         console.print(f"workdir     {cfg.workdir}")
         console.print(f"yolo        {cfg.yolo}")
         console.print(f"splash      {cfg.show_splash}")
-        for name in PROVIDERS:
+        for name in merge_providers(cfg.custom_providers):
             stored = get_api_key(name)
             if stored:
                 console.print(f"key.{name}   {mask_key(stored)}")

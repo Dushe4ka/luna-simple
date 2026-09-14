@@ -145,6 +145,8 @@ def build_model(
     kwargs = dict(model_kwargs or {})
     if spec.base_url:
         kwargs.setdefault("base_url", spec.base_url)
+        if spec.env_var:
+            kwargs.setdefault("api_key", os.environ[spec.env_var])
     try:
         return init_chat_model(resolve_model_string(provider, model, registry), **kwargs)
     except ImportError as exc:

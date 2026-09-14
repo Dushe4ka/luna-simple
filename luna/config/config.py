@@ -183,15 +183,13 @@ def load_config(
             raise LunaConfigError(
                 f"Custom provider {name!r} needs base_url in [provider.custom.{name}]."
             )
-        if not env_var:
-            raise LunaConfigError(
-                f"Custom provider {name!r} needs env_var in [provider.custom.{name}]."
-            )
         custom_providers[name] = ProviderSpec(
             key=name,
             init_prefix="openai",
             default_model=fields.get("default_model") or "gpt-4o",
-            env_var=env_var,
+            # Optional: a keyless local endpoint (vLLM, LM Studio) needs no
+            # API key at all — same as the built-in ``ollama`` provider.
+            env_var=env_var or None,
             pip_extra="openai",
             base_url=base_url,
         )
