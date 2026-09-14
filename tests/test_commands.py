@@ -104,7 +104,12 @@ def test_provider_recognizes_a_custom_provider_from_config(monkeypatch):
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
     custom = {
         "mylocal": ProviderSpec(
-            "mylocal", "openai", "local-model", "MYLOCAL_API_KEY", "openai", "http://localhost:8000/v1"
+            "mylocal",
+            "openai",
+            "local-model",
+            "MYLOCAL_API_KEY",
+            "openai",
+            "http://localhost:8000/v1",
         )
     }
     ctx = _ctx(config=LunaConfig(provider="anthropic", custom_providers=custom))

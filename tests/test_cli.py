@@ -48,7 +48,12 @@ def test_has_api_key_checks_a_custom_provider_via_the_given_registry(monkeypatch
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
     registry = {
         "mylocal": ProviderSpec(
-            "mylocal", "openai", "local-model", "MYLOCAL_API_KEY", "openai", "http://localhost:8000/v1"
+            "mylocal",
+            "openai",
+            "local-model",
+            "MYLOCAL_API_KEY",
+            "openai",
+            "http://localhost:8000/v1",
         )
     }
     assert _has_api_key("mylocal", registry) is True
