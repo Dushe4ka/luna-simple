@@ -54,7 +54,10 @@ all = [
     "langchain-xai>=1.0",
     "langchain-groq>=1.0",
     "langchain-fireworks>=1.0",
-    "langchain-together>=0.1",
+    # langchain-together intentionally omitted: no published version is
+    # compatible with both langchain-openai>=1.0 and multilspy's pinned
+    # requests==2.32.3 in the same resolved environment. Install the
+    # `together` extra separately if you need it: pip install "luna-simple[together]"
     "langchain-openrouter>=0.1",
     "langchain-perplexity>=1.0",
     "langchain-mcp-adapters>=0.3",
