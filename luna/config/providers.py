@@ -69,6 +69,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         "openrouter",
     ),
     "perplexity": ProviderSpec("perplexity", "perplexity", "sonar", "PPLX_API_KEY", "perplexity"),
+    "cerebras": ProviderSpec(
+        "cerebras",
+        "openai",
+        "gpt-oss-120b",
+        "CEREBRAS_API_KEY",
+        "openai",
+        "https://api.cerebras.ai/v1",
+    ),
 }
 
 DEFAULT_PROVIDER = "anthropic"

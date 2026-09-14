@@ -175,3 +175,11 @@ def test_new_native_providers_each_use_their_own_pip_extra():
     }
     for key, extra in expected.items():
         assert PROVIDERS[key].pip_extra == extra
+
+
+def test_cerebras_uses_base_url_path():
+    spec = PROVIDERS["cerebras"]
+    assert spec.init_prefix == "openai"
+    assert spec.base_url == "https://api.cerebras.ai/v1"
+    assert spec.pip_extra == "openai"
+    assert resolve_model_string("cerebras", None) == "openai:gpt-oss-120b"
