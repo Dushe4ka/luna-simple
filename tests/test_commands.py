@@ -98,6 +98,21 @@ def test_provider_without_key_does_not_swap(monkeypatch):
     assert ctx.config.provider == "deepseek"  # unchanged
 
 
+def test_provider_recognizes_a_custom_provider_from_config(monkeypatch):
+    from luna.config.providers import ProviderSpec
+
+    monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
+    custom = {
+        "mylocal": ProviderSpec(
+            "mylocal", "openai", "local-model", "MYLOCAL_API_KEY", "openai", "http://localhost:8000/v1"
+        )
+    }
+    ctx = _ctx(config=LunaConfig(provider="anthropic", custom_providers=custom))
+    dispatch("/provider mylocal", ctx)
+    assert ctx.config.provider == "mylocal"
+    assert "unknown provider" not in ctx.console.file.getvalue()
+
+
 def test_sessions_lists(monkeypatch, capsys):
     from luna.core.persistence import SessionIndex
 

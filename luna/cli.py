@@ -18,7 +18,7 @@ from luna.config.credentials import (
     set_api_key,
     unset_api_key,
 )
-from luna.config.providers import PROVIDERS, LunaConfigError
+from luna.config.providers import PROVIDERS, LunaConfigError, merge_providers
 from luna.core.agent import build_agent
 from luna.core.session import run_once, run_repl
 from luna.extensions import mcp, skills
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="run this prompt once and exit; omit for an interactive REPL",
     )
     parser.add_argument("-p", "--prompt", help="alternative to the positional PROMPT")
-    parser.add_argument("--provider", choices=sorted(PROVIDERS), help="model provider")
+    parser.add_argument("--provider", help="model provider")
     parser.add_argument("--model", help="model id for the chosen provider")
     parser.add_argument("--workdir", default=None, help="working directory (default: cwd)")
     parser.add_argument("--temperature", type=float, default=None)
@@ -142,8 +142,8 @@ def _overrides(args: argparse.Namespace) -> dict:
     return {k: v for k, v in over.items() if v is not None}
 
 
-def _has_api_key(provider: str) -> bool:
-    spec = PROVIDERS[provider]
+def _has_api_key(provider: str, registry: dict) -> bool:
+    spec = registry[provider]
     if spec.env_var is None:
         return True
     return bool(os.environ.get(spec.env_var) or get_api_key(provider))
@@ -161,10 +161,10 @@ def _config_parser() -> argparse.ArgumentParser:
     p_set.add_argument("key")
     p_set.add_argument("value")
     p_key = sub.add_parser("set-key", help="store an API key for a provider")
-    p_key.add_argument("provider", choices=sorted(PROVIDERS))
+    p_key.add_argument("provider")
     p_key.add_argument("api_key", nargs="?")
     p_unset = sub.add_parser("unset-key", help="remove a stored API key")
-    p_unset.add_argument("provider", choices=sorted(PROVIDERS))
+    p_unset.add_argument("provider")
     return parser
 
 
@@ -196,13 +196,15 @@ def _run_config(argv: list[str]) -> int:
         return 0
 
     if args.cmd == "set-key":
+        registry = merge_providers(load_config({}).custom_providers)
         key = args.api_key or getpass.getpass(f"{args.provider} API key: ")
-        path = set_api_key(args.provider, key)
+        path = set_api_key(args.provider, key, registry=registry)
         console.print(f"stored {mask_key(key)} for {args.provider}  ->  {path}")
         return 0
 
     if args.cmd == "unset-key":
-        removed = unset_api_key(args.provider)
+        registry = merge_providers(load_config({}).custom_providers)
+        removed = unset_api_key(args.provider, registry=registry)
         console.print(
             f"removed key for {args.provider}" if removed else f"no stored key for {args.provider}"
         )
@@ -364,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     prompt = args.prompt_pos or args.prompt
     interactive = console.is_terminal and sys.stdin.isatty() and not args.no_input
 
-    if not _has_api_key(config.provider):
+    if not _has_api_key(config.provider, merge_providers(config.custom_providers)):
         if interactive:
             console.print(f"[yellow]No API key for {config.provider}.[/] Let's set one up.")
             try:

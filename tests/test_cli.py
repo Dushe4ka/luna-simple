@@ -27,10 +27,31 @@ def test_version(capsys):
     assert "0.3.0" in capsys.readouterr().out
 
 
-def test_bad_provider_is_usage_error(capsys):
-    with pytest.raises(SystemExit) as e:
-        main(["hi", "--provider", "grok"])
-    assert e.value.code == 2  # argparse rejects the choice
+def test_bad_provider_is_config_error(capsys):
+    code = main(["hi", "--provider", "grok"])
+    assert code == 2
+    assert "grok" in capsys.readouterr().err
+
+
+def test_provider_flag_accepts_a_provider_not_in_the_builtin_choices_list():
+    """argparse itself must not reject an unknown-looking --provider value
+    before Luna gets a chance to check it against a project's
+    [provider.custom.*] — that check happens later, in load_config."""
+    args = build_parser().parse_args(["--provider", "some-custom-name", "hello"])
+    assert args.provider == "some-custom-name"
+
+
+def test_has_api_key_checks_a_custom_provider_via_the_given_registry(monkeypatch):
+    from luna.cli import _has_api_key
+    from luna.config.providers import ProviderSpec
+
+    monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
+    registry = {
+        "mylocal": ProviderSpec(
+            "mylocal", "openai", "local-model", "MYLOCAL_API_KEY", "openai", "http://localhost:8000/v1"
+        )
+    }
+    assert _has_api_key("mylocal", registry) is True
 
 
 def test_unknown_provider_via_env_is_config_error(monkeypatch, capsys):

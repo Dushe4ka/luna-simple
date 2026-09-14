@@ -17,7 +17,7 @@ from rich.console import Console
 
 from luna.config.config import LunaConfig
 from luna.config.credentials import get_api_key
-from luna.config.providers import PROVIDERS, LunaConfigError
+from luna.config.providers import LunaConfigError, merge_providers
 from luna.extensions.subagents import subagent_summaries
 from luna.turn.undo import peek_last, session_diff, undo_last
 from luna.turn.verify import run_verify
@@ -248,10 +248,11 @@ def _provider(ctx: CommandContext, arg: str) -> DispatchResult | None:
     if not arg:
         ctx.console.print(f"provider: {ctx.config.provider}")
         return None
-    if arg not in PROVIDERS:
+    registry = merge_providers(ctx.config.custom_providers)
+    if arg not in registry:
         ctx.console.print(f"[{PALETTE['mauve']}]unknown provider {arg!r}[/]")
         return None
-    spec = PROVIDERS[arg]
+    spec = registry[arg]
     if spec.env_var and not (os.environ.get(spec.env_var) or get_api_key(arg)):
         ctx.console.print(
             f"[{PALETTE['mauve']}]no key for {arg}; run: luna config set-key {arg}[/]"

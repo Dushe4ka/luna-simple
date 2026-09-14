@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from luna.config.config import LunaConfig
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
-from luna.config.providers import build_model
+from luna.config.providers import build_model, merge_providers
 from luna.core.permissions import load_rules
 from luna.core.toolguard import tool_guard
 from luna.extensions import lspnav
@@ -102,7 +102,13 @@ def build_agent(
     )
     interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
     return create_deep_agent(
-        model=model or build_model(config.provider, config.model, config.model_kwargs),
+        model=model
+        or build_model(
+            config.provider,
+            config.model,
+            config.model_kwargs,
+            registry=merge_providers(config.custom_providers),
+        ),
         system_prompt=LUNA_SYSTEM_PROMPT,
         backend=backend,
         memory=memory,
