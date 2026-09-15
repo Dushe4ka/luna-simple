@@ -14,9 +14,10 @@ from collections.abc import Callable, Mapping
 
 from rich.console import Console
 
+from luna.config import model_discovery
 from luna.config.config import set_config_values
 from luna.config.credentials import get_api_key, mask_key, set_api_key
-from luna.config.providers import DEFAULT_PROVIDER, PROVIDERS
+from luna.config.providers import DEFAULT_PROVIDER, PROVIDERS, ProviderSpec
 from luna.ui.interact import arrow_confirm, arrow_pick
 from luna.ui.theme import PALETTE
 
@@ -51,6 +52,53 @@ def _choose_provider(console: Console, input_fn: Callable[[str], str]) -> str:
         console.print(f"[{PALETTE['mauve']}]pick 1-{len(keys)} or a provider name[/]")
 
 
+def choose_model(
+    console: Console,
+    input_fn: Callable[[str], str],
+    provider: str,
+    spec: ProviderSpec,
+    *,
+    api_key: str | None,
+) -> str:
+    """Pick a model id: live list, then known_models.toml, then free text.
+
+    A blank free-text answer always returns ``spec.default_model`` —
+    callers must write that return value unconditionally, overwriting
+    any previously-stored ``model.name`` (this is the fix for the bug
+    where a stale/garbage model name could never be reset via the
+    wizard).
+    """
+    models = model_discovery.list_models(provider, spec, api_key=api_key)
+    if models is None:
+        models = model_discovery.known_models(provider)
+
+    if not models:
+        model = input_fn(f"model [{spec.default_model}]: ").strip()
+        return model or spec.default_model
+
+    default = spec.default_model if spec.default_model in models else models[0]
+    options = [(m, m) for m in models]
+    picked = arrow_pick(console, input_fn, options, default=default)
+    if picked is not None:
+        return picked
+
+    console.print(f"[{PALETTE['peri']}]Choose a model:[/]")
+    for i, m in enumerate(models, 1):
+        console.print(f"  {i}. {m}")
+    default_idx = models.index(default) + 1
+    while True:
+        raw = input_fn(f"model [{default_idx}]: ").strip()
+        if not raw:
+            return default
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(models):
+                return models[idx - 1]
+            console.print(f"[{PALETTE['mauve']}]pick 1-{len(models)} or a model name[/]")
+            continue
+        return raw
+
+
 def run_setup(
     console: Console,
     *,
@@ -64,14 +112,7 @@ def run_setup(
     provider = _choose_provider(console, input_fn)
     spec = PROVIDERS[provider]
 
-    default_model = spec.default_model
-    model = input_fn(f"model [{default_model}]: ").strip()
-
-    updates = {"model.provider": provider}
-    if model and model != default_model:
-        updates["model.name"] = model
-    config_file = set_config_values(updates, env=env)
-
+    resolved_key: str | None = None
     creds_file = None
     if spec.env_var is None:
         console.print(
@@ -80,6 +121,7 @@ def run_setup(
         )
     else:
         existing = get_api_key(provider, env=env)
+        resolved_key = existing
         prompt = "replace stored key" if existing else "paste your API key"
         if existing:
             console.print(f"\n[{PALETTE['blue']}]a key is already stored ({mask_key(existing)})[/]")
@@ -92,11 +134,16 @@ def run_setup(
             key = getpass_fn(f"{spec.env_var} ({prompt}): ").strip()
             if key:
                 creds_file = set_api_key(provider, key, env=env)
+                resolved_key = key
             else:
                 console.print(
                     f"[{PALETTE['mauve']}]no key entered - set one later with"
                     f" 'luna config set-key {provider}'[/]"
                 )
+
+    model = choose_model(console, input_fn, provider, spec, api_key=resolved_key)
+
+    config_file = set_config_values({"model.provider": provider, "model.name": model}, env=env)
 
     console.print("\n[green]saved.[/]")
     console.print(f"  config:      {config_file}")
