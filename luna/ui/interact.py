@@ -43,11 +43,10 @@ def arrow_pick(
         return None
     import questionary
 
-    default_label = next((label for value, label in options if value == default), None)
     result = questionary.select(
         "",
         choices=[questionary.Choice(label, value=value) for value, label in options],
-        default=default_label,
+        default=default,
     ).ask()
     if result is None:
         raise KeyboardInterrupt

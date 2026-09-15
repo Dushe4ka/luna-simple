@@ -45,7 +45,12 @@ def test_arrow_pick_returns_the_selected_value(monkeypatch):
     assert result == "b"
 
 
-def test_arrow_pick_passes_the_default_labeled_choice(monkeypatch):
+def test_arrow_pick_passes_the_default_value_not_its_label(monkeypatch):
+    """questionary.select's own `default` matches a Choice's `value`,
+    never its display label (verified directly against the real,
+    unmocked library in test_arrow_pick_default_is_valid_against_real_questionary
+    below) — a mock that captures the wrong one would pass regardless,
+    which is exactly how this bug shipped undetected the first time."""
     monkeypatch.setattr(interact, "_real_terminal", lambda console, input_fn: True)
     captured = {}
 
@@ -59,7 +64,27 @@ def test_arrow_pick_passes_the_default_labeled_choice(monkeypatch):
 
     monkeypatch.setattr("questionary.select", _fake_select)
     arrow_pick(_console(), input, [("a", "Alpha"), ("b", "Beta")], default="b")
-    assert captured["default"] == "Beta"
+    assert captured["default"] == "b"
+
+
+def test_arrow_pick_default_is_valid_against_real_questionary():
+    """Regression test for a real crash: questionary.select's own
+    InquirerControl raises ValueError when `default` doesn't match a
+    Choice's `value` (or the Choice/raw-string itself) — it never
+    matches against the display label. A fully mocked questionary.select
+    (as every other test in this file uses) cannot catch this class of
+    bug, since the mock never runs that validation. This constructs
+    exactly what arrow_pick builds internally and calls the real,
+    unmocked questionary.select with it."""
+    import questionary
+
+    options = [("a", "Alpha  (A_KEY)"), ("b", "Beta  (B_KEY)")]
+    for value, _ in options:
+        questionary.select(
+            "",
+            choices=[questionary.Choice(label, value=v) for v, label in options],
+            default=value,
+        )
 
 
 def test_arrow_pick_raises_keyboard_interrupt_on_cancel(monkeypatch):
