@@ -42,7 +42,7 @@ HELP: dict[str, str] = {
     "/verify": "run the project's verify command now",
     "/diagnose": "run the project's diagnostics command now",
     "/init": "generate or update AGENTS.md",
-    "/model": "show or switch the model (/model <name>)",
+    "/model": "pick a model interactively, or /model <name> to switch directly",
     "/provider": "show or switch the provider (/provider <key>)",
     "/reload": "rebuild the agent with the current config",
     "/new": "start a fresh conversation thread",

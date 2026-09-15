@@ -10,6 +10,7 @@ pair sensibly.
 from __future__ import annotations
 
 import getpass
+import os
 from collections.abc import Callable, Mapping
 
 from rich.console import Console
@@ -77,8 +78,12 @@ def choose_model(
         return model or spec.default_model
 
     default = spec.default_model if spec.default_model in models else models[0]
-    options = [(m, m) for m in models]
+    manual_entry = "\x00__manual_entry__"
+    options = [(m, m) for m in models] + [(manual_entry, "… type a model id manually")]
     picked = arrow_pick(console, input_fn, options, default=default)
+    if picked == manual_entry:
+        model = input_fn(f"model [{spec.default_model}]: ").strip()
+        return model or spec.default_model
     if picked is not None:
         return picked
 
@@ -120,7 +125,8 @@ def run_setup(
             f" Set OLLAMA_HOST if it is not on the default port.[/]"
         )
     else:
-        existing = get_api_key(provider, env=env)
+        env_map = env if env is not None else os.environ
+        existing = get_api_key(provider, env=env) or env_map.get(spec.env_var)
         resolved_key = existing
         prompt = "replace stored key" if existing else "paste your API key"
         if existing:

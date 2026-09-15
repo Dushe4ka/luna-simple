@@ -40,7 +40,7 @@ def test_list_models_anthropic_success(monkeypatch):
 
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         captured["url"] = url
         captured["headers"] = headers
         return _FakeResponse(
@@ -59,7 +59,7 @@ def test_list_models_google_success_strips_models_prefix(monkeypatch):
     from luna.config import model_discovery
     from luna.config.providers import PROVIDERS
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         return _FakeResponse(200, {"models": [{"name": "models/gemini-2.5-pro"}]})
 
     monkeypatch.setattr(model_discovery.httpx, "get", fake_get)
@@ -73,7 +73,7 @@ def test_list_models_ollama_success_uses_default_host(monkeypatch):
 
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         captured["url"] = url
         return _FakeResponse(
             200, {"models": [{"name": "llama3.2:latest"}, {"name": "qwen2.5-coder:latest"}]}
@@ -92,7 +92,7 @@ def test_list_models_ollama_honors_custom_host(monkeypatch):
 
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         captured["url"] = url
         return _FakeResponse(200, {"models": []})
 
@@ -108,7 +108,7 @@ def test_list_models_openai_compatible_success(monkeypatch):
 
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         captured["url"] = url
         captured["headers"] = headers
         return _FakeResponse(200, {"data": [{"id": "gpt-4.1"}, {"id": "gpt-4o"}]})
@@ -126,7 +126,7 @@ def test_list_models_uses_spec_base_url_when_present(monkeypatch):
 
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         captured["url"] = url
         return _FakeResponse(200, {"data": [{"id": "gpt-oss-120b"}]})
 
@@ -142,7 +142,7 @@ def test_list_models_keyless_custom_provider_sends_no_auth_header(monkeypatch):
 
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         captured["headers"] = headers
         return _FakeResponse(200, {"data": [{"id": "local-model"}]})
 
@@ -161,7 +161,7 @@ def test_list_models_returns_none_on_timeout(monkeypatch):
     from luna.config import model_discovery
     from luna.config.providers import PROVIDERS
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         raise httpx.TimeoutException("timed out")
 
     monkeypatch.setattr(model_discovery.httpx, "get", fake_get)
@@ -173,7 +173,7 @@ def test_list_models_returns_none_on_non_200(monkeypatch):
     from luna.config import model_discovery
     from luna.config.providers import PROVIDERS
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         return _FakeResponse(401, raise_error=True)
 
     monkeypatch.setattr(model_discovery.httpx, "get", fake_get)
@@ -185,8 +185,23 @@ def test_list_models_returns_none_on_malformed_json(monkeypatch):
     from luna.config import model_discovery
     from luna.config.providers import PROVIDERS
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         return _FakeResponse(200, {"unexpected": "shape"})
+
+    monkeypatch.setattr(model_discovery.httpx, "get", fake_get)
+    result = model_discovery.list_models("anthropic", PROVIDERS["anthropic"], api_key="sk-test")
+    assert result is None
+
+
+def test_list_models_returns_none_on_json_decode_failure(monkeypatch):
+    """A real decode failure inside _safe_get_json's `except ValueError`
+    (a 200 whose body is not JSON at all), as distinct from the valid-JSON-
+    but-unexpected-shape path the test above covers."""
+    from luna.config import model_discovery
+    from luna.config.providers import PROVIDERS
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        return _FakeResponse(200)  # no json_body -> .json() raises ValueError
 
     monkeypatch.setattr(model_discovery.httpx, "get", fake_get)
     result = model_discovery.list_models("anthropic", PROVIDERS["anthropic"], api_key="sk-test")

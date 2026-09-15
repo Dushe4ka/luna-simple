@@ -133,6 +133,57 @@ def test_choose_model_falls_back_to_free_text_when_no_list_available(monkeypatch
     assert result == "custom-typed-model"
 
 
+def test_choose_model_manual_entry_sentinel_falls_through_to_free_text(monkeypatch):
+    """The arrow-pick list ends with a "type it manually" sentinel entry —
+    without it, a real interactive terminal (where arrow_pick never returns
+    None) could never reach the free-text tier, which for a built-in
+    provider with a single-entry known_models.toml list means no way at all
+    to type a different model id. arrow_pick itself can't be driven into
+    its questionary branch without a real tty, so it is patched to return
+    the sentinel directly."""
+    from luna.config import model_discovery
+    from luna.config.providers import PROVIDERS
+    from luna.repl import setup_wizard
+    from luna.repl.setup_wizard import choose_model
+
+    monkeypatch.setattr(model_discovery, "known_models", lambda provider: ["model-a", "model-b"])
+    monkeypatch.setattr(setup_wizard, "arrow_pick", lambda *a, **k: "\x00__manual_entry__")
+    result = choose_model(
+        _console(),
+        lambda _p: "my-custom-model",
+        "openai",
+        PROVIDERS["openai"],
+        api_key="sk-test",
+    )
+    assert result == "my-custom-model"
+
+
+def test_wizard_finds_an_existing_key_from_the_environment(monkeypatch):
+    """A user with only an env-var key (no stored credentials.toml) must
+    still have that key resolved for the live model-discovery attempt —
+    previously run_setup only checked credentials.toml, so an env-only
+    key was invisible to it even though the rest of the codebase
+    (cli.py's _has_api_key, commands.py's _model) already checks the
+    environment first."""
+    from luna.config import model_discovery
+
+    captured = {}
+
+    def fake_list_models(provider, spec, *, api_key, **kwargs):
+        captured["api_key"] = api_key
+        return None
+
+    monkeypatch.setattr(model_discovery, "list_models", fake_list_models)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
+    run_setup(
+        _console(),
+        # provider, decline replacing the (env-provided) key, blank model
+        input_fn=_scripted("anthropic", "", ""),
+        getpass_fn=_scripted("should-not-be-used"),
+    )
+    assert captured["api_key"] == "sk-from-env"
+
+
 def test_choose_model_free_text_blank_returns_default(monkeypatch):
     from luna.config import model_discovery
     from luna.config.providers import PROVIDERS

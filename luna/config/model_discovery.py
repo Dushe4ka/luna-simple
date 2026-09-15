@@ -75,7 +75,7 @@ _OPENAI_COMPATIBLE_BASE_URLS: dict[str, str] = {
 def _safe_get_json(url: str, headers: dict, *, timeout: float):
     """GET url, return parsed JSON, or None on any failure. Never raises."""
     try:
-        response = httpx.get(url, headers=headers, timeout=timeout)
+        response = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
         response.raise_for_status()
         return response.json()
     except (httpx.HTTPError, httpx.InvalidURL, ValueError):
