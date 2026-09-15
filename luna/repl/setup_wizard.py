@@ -126,7 +126,7 @@ def run_setup(
         )
     else:
         env_map = env if env is not None else os.environ
-        existing = get_api_key(provider, env=env) or env_map.get(spec.env_var)
+        existing = env_map.get(spec.env_var) or get_api_key(provider, env=env)
         resolved_key = existing
         prompt = "replace stored key" if existing else "paste your API key"
         if existing:
