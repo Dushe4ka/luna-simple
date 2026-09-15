@@ -1,0 +1,38 @@
+[anthropic]
+models = ["claude-sonnet-4-5"]
+
+[deepseek]
+models = ["deepseek-chat"]
+
+[openai]
+models = ["gpt-4.1"]
+
+[google]
+models = ["gemini-2.5-pro"]
+
+[ollama]
+models = ["qwen2.5-coder"]
+
+[mistral]
+models = ["mistral-large-latest"]
+
+[xai]
+models = ["grok-4"]
+
+[groq]
+models = ["openai/gpt-oss-120b"]
+
+[fireworks]
+models = ["accounts/fireworks/models/qwen3p5-397b-a17b"]
+
+[together]
+models = ["Qwen/Qwen2.5-Coder-32B-Instruct"]
+
+[openrouter]
+models = ["anthropic/claude-sonnet-4-6"]
+
+[perplexity]
+models = ["sonar"]
+
+[cerebras]
+models = ["gpt-oss-120b"]
