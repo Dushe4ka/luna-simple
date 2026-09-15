@@ -78,7 +78,7 @@ def _safe_get_json(url: str, headers: dict, *, timeout: float):
         response = httpx.get(url, headers=headers, timeout=timeout)
         response.raise_for_status()
         return response.json()
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError):
         return None
 
 

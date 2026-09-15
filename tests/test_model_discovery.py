@@ -198,3 +198,13 @@ def test_list_models_returns_none_when_no_key_and_key_required():
     from luna.config.providers import PROVIDERS
 
     assert list_models("anthropic", PROVIDERS["anthropic"], api_key=None) is None
+
+
+def test_list_models_returns_none_on_invalid_url():
+    from luna.config import model_discovery
+    from luna.config.providers import ProviderSpec
+
+    spec = ProviderSpec(
+        "mylocal", "openai", "local-model", None, "openai", "http://localhost:notaport/v1"
+    )
+    assert model_discovery.list_models("mylocal", spec, api_key=None) is None
