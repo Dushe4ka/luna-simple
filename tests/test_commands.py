@@ -91,6 +91,51 @@ def test_model_swap_rebuilds(monkeypatch):
     assert res.agent == "rebuilt"
 
 
+def test_model_with_no_arg_and_no_input_fn_just_prints(monkeypatch):
+    """No input_fn available (e.g. non-interactive) — keep today's
+    read-only behavior rather than trying to prompt."""
+    ctx = _ctx(
+        console=Console(file=io.StringIO()),
+        config=LunaConfig(provider="anthropic", model="claude-sonnet-4-5"),
+        input_fn=None,
+    )
+    res = dispatch("/model", ctx)
+    assert res.handled is True
+    assert "claude-sonnet-4-5" in ctx.console.file.getvalue()
+
+
+def test_model_with_no_arg_uses_the_picker_and_rebuilds(monkeypatch):
+    from luna.config import model_discovery
+
+    monkeypatch.setattr(model_discovery, "list_models", lambda *a, **k: None)
+    monkeypatch.setattr(model_discovery, "known_models", lambda provider: ["model-a", "model-b"])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    lines = iter(["2"])  # pick #2 from the numbered plain-text list (no real terminal in tests)
+    ctx = _ctx(
+        config=LunaConfig(provider="anthropic"),
+        input_fn=lambda _prompt: next(lines),
+    )
+    res = dispatch("/model", ctx)
+    assert res.agent == "rebuilt"
+    assert ctx.config.model == "model-b"
+
+
+def test_model_with_no_arg_falls_back_to_free_text_when_no_list(monkeypatch):
+    from luna.config import model_discovery
+
+    monkeypatch.setattr(model_discovery, "list_models", lambda *a, **k: None)
+    monkeypatch.setattr(model_discovery, "known_models", lambda provider: [])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    lines = iter(["claude-opus-4-1"])
+    ctx = _ctx(
+        config=LunaConfig(provider="anthropic"),
+        input_fn=lambda _prompt: next(lines),
+    )
+    res = dispatch("/model", ctx)
+    assert res.agent == "rebuilt"
+    assert ctx.config.model == "claude-opus-4-1"
+
+
 def test_provider_without_key_does_not_swap(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     ctx = _ctx(config=LunaConfig(provider="deepseek"))

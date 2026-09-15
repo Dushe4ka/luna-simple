@@ -19,6 +19,7 @@ from luna.config.config import LunaConfig
 from luna.config.credentials import get_api_key
 from luna.config.providers import LunaConfigError, merge_providers
 from luna.extensions.subagents import subagent_summaries
+from luna.repl.setup_wizard import choose_model
 from luna.turn.undo import peek_last, session_diff, undo_last
 from luna.turn.verify import run_verify
 from luna.ui.interact import arrow_confirm, arrow_pick
@@ -230,8 +231,16 @@ def _usage(ctx: CommandContext, arg: str) -> None:
 
 def _model(ctx: CommandContext, arg: str) -> DispatchResult | None:
     if not arg:
-        ctx.console.print(f"model: {ctx.config.model or '(provider default)'}")
-        return None
+        if ctx.input_fn is None:
+            ctx.console.print(f"model: {ctx.config.model or '(provider default)'}")
+            return None
+        registry = merge_providers(ctx.config.custom_providers)
+        spec = registry[ctx.config.provider]
+        api_key = os.environ.get(spec.env_var) if spec.env_var else None
+        if not api_key and spec.env_var:
+            api_key = get_api_key(ctx.config.provider)
+        arg = choose_model(ctx.console, ctx.input_fn, ctx.config.provider, spec, api_key=api_key)
+
     previous_model = ctx.config.model
     ctx.config.model = arg
     try:
