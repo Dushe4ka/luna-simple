@@ -53,6 +53,41 @@ window = 64000
 input  = 0.28
 output = 0.42
 
+["openai/gpt-oss-120b"]
+window = 131072
+input  = 0.15
+output = 0.60
+
+["gpt-oss-120b"]
+window = 131072
+input  = 0.35
+output = 0.75
+
+["qwen2.5-coder-32b-instruct"]
+window = 32768
+input  = 0.66
+output = 0.80
+
+["qwen3p5-397b-a17b"]
+window = 131072
+input  = 0.39
+output = 0.90
+
+["mistral-large"]
+window = 262144
+input  = 0.50
+output = 1.50
+
+["grok-4"]
+window = 128000
+input  = 1.25
+output = 2.50
+
+["sonar"]
+window = 127000
+input  = 1.00
+output = 1.00
+
 ["qwen2.5-coder"]
 window = 32000
 input  = 0.0

@@ -163,8 +163,17 @@ luna --provider mylocal "..."
 luna config set-key mylocal   # спросит ключ скрытым вводом
 ```
 
-Имя встроенного провайдера (`anthropic`, `openai`, ...) занять таким
-способом нельзя — встроенная запись всегда побеждает при совпадении имён.
+`env_var` тоже необязателен — многие локальные серверы (vLLM, LM Studio по
+умолчанию) вообще не требуют ключа:
+
+```toml
+[provider.custom.mylocal]
+base_url = "http://localhost:8000/v1"
+```
+
+Обязателен только `base_url`. Имя встроенного провайдера (`anthropic`,
+`openai`, ...) занять таким способом нельзя — встроенная запись всегда
+побеждает при совпадении имён.
 
 ```bash
 luna --provider deepseek --model deepseek-reasoner "отрефактори utils.py"
