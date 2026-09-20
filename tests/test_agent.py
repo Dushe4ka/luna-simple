@@ -216,3 +216,248 @@ def test_plan_flag_none_means_never_blocked(tmp_path, fake_model):
         config={"configurable": {"thread_id": "t"}},
     )
     assert (tmp_path / "a.py").exists()
+
+
+def test_edit_after_unchanged_read_succeeds(tmp_path, fake_model):
+    (tmp_path / "a.py").write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "2",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "original",
+                        "new_string": "changed",
+                    },
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    assert (tmp_path / "a.py").read_text() == "changed\n"
+
+
+def test_edit_on_a_never_read_path_succeeds(tmp_path, fake_model):
+    """No anchor yet -> nothing to be stale against -> the edit proceeds."""
+    (tmp_path / "a.py").write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "1",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "original",
+                        "new_string": "changed",
+                    },
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    assert (tmp_path / "a.py").read_text() == "changed\n"
+
+
+def test_edit_blocked_after_external_change_that_preserves_the_matched_string(tmp_path, fake_model):
+    """Regression test for the real gap: deepagents' own edit_file only
+    fails when old_string is no longer found at all. An external change
+    that keeps 'original' present but alters other content was applied
+    unprotected before this task — confirmed directly against the
+    unmodified codebase while writing this plan."""
+    p = tmp_path / "a.py"
+    p.write_text("original\nsecond line\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(content="read done"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "2",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "original",
+                        "new_string": "changed",
+                    },
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    thread = {"configurable": {"thread_id": "t"}}
+    agent.invoke({"messages": [{"role": "user", "content": "read it"}]}, config=thread)
+    p.write_text("original\nMODIFIED second line\n")
+    out = agent.invoke({"messages": [{"role": "user", "content": "now edit it"}]}, config=thread)
+    blob = " ".join(getattr(m, "content", "") or "" for m in out["messages"])
+    assert "changed on disk" in blob
+    assert p.read_text() == "original\nMODIFIED second line\n"
+
+
+def test_write_blocked_after_external_modification(tmp_path, fake_model):
+    p = tmp_path / "a.py"
+    p.write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(content="read done"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "2",
+                    "args": {"file_path": "/a.py", "content": "fully replaced\n"},
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    thread = {"configurable": {"thread_id": "t"}}
+    agent.invoke({"messages": [{"role": "user", "content": "read it"}]}, config=thread)
+    p.write_text("externally changed\n")
+    out = agent.invoke({"messages": [{"role": "user", "content": "now write it"}]}, config=thread)
+    blob = " ".join(getattr(m, "content", "") or "" for m in out["messages"])
+    assert "changed on disk" in blob
+    assert p.read_text() == "externally changed\n"
+
+
+def test_delete_blocked_after_external_modification(tmp_path, fake_model):
+    p = tmp_path / "a.py"
+    p.write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(content="read done"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "delete", "id": "2", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    thread = {"configurable": {"thread_id": "t"}}
+    agent.invoke({"messages": [{"role": "user", "content": "read it"}]}, config=thread)
+    p.write_text("externally changed\n")
+    out = agent.invoke({"messages": [{"role": "user", "content": "now delete it"}]}, config=thread)
+    blob = " ".join(getattr(m, "content", "") or "" for m in out["messages"])
+    assert "changed on disk" in blob
+    assert p.exists()
+
+
+def test_two_edits_on_the_same_path_without_a_reread_both_succeed(tmp_path, fake_model):
+    """Luna's own successful edit re-anchors the file — no forced re-read
+    is needed before the next edit to the same path."""
+    p = tmp_path / "a.py"
+    p.write_text("line one\nline two\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "2",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "line one",
+                        "new_string": "first line",
+                    },
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "3",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "line two",
+                        "new_string": "second line",
+                    },
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    assert p.read_text() == "first line\nsecond line\n"
+
+
+def test_delete_then_recreate_is_not_blocked_by_a_stale_anchor(tmp_path, fake_model):
+    """forget() on a successful delete must actually clear the anchor —
+    otherwise writing a brand-new file at the same path would be
+    incorrectly blocked by the deleted file's old hash."""
+    p = tmp_path / "a.py"
+    p.write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "delete", "id": "2", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "3",
+                    "args": {"file_path": "/a.py", "content": "brand new\n"},
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    assert p.read_text() == "brand new\n"

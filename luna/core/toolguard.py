@@ -7,9 +7,11 @@ from langchain_core.messages import ToolMessage
 
 from luna.core.permissions import RuleSet
 from luna.turn import gitinfo
+from luna.turn.anchor import AnchorTracker
 from luna.turn.undo import snapshot
 
 _MUTATING = {"write_file", "edit_file", "delete"}
+_TRACKED = {"read_file", "write_file", "edit_file", "delete"}
 
 
 def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
@@ -20,8 +22,12 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
     is a git repo (then ``undo.begin_turn`` handles snapshots instead). ``plan``
     is an optional ``Callable[[], bool]``; while it returns ``True``, mutating
     calls (``write_file`` / ``edit_file`` / ``delete`` / ``execute``) are refused.
+    A ``write_file`` / ``edit_file`` / ``delete`` call on a path this session
+    has already read or written is refused if the file's on-disk content no
+    longer matches what was last seen — see ``luna.turn.anchor``.
     """
     use_journal = session_id and not gitinfo.is_git_repo(workdir)
+    tracker = AnchorTracker()
 
     @wrap_tool_call
     def _guard(request, handler):
@@ -40,13 +46,27 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
                 tool_call_id=call.get("id", "blocked"),
                 status="error",
             )
-        if use_journal and name in _MUTATING:
-            rel = (args.get("file_path") or args.get("path") or "").lstrip("/")
-            if rel:
-                try:
-                    snapshot(workdir, session_id, name, rel)
-                except (OSError, ValueError):
-                    pass
-        return handler(request)
+        rel = (args.get("file_path") or args.get("path") or "").lstrip("/")
+        if rel and name in _MUTATING and not tracker.check(workdir, rel):
+            return ToolMessage(
+                content=(
+                    f"{rel} has changed on disk since Luna last saw it — "
+                    "read it again before editing"
+                ),
+                tool_call_id=call.get("id", "blocked"),
+                status="error",
+            )
+        if use_journal and name in _MUTATING and rel:
+            try:
+                snapshot(workdir, session_id, name, rel)
+            except (OSError, ValueError):
+                pass
+        result = handler(request)
+        if rel and name in _TRACKED and getattr(result, "status", "success") != "error":
+            if name == "delete":
+                tracker.forget(rel)
+            else:
+                tracker.remember(workdir, rel)
+        return result
 
     return _guard
