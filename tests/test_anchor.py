@@ -57,3 +57,21 @@ def test_tracker_forget_clears_the_anchor(tmp_path):
     (tmp_path / "a.txt").write_text("changed\n")
     # forgotten -> no anchor -> nothing to be stale against -> True again
     assert tracker.check(str(tmp_path), "a.txt") is True
+
+
+def test_tracker_check_treats_differently_spelled_paths_as_the_same(tmp_path):
+    (tmp_path / "a.py").write_text("hello\n")
+    tracker = anchor.AnchorTracker()
+    tracker.remember(str(tmp_path), "/a.py")
+    (tmp_path / "a.py").write_text("changed\n")
+    assert tracker.check(str(tmp_path), "./a.py") is False
+
+
+def test_tracker_forget_under_clears_a_directory_and_its_descendants(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("hello\n")
+    tracker = anchor.AnchorTracker()
+    tracker.remember(str(tmp_path), "pkg/a.py")
+    tracker.forget_under("pkg")
+    (tmp_path / "pkg" / "a.py").write_text("changed\n")
+    assert tracker.check(str(tmp_path), "pkg/a.py") is True

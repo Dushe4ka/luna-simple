@@ -461,3 +461,119 @@ def test_delete_then_recreate_is_not_blocked_by_a_stale_anchor(tmp_path, fake_mo
         config={"configurable": {"thread_id": "t"}},
     )
     assert p.read_text() == "brand new\n"
+
+
+def test_write_succeeds_after_reread_following_external_deletion(tmp_path, fake_model):
+    """A vanished file's anchor must not permanently block writes: after
+    an external deletion, read_file fails and clears the stale anchor,
+    so re-creating the file with write_file succeeds."""
+    p = tmp_path / "a.py"
+    p.write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(content="read done"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "2", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "3",
+                    "args": {"file_path": "/a.py", "content": "recreated\n"},
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    thread = {"configurable": {"thread_id": "t"}}
+    agent.invoke({"messages": [{"role": "user", "content": "read it"}]}, config=thread)
+    p.unlink()
+    agent.invoke({"messages": [{"role": "user", "content": "recreate it"}]}, config=thread)
+    assert p.read_text() == "recreated\n"
+
+
+def test_write_inside_a_deleted_directory_is_not_blocked_by_a_stale_descendant_anchor(
+    tmp_path, fake_model
+):
+    """delete on a directory must clear anchors for everything nested under
+    it, not just the directory path itself — otherwise recreating a file
+    inside a deleted directory is blocked forever by a stale descendant
+    anchor."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "a.py").write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/pkg/a.py"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "delete", "id": "2", "args": {"file_path": "/pkg"}}],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "id": "3",
+                    "args": {"file_path": "/pkg/a.py", "content": "recreated\n"},
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+    assert (pkg / "a.py").read_text() == "recreated\n"
+
+
+def test_stale_check_catches_a_differently_spelled_but_same_path(tmp_path, fake_model):
+    """`./a.py` and `/a.py` must resolve to the same anchor — otherwise the
+    staleness check can be silently bypassed by spelling the same path
+    differently."""
+    p = tmp_path / "a.py"
+    p.write_text("original\nsecond line\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/a.py"}}],
+        ),
+        AIMessage(content="read done"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "2",
+                    "args": {
+                        "file_path": "./a.py",
+                        "old_string": "original",
+                        "new_string": "changed",
+                    },
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    thread = {"configurable": {"thread_id": "t"}}
+    agent.invoke({"messages": [{"role": "user", "content": "read it"}]}, config=thread)
+    p.write_text("original\nMODIFIED second line\n")
+    out = agent.invoke({"messages": [{"role": "user", "content": "now edit it"}]}, config=thread)
+    blob = " ".join(getattr(m, "content", "") or "" for m in out["messages"])
+    assert "changed on disk" in blob
+    assert p.read_text() == "original\nMODIFIED second line\n"

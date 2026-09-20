@@ -50,8 +50,9 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
         if rel and name in _MUTATING and not tracker.check(workdir, rel):
             return ToolMessage(
                 content=(
-                    f"{rel} has changed on disk since Luna last saw it — "
-                    "read it again before editing"
+                    f"{rel} has changed on disk since Luna last saw it "
+                    "(hand edit, another process, or Luna's own formatter) — "
+                    "read it again before retrying"
                 ),
                 tool_call_id=call.get("id", "blocked"),
                 status="error",
@@ -62,10 +63,14 @@ def tool_guard(rules: RuleSet, workdir: str, session_id: str = "", plan=None):
             except (OSError, ValueError):
                 pass
         result = handler(request)
-        if rel and name in _TRACKED and getattr(result, "status", "success") != "error":
+        ok = getattr(result, "status", "success") != "error"
+        if rel and name in _TRACKED:
             if name == "delete":
+                if ok:
+                    tracker.forget_under(rel)
+            elif name == "read_file" and not ok:
                 tracker.forget(rel)
-            else:
+            elif ok:
                 tracker.remember(workdir, rel)
         return result
 

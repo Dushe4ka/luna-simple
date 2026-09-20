@@ -13,6 +13,7 @@ stale against.
 from __future__ import annotations
 
 import hashlib
+import posixpath
 from pathlib import Path
 
 
@@ -24,6 +25,11 @@ def hash_file(workdir: str, rel_path: str) -> str | None:
         return None
 
 
+def _key(rel_path: str) -> str:
+    """Normalize a relative path so differently-spelled aliases share one anchor."""
+    return posixpath.normpath(rel_path.lstrip("/"))
+
+
 class AnchorTracker:
     """Per-session record of the last-seen content hash for tracked paths."""
 
@@ -32,17 +38,26 @@ class AnchorTracker:
 
     def remember(self, workdir: str, rel_path: str) -> None:
         """Record the file's current content hash as the new anchor."""
-        digest = hash_file(workdir, rel_path)
+        key = _key(rel_path)
+        digest = hash_file(workdir, key)
         if digest is not None:
-            self._anchors[rel_path] = digest
+            self._anchors[key] = digest
 
     def check(self, workdir: str, rel_path: str) -> bool:
         """Return True if there's no anchor yet, or the anchor still matches disk."""
-        anchored = self._anchors.get(rel_path)
+        key = _key(rel_path)
+        anchored = self._anchors.get(key)
         if anchored is None:
             return True
-        return hash_file(workdir, rel_path) == anchored
+        return hash_file(workdir, key) == anchored
 
     def forget(self, rel_path: str) -> None:
-        """Drop the anchor for a deleted path."""
-        self._anchors.pop(rel_path, None)
+        """Drop the anchor for a deleted or unreadable path."""
+        self._anchors.pop(_key(rel_path), None)
+
+    def forget_under(self, rel_path: str) -> None:
+        """Drop the anchor for rel_path and for every anchor nested under it."""
+        prefix = _key(rel_path)
+        self._anchors.pop(prefix, None)
+        for key in [k for k in self._anchors if k.startswith(prefix + "/")]:
+            del self._anchors[key]
