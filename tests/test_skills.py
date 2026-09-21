@@ -3,7 +3,7 @@ import subprocess
 import pytest
 
 from luna.config.providers import LunaConfigError
-from luna.extensions.skills import install, list_skills, remove
+from luna.extensions.skills import install, list_skills, remove, save
 
 
 def _git(cwd, *args):
@@ -56,3 +56,48 @@ def test_remove(tmp_path, monkeypatch):
     install(f"{repo}/greet", workdir=str(tmp_path))
     assert remove("greet", workdir=str(tmp_path)) is True
     assert remove("greet", workdir=str(tmp_path)) is False
+
+
+def test_save_writes_a_skill_that_list_skills_reports(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    path = save(
+        "fix-flaky-retry",
+        "retries a flaky step with backoff",
+        "1. Detect the flaky step.\n2. Wrap it with a 3-attempt retry.\n",
+        workdir=str(tmp_path),
+    )
+    assert path.is_file()
+    assert path == tmp_path / ".luna" / "skills" / "fix-flaky-retry" / "SKILL.md"
+    assert ("project", "fix-flaky-retry", "retries a flaky step with backoff") in list_skills(
+        str(tmp_path)
+    )
+
+
+def test_save_user_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    path = save("greet", "say hi", "Say hi.\n", project=False, workdir=str(tmp_path))
+    assert path == tmp_path / ".config" / "luna" / "skills" / "greet" / "SKILL.md"
+
+
+def test_save_rejects_unsafe_names(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    for bad in ("../escape", "a/b", "", "  ", "a b"):
+        with pytest.raises(LunaConfigError):
+            save(bad, "desc", "body", workdir=str(tmp_path))
+    assert not (tmp_path / ".luna" / "skills").exists()
+
+
+def test_save_rejects_empty_or_multiline_description(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    with pytest.raises(LunaConfigError):
+        save("x", "", "body", workdir=str(tmp_path))
+    with pytest.raises(LunaConfigError):
+        save("x", "line one\nline two", "body", workdir=str(tmp_path))
+
+
+def test_save_overwrites_an_existing_same_named_skill(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    save("x", "first version", "first body", workdir=str(tmp_path))
+    save("x", "second version", "second body", workdir=str(tmp_path))
+    entries = list_skills(str(tmp_path))
+    assert [e for e in entries if e[1] == "x"] == [("project", "x", "second version")]

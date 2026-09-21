@@ -6,6 +6,7 @@ declares at least ``name`` and ``description``.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -117,6 +118,35 @@ def install(
 
     scope = "project" if project else "user"
     return f"installed skill {skill_name!r} ({scope}). Run /reload to activate."
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def save(
+    name: str,
+    description: str,
+    body: str,
+    *,
+    project: bool = True,
+    workdir: str = ".",
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """Write a new local skill's SKILL.md and return its path."""
+    if not _SAFE_NAME.match(name):
+        raise LunaConfigError(
+            f"{name!r} is not a valid skill name (letters, digits, - and _ only)."
+        )
+    if not description.strip():
+        raise LunaConfigError("description must not be empty.")
+    if "\n" in description:
+        raise LunaConfigError("description must be a single line.")
+
+    dest = skills_dirs(workdir, env=env)[1 if project else 0] / name
+    dest.mkdir(parents=True, exist_ok=True)
+    skill_md = dest / "SKILL.md"
+    skill_md.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n{body}")
+    return skill_md
 
 
 def remove(
