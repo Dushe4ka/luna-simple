@@ -67,6 +67,28 @@ def manage_skills(
 
 
 @tool
+def save_skill(
+    name: str,
+    description: str,
+    body: str,
+    project: bool = True,
+) -> str:
+    """Save a successful, reusable pattern as a new local Luna skill.
+
+    Use this after completing a nontrivial multi-step task you expect to
+    repeat — body should be the actual reusable instructions/steps, not a
+    narrative of what just happened. Defaults to project scope
+    (.luna/skills/); pass project=False only for a pattern that is not
+    specific to this repository. Activates after the user runs /reload.
+    """
+    try:
+        path = skills.save(name, description, body, project=project)
+    except LunaConfigError as exc:
+        return str(exc)
+    return f"saved skill at {path.as_posix()}. Run /reload to activate."
+
+
+@tool
 def remember(
     kind: Literal["project", "conventions", "decisions", "failures"],
     topic: str,
@@ -82,5 +104,10 @@ def remember(
     return f"noted in {path.as_posix()}. Run /reload to load it into context."
 
 
-EXTENSION_TOOLS = [manage_mcp, manage_skills, remember]
-EXTENSION_INTERRUPTS = {"manage_mcp": True, "manage_skills": True, "remember": True}
+EXTENSION_TOOLS = [manage_mcp, manage_skills, remember, save_skill]
+EXTENSION_INTERRUPTS = {
+    "manage_mcp": True,
+    "manage_skills": True,
+    "remember": True,
+    "save_skill": True,
+}

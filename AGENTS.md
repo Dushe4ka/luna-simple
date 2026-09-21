@@ -44,7 +44,8 @@
     файлов, staleness-check перед `write_file`/`edit_file`/`delete`
 - `luna/extensions/` — подключаемые возможности
   - `subagents.py` — встроенные субагенты + из `subagents.toml`
-  - `extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills`
+  - `extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills` /
+    `save_skill`
   - `mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов
   - `skills.py` — установка/список/удаление скилов в стиле Anthropic
   - `registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)

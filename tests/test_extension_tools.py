@@ -3,6 +3,7 @@ from luna.extensions.extension_tools import (
     manage_mcp,
     manage_skills,
     remember,
+    save_skill,
 )
 from luna.extensions.mcp import load_mcp_config
 
@@ -41,6 +42,7 @@ def test_interrupts_registered():
         "manage_mcp": True,
         "manage_skills": True,
         "remember": True,
+        "save_skill": True,
     }
 
 
@@ -53,3 +55,24 @@ def test_remember_writes(tmp_path, monkeypatch):
     out = remember.invoke({"kind": "decisions", "topic": "db", "note": "chose sqlite"})
     assert "decisions.md" in out
     assert "chose sqlite" in (tmp_path / ".luna" / "memory" / "decisions.md").read_text()
+
+
+def test_save_skill_writes_and_lists(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    out = save_skill.invoke(
+        {
+            "name": "fix-flaky-retry",
+            "description": "retries a flaky step with backoff",
+            "body": "1. Detect the flaky step.\n2. Retry with backoff.\n",
+        }
+    )
+    assert "/reload" in out
+    assert (tmp_path / ".luna" / "skills" / "fix-flaky-retry" / "SKILL.md").is_file()
+
+
+def test_save_skill_reports_validation_errors_as_a_string(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    out = save_skill.invoke({"name": "../escape", "description": "d", "body": "b"})
+    assert "not a valid skill name" in out

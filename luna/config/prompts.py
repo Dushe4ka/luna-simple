@@ -29,6 +29,8 @@ Rules:
 - Report what you did plainly. If something failed, say so with the output.
 - When you hit a dead end or make a load-bearing decision, record it with the
   `remember` tool (use `failures` especially — future runs read it back).
+- After successfully completing a nontrivial, reusable multi-step pattern,
+  consider saving it with `save_skill` so future sessions can reuse it.
 - Clarity over noise. A route, not chaos.
 - When a symbol's definition or callers matter, prefer goto_definition /
   find_references over grepping, if they're available. Before editing a
