@@ -1,4 +1,4 @@
-"""Optional LSP-backed navigation tools: goto_definition, find_references, hover.
+"""Optional LSP-backed navigation tools: goto_definition, find_references, hover, symbol_range.
 
 Requires the ``lsp`` extra (``multilspy``). Every function degrades to a plain
 string message instead of raising when the extra is missing or the server
@@ -71,7 +71,7 @@ def _find_column(workdir: str, file: str, line: int, symbol: str) -> int:
         text = (Path(workdir) / file).read_text()
         target = text.splitlines()[line - 1]
         return max(0, target.find(symbol))
-    except (OSError, IndexError):
+    except (OSError, IndexError, UnicodeDecodeError):
         return 0
 
 
@@ -84,7 +84,7 @@ def _span(symbol: dict) -> tuple[int, int] | None:
 
 
 def make_tools(workdir: str, language: str) -> list:
-    """Build the three navigation tools bound to ``workdir``/``language``."""
+    """Build the four navigation tools bound to ``workdir``/``language``."""
     if not available():
         return []
 
@@ -147,6 +147,13 @@ def make_tools(workdir: str, language: str) -> list:
         symbol name might otherwise match more than one location. Pass
         `line` (1-based) to pick a specific match when the name is
         ambiguous.
+
+        The first line of the response is a `file:start-end` header, not
+        source text — pass only the lines after it as old_string. If two
+        symbols have identical bodies, the returned text may still match
+        more than one place in the file; if edit_file reports multiple
+        occurrences, widen old_string with a line of surrounding context
+        instead of reaching for replace_all, which would change both.
         """
         srv = _server(workdir, language)
         if srv is None:
@@ -183,7 +190,7 @@ def make_tools(workdir: str, language: str) -> list:
         start_line, end_line = span
         try:
             lines = (Path(workdir) / file).read_text().splitlines()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             return f"LSP unavailable: {exc}"
         text = "\n".join(lines[start_line : end_line + 1])
         return f"{file}:{start_line + 1}-{end_line + 1}\n{text}"

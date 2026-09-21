@@ -87,7 +87,7 @@ def build_agent(
             on_warn(
                 f"a '{language}' project was detected but the 'lsp' extra "
                 f"(multilspy) is not installed — goto_definition/find_references/"
-                f"hover are unavailable"
+                f"hover/symbol_range are unavailable"
             )
     # virtual_mode maps the agent's "/" to workdir: real files, confined to the repo.
     backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)

@@ -103,3 +103,27 @@ def test_symbol_range_disambiguates_with_line(tmp_path):
     result = by_name["symbol_range"].invoke({"file": "a.py", "symbol": "foo", "line": 7})
     assert "return 2" in result
     assert "return 1" not in result
+
+
+@pytest.mark.skipif(
+    not __import__("luna.extensions.lspnav", fromlist=["available"]).available(),
+    reason="multilspy not installed",
+)
+def test_symbol_range_lists_matches_without_guessing_when_line_is_omitted(tmp_path):
+    from luna.extensions.lspnav import make_tools
+
+    (tmp_path / "a.py").write_text(
+        "class A:\n"
+        "    def foo(self):\n"
+        "        return 1\n\n\n"
+        "class B:\n"
+        "    def foo(self):\n"
+        "        return 2\n"
+    )
+    tools = make_tools(str(tmp_path), "python")
+    by_name = {t.name: t for t in tools}
+    result = by_name["symbol_range"].invoke({"file": "a.py", "symbol": "foo"})
+    assert "multiple symbols named 'foo'" in result
+    assert "pass line=" in result
+    assert "return 1" not in result
+    assert "return 2" not in result
