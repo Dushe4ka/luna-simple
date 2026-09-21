@@ -133,7 +133,7 @@ def save(
     env: Mapping[str, str] | None = None,
 ) -> Path:
     """Write a new local skill's SKILL.md and return its path."""
-    if not _SAFE_NAME.match(name):
+    if not _SAFE_NAME.fullmatch(name):
         raise LunaConfigError(
             f"{name!r} is not a valid skill name (letters, digits, - and _ only)."
         )

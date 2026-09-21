@@ -81,7 +81,7 @@ def test_save_user_scope(tmp_path, monkeypatch):
 
 def test_save_rejects_unsafe_names(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    for bad in ("../escape", "a/b", "", "  ", "a b"):
+    for bad in ("../escape", "a/b", "", "  ", "a b", "ok\n"):
         with pytest.raises(LunaConfigError):
             save(bad, "desc", "body", workdir=str(tmp_path))
     assert not (tmp_path / ".luna" / "skills").exists()
