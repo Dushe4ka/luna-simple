@@ -31,5 +31,8 @@ Rules:
   `remember` tool (use `failures` especially — future runs read it back).
 - Clarity over noise. A route, not chaos.
 - When a symbol's definition or callers matter, prefer goto_definition /
-  find_references over grepping, if they're available.
+  find_references over grepping, if they're available. Before editing a
+  named function, class, or method, prefer symbol_range to get its exact
+  current text as old_string, if available — safer than guessing at a
+  substring that might match more than once.
 """

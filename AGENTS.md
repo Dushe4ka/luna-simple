@@ -49,7 +49,7 @@
   - `skills.py` — установка/список/удаление скилов в стиле Anthropic
   - `registry.py` — курируемый реестр MCP-серверов / скилов (+ `registry.toml`)
   - `lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
-    `hover`), extra `luna-simple[lsp]`
+    `hover` / `symbol_range`), extra `luna-simple[lsp]`
   - `initgen.py` — `luna init` / `/init`
 - `luna/ui/` — тема `rich` и весь визуальный слой REPL
   - `theme.py` — цветовая палитра и `rich`-тема
