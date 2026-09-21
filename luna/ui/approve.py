@@ -47,6 +47,15 @@ def describe_action(action_request: dict) -> str:
             )
         )
         return f"edit {path}\n\n{_truncate(diff)}"
+    if action == "save_skill":
+        scope = "project" if args.get("project", True) else "user"
+        name = args.get("name", "?")
+        description = args.get("description", "")
+        return (
+            f"save skill '{name}' ({scope} scope)\n"
+            f"description: {description}\n\n"
+            f"{_truncate(args.get('body', ''))}"
+        )
     rendered = ", ".join(f"{k}={v!r}" for k, v in args.items())
     return f"{action}({rendered})"
 

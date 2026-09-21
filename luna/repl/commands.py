@@ -101,6 +101,7 @@ _TOOL_NAMES = (
     "task",
     "manage_mcp",
     "manage_skills",
+    "save_skill",
 )
 
 

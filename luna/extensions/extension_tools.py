@@ -81,11 +81,13 @@ def save_skill(
     (.luna/skills/); pass project=False only for a pattern that is not
     specific to this repository. Activates after the user runs /reload.
     """
+    existing = [n for _, n, _ in skills.list_skills() if n == name]
     try:
         path = skills.save(name, description, body, project=project)
     except LunaConfigError as exc:
         return str(exc)
-    return f"saved skill at {path.as_posix()}. Run /reload to activate."
+    verb = "replaced" if existing else "saved"
+    return f"{verb} skill at {path.as_posix()}. Run /reload to activate."
 
 
 @tool

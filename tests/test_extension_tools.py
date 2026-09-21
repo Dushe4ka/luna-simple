@@ -76,3 +76,23 @@ def test_save_skill_reports_validation_errors_as_a_string(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     out = save_skill.invoke({"name": "../escape", "description": "d", "body": "b"})
     assert "not a valid skill name" in out
+
+
+def test_save_skill_never_raises_on_pathological_name(tmp_path, monkeypatch):
+    """Regression for the reviewer's probe: save_skill.invoke({"name": "a"*300, ...})
+    used to raise a raw OSError straight out of the tool call. It must always
+    return a string instead."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    out = save_skill.invoke({"name": "a" * 300, "description": "d", "body": "b"})
+    assert isinstance(out, str)
+    assert "not a valid skill name" in out
+
+
+def test_save_skill_reports_replaced_when_name_already_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    first = save_skill.invoke({"name": "x", "description": "d1", "body": "b1"})
+    assert first.startswith("saved skill")
+    second = save_skill.invoke({"name": "x", "description": "d2", "body": "b2"})
+    assert second.startswith("replaced skill")

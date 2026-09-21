@@ -6,6 +6,7 @@ declares at least ``name`` and ``description``.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -123,6 +124,9 @@ def install(
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+_LINE_BREAKS = "\n\r\x0b\x0c\x1c\x1d\x1e  "
+
+
 def save(
     name: str,
     description: str,
@@ -133,19 +137,24 @@ def save(
     env: Mapping[str, str] | None = None,
 ) -> Path:
     """Write a new local skill's SKILL.md and return its path."""
-    if not _SAFE_NAME.fullmatch(name):
+    if not _SAFE_NAME.fullmatch(name) or len(name) > 64:
         raise LunaConfigError(
-            f"{name!r} is not a valid skill name (letters, digits, - and _ only)."
+            f"{name!r} is not a valid skill name (letters, digits, - and _ only, max 64 chars)."
         )
     if not description.strip():
         raise LunaConfigError("description must not be empty.")
-    if "\n" in description:
+    if any(ch in description for ch in _LINE_BREAKS):
         raise LunaConfigError("description must be a single line.")
 
     dest = skills_dirs(workdir, env=env)[1 if project else 0] / name
-    dest.mkdir(parents=True, exist_ok=True)
     skill_md = dest / "SKILL.md"
-    skill_md.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n{body}")
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        skill_md.write_text(
+            f"---\nname: {json.dumps(name)}\ndescription: {json.dumps(description)}\n---\n\n{body}"
+        )
+    except OSError as exc:
+        raise LunaConfigError(f"could not write the skill: {exc}") from exc
     return skill_md
 
 
@@ -156,12 +165,15 @@ def remove(
     workdir: str = ".",
     env: Mapping[str, str] | None = None,
 ) -> bool:
-    """Delete an installed skill. Returns True if it existed."""
-    dest = skills_dirs(workdir, env=env)[1 if project else 0] / name
-    if not dest.is_dir():
-        return False
-    shutil.rmtree(dest)
-    return True
+    """Delete an installed skill from either scope. Returns True if it existed."""
+    dirs = skills_dirs(workdir, env=env)
+    ordered = [dirs[1 if project else 0], dirs[0 if project else 1]]
+    for scope_dir in ordered:
+        dest = scope_dir / name
+        if dest.is_dir():
+            shutil.rmtree(dest)
+            return True
+    return False
 
 
 def list_skills(

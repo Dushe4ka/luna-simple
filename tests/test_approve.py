@@ -41,3 +41,16 @@ def test_describe_execute_shows_command():
 def test_describe_edit_shows_diff():
     text = describe_action(AR_EDIT)
     assert "-x = 1" in text and "+x = 2" in text
+
+
+def test_describe_save_skill_is_readable_and_truncated():
+    body = "line1\nline2\n" * 50
+    ar = {
+        "action": "save_skill",
+        "args": {"name": "x", "description": "d", "body": body, "project": True},
+    }
+    text = describe_action(ar)
+    assert "save skill 'x' (project scope)" in text
+    assert "description: d" in text
+    assert "\n" in text  # real newlines, not a single giant repr() line
+    assert "more lines" in text  # _truncate kicked in on the 100-line body
