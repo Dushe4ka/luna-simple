@@ -1,4 +1,4 @@
-"""Optional LSP-backed navigation tools: goto_definition, find_references, hover.
+"""Optional LSP-backed navigation tools: goto_definition, find_references, hover, symbol_range.
 
 Requires the ``lsp`` extra (``multilspy``). Every function degrades to a plain
 string message instead of raising when the extra is missing or the server
@@ -71,12 +71,20 @@ def _find_column(workdir: str, file: str, line: int, symbol: str) -> int:
         text = (Path(workdir) / file).read_text()
         target = text.splitlines()[line - 1]
         return max(0, target.find(symbol))
-    except (OSError, IndexError):
+    except (OSError, IndexError, UnicodeDecodeError):
         return 0
 
 
+def _span(symbol: dict) -> tuple[int, int] | None:
+    """Return a symbol's 0-based (start_line, end_line), or None if absent."""
+    rng = symbol.get("range") or (symbol.get("location") or {}).get("range")
+    if not rng:
+        return None
+    return rng["start"]["line"], rng["end"]["line"]
+
+
 def make_tools(workdir: str, language: str) -> list:
-    """Build the three navigation tools bound to ``workdir``/``language``."""
+    """Build the four navigation tools bound to ``workdir``/``language``."""
     if not available():
         return []
 
@@ -130,4 +138,61 @@ def make_tools(workdir: str, language: str) -> list:
         contents = result.get("contents", "")
         return contents.get("value", str(contents)) if isinstance(contents, dict) else str(contents)
 
-    return [goto_definition, find_references, hover]
+    @tool
+    def symbol_range(file: str, symbol: str, line: int | None = None) -> str:
+        """Return the exact current source text of `symbol` in `file`.
+
+        Resolved via the language server's document-symbol index — use
+        this instead of guessing at old_string for edit_file when the
+        symbol name might otherwise match more than one location. Pass
+        `line` (1-based) to pick a specific match when the name is
+        ambiguous.
+
+        The first line of the response is a `file:start-end` header, not
+        source text — pass only the lines after it as old_string. If two
+        symbols have identical bodies, the returned text may still match
+        more than one place in the file; if edit_file reports multiple
+        occurrences, widen old_string with a line of surrounding context
+        instead of reaching for replace_all, which would change both.
+        """
+        srv = _server(workdir, language)
+        if srv is None:
+            return "LSP unavailable"
+        try:
+            symbols, _tree = srv.request_document_symbols(file)
+        except Exception as exc:  # noqa: BLE001
+            return f"LSP unavailable: {exc}"
+        matches = [s for s in symbols if s.get("name") == symbol]
+        if not matches:
+            return f"no symbol named '{symbol}' found in {file}"
+        if len(matches) > 1:
+            if line is None:
+                spans = ", ".join(
+                    f"{_span(s)[0] + 1}-{_span(s)[1] + 1}" for s in matches if _span(s)
+                )
+                return (
+                    f"multiple symbols named '{symbol}' found in {file} "
+                    f"(lines {spans}) — pass line= to disambiguate"
+                )
+            chosen = None
+            for s in matches:
+                span = _span(s)
+                if span and span[0] <= (line - 1) <= span[1]:
+                    chosen = s
+                    break
+            if chosen is None:
+                return f"no symbol named '{symbol}' found containing line {line} in {file}"
+        else:
+            chosen = matches[0]
+        span = _span(chosen)
+        if span is None:
+            return f"'{symbol}' in {file} has no range information"
+        start_line, end_line = span
+        try:
+            lines = (Path(workdir) / file).read_text().splitlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            return f"LSP unavailable: {exc}"
+        text = "\n".join(lines[start_line : end_line + 1])
+        return f"{file}:{start_line + 1}-{end_line + 1}\n{text}"
+
+    return [goto_definition, find_references, hover, symbol_range]
