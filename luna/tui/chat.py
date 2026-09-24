@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual import work
 from textual.containers import Vertical
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -66,8 +67,52 @@ class ChatPane(Widget):
                 elif evt["event"] == "tool_finished":
                     activity = app.query_one(ActivitySidebar)
                     activity.tool_finished(evt["call_id"], evt["name"], evt["ok"], evt["detail"])
+                elif evt["event"] == "approval_needed":
+                    requests = evt["value"].get("action_requests") or [
+                        evt["value"].get("action_request")
+                    ]
+                    # ModalScreen.push_screen_wait requires worker context
+                    # (Textual raises NoActiveWorker otherwise), so the
+                    # actual push+wait is delegated to the @work-decorated
+                    # _await_approval_decision helper below. on_input_submitted
+                    # itself stays a plain coroutine so it's still directly
+                    # awaitable (Task 8's regression test calls it that way)
+                    # and its try/finally around stream.stop() is unaffected.
+                    decision = await self._await_approval_decision(requests[0]).wait()
+                    async for resume_evt in app.client.approve(
+                        self.thread_id, decision, self._workdir
+                    ):
+                        if resume_evt["event"] == "text_delta":
+                            await stream.write(resume_evt["text"])
+                        elif resume_evt["event"] == "tool_started":
+                            activity = app.query_one(ActivitySidebar)
+                            activity.tool_started(
+                                resume_evt["call_id"], resume_evt["name"], resume_evt["args"]
+                            )
+                        elif resume_evt["event"] == "tool_finished":
+                            activity = app.query_one(ActivitySidebar)
+                            activity.tool_finished(
+                                resume_evt["call_id"],
+                                resume_evt["name"],
+                                resume_evt["ok"],
+                                resume_evt["detail"],
+                            )
         finally:
             await stream.stop()
+
+    @work
+    async def _await_approval_decision(self, action_request: dict) -> dict:
+        """Push the approval modal and block until the user dismisses it.
+
+        Runs as a Textual worker solely because ``push_screen_wait``
+        requires worker context to await a screen's dismissal without
+        stalling the app; the caller awaits this method's returned
+        ``Worker`` explicitly (``.wait()``) instead of ``await``-ing this
+        method directly.
+        """
+        from luna.tui.approval_modal import ApprovalModal
+
+        return await self.app.push_screen_wait(ApprovalModal(action_request))
 
 
 class _CommandLabel(ListItem):
