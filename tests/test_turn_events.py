@@ -110,3 +110,37 @@ def test_iter_turn_resumes_after_interrupted(tmp_path, fake_model):
     )
     assert (tmp_path / "a.py").read_text() == "changed\n"
     assert any(isinstance(e, ToolFinished) and e.name == "edit_file" for e in resume_events)
+
+
+def test_iter_turn_does_not_repeat_tool_started_across_a_resume(tmp_path, fake_model):
+    (tmp_path / "a.py").write_text("original\n")
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "id": "1",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "original",
+                        "new_string": "changed",
+                    },
+                }
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
+    agent = build_agent(cfg, model=fake_model(*calls))
+    config = {"configurable": {"thread_id": "t"}}
+    payload = {"messages": [{"role": "user", "content": "edit it"}]}
+    first_pass = list(iter_turn(agent, payload, config))
+    from langgraph.types import Command
+
+    resume_pass = list(
+        iter_turn(agent, Command(resume={"decisions": [{"type": "approve"}]}), config)
+    )
+    all_events = first_pass + resume_pass
+    started_ids = [e.call_id for e in all_events if isinstance(e, ToolStarted)]
+    assert started_ids == ["1"]  # exactly once, not twice

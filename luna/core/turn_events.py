@@ -77,8 +77,27 @@ def iter_turn(agent, payload, config: dict) -> Iterator[TurnEvent]:
     whether/how to resume by calling this again with
     ``payload=Command(resume=...)``.
     """
+    # Seed both dedup sets from the persisted graph state rather than
+    # starting empty: on a resume call (``payload=Command(resume=...)``)
+    # after an ``Interrupted`` event, this same turn's already-recorded
+    # AIMessage/ToolMessage history would otherwise be re-scanned from
+    # scratch by the loop below, re-yielding a ``ToolStarted`` for a call
+    # that started (and was already reported) before the pause. As of the
+    # pause, state contains the AIMessage with the tool_calls that
+    # triggered the interrupt but NOT yet a ToolMessage for it (the tool
+    # hasn't run), so seeding only suppresses the stale ToolStarted —
+    # ToolFinished still fires once the tool actually completes.
+    state_messages = agent.get_state(config).values.get("messages", [])
     requested_tools: set[str] = set()
     seen_tools: set[str] = set()
+    for m in state_messages:
+        if isinstance(m, AIMessage):
+            for call in m.tool_calls or []:
+                call_id = call.get("id")
+                if call_id:
+                    requested_tools.add(call_id)
+        elif isinstance(m, ToolMessage):
+            seen_tools.add(m.tool_call_id)
 
     for mode, chunk in agent.stream(payload, config=config, stream_mode=["messages", "updates"]):
         if mode == "messages":

@@ -17,6 +17,10 @@
 - `luna/core/` — рантайм агента и его защита
   - `agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
   - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
+  - `turn_events.py` — `iter_turn`: чистый генератор типизированных событий
+    одного прохода `agent.stream(...)` (без `deepagents`/`langgraph`); из
+    него `session.py`'s `_stream_turn` строит REPL-рендер, а будущий
+    локальный сервер — SSE
   - `persistence.py` — SqliteSaver + индекс сессий
   - `toolguard.py` — middleware: deny-правила + снапшоты + `/plan`
   - `permissions.py` — правила allow/deny

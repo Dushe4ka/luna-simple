@@ -188,11 +188,12 @@ def _stream_turn(
                     answer.stop()
                     progress.start(event.call_id, event.name, event.args)
                 elif isinstance(event, ToolFinished):
-                    tool_names_seen.add(event.name)
+                    if event.name:
+                        tool_names_seen.add(event.name)
                     progress.finish(event.call_id, event.ok, event.detail)
                 elif isinstance(event, ReloadRequested):
                     reload_requested = True
-                elif isinstance(event, Interrupted):
+                elif isinstance(event, Interrupted) and interrupt_value is None:
                     interrupt_value = event.value
 
             if interrupt_value is None:
