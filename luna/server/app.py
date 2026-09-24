@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from luna.server.approvals import post_approve
 from luna.server.sessions import create_session, list_sessions
 from luna.server.turns import post_message
 
@@ -43,6 +44,7 @@ def create_app(agent_factory: Callable[[], object], *, token: str) -> Starlette:
             Route("/sessions", list_sessions, methods=["GET"]),
             Route("/sessions", create_session, methods=["POST"]),
             Route("/sessions/{thread_id}/messages", post_message, methods=["POST"]),
+            Route("/sessions/{thread_id}/approve", post_approve, methods=["POST"]),
         ],
         middleware=[Middleware(_AuthMiddleware, token=token)],
     )

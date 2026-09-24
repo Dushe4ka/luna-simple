@@ -46,6 +46,26 @@ def _event_dict(event) -> dict:
     raise TypeError(f"unknown turn event: {event!r}")
 
 
+async def _stream_turn_events(thread_id: str, workdir: str, agent, payload):
+    """Run ``iter_turn`` and yield its events as SSE ``data`` dicts.
+
+    Shared by :func:`post_message` and :mod:`luna.server.approvals`'s
+    ``post_approve`` — both run one turn (a fresh message or a resume) and
+    stream identically-shaped events, recording ``turn_done``/touch only
+    when the turn didn't pause on another interrupt.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    index = SessionIndex()
+    interrupted = False
+    for event in iter_turn(agent, payload, config):
+        if isinstance(event, Interrupted):
+            interrupted = True
+        yield {"data": json.dumps(_event_dict(event))}
+    if not interrupted:
+        index.touch(thread_id)
+        yield {"data": json.dumps({"event": "turn_done"})}
+
+
 async def post_message(request: Request) -> EventSourceResponse:
     """Run one turn via iter_turn and stream its events as SSE."""
     thread_id = request.path_params["thread_id"]
@@ -53,22 +73,11 @@ async def post_message(request: Request) -> EventSourceResponse:
     content = body["content"]
     workdir = body.get("workdir", ".")
     agent = request.app.state.agent_factory()
-    config = {"configurable": {"thread_id": thread_id}}
     payload = {"messages": [{"role": "user", "content": content}]}
 
     index = SessionIndex()
     existing = {r.thread_id for r in index.list(workdir=workdir)}
     if thread_id not in existing:
         index.record(thread_id, workdir, make_title(content))
-    index.touch(thread_id)
 
-    async def event_generator():
-        interrupted = False
-        for event in iter_turn(agent, payload, config):
-            if isinstance(event, Interrupted):
-                interrupted = True
-            yield {"data": json.dumps(_event_dict(event))}
-        if not interrupted:
-            yield {"data": json.dumps({"event": "turn_done"})}
-
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(_stream_turn_events(thread_id, workdir, agent, payload))
