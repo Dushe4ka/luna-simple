@@ -8,6 +8,7 @@ from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Markdown
 
 from luna.tui.commands import filter_commands
+from luna.tui.sidebar_activity import ActivitySidebar
 
 
 class ChatPane(Widget):
@@ -59,6 +60,12 @@ class ChatPane(Widget):
             async for evt in app.client.send_message(self.thread_id, content, self._workdir):
                 if evt["event"] == "text_delta":
                     await stream.write(evt["text"])
+                elif evt["event"] == "tool_started":
+                    activity = app.query_one(ActivitySidebar)
+                    activity.tool_started(evt["call_id"], evt["name"], evt["args"])
+                elif evt["event"] == "tool_finished":
+                    activity = app.query_one(ActivitySidebar)
+                    activity.tool_finished(evt["call_id"], evt["name"], evt["ok"], evt["detail"])
         finally:
             await stream.stop()
 
