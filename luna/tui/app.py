@@ -7,6 +7,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
 from luna.server.client import ServerClient
+from luna.tui.chat import ChatPane
 from luna.tui.theme import TUI_CSS_VARIABLES
 
 
@@ -26,7 +27,7 @@ class LunaApp(App):
         background: $bg;
         border-left: solid $border;
     }
-    #chat-pane {
+    ChatPane {
         background: $bg;
     }
     #status-bar {
@@ -48,7 +49,7 @@ class LunaApp(App):
         """Build the 3-zone layout: two sidebars, chat pane, status bar, footer."""
         with Horizontal():
             yield Static(id="sessions-sidebar")
-            yield Static(id="chat-pane")
+            yield ChatPane(workdir=self._workdir)
             yield Static(id="activity-sidebar")
         yield Static(id="status-bar")
         yield Footer()
