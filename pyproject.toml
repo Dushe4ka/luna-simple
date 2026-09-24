@@ -34,6 +34,7 @@ dependencies = [
     "starlette>=1.6",
     "sse-starlette>=3.0",
     "uvicorn>=0.30",
+    "textual>=8.2",
 ]
 
 [project.optional-dependencies]
