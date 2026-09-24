@@ -26,11 +26,12 @@ from luna.extensions.initgen import init_prompt
 from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
 from luna.extensions.subagents import subagent_summaries
 from luna.repl.setup_wizard import run_setup
+from luna.server.run import run_serve
 from luna.ui.console import get_console
 from luna.ui.interact import arrow_pick
 from luna.ui.splash import render_splash
 
-_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init"}
+_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init", "serve"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -344,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
             "skills": _run_skills,
             "agents": _run_agents,
             "init": _run_init,
+            "serve": run_serve,
         }
         try:
             return handlers[raw[0]](raw[1:])
