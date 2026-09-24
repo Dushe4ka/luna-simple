@@ -13,13 +13,7 @@ import time
 import uuid
 from collections.abc import Callable
 
-from langchain_core.messages import (
-    AIMessage,
-    AIMessageChunk,
-    HumanMessage,
-    RemoveMessage,
-    ToolMessage,
-)
+from langchain_core.messages import HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from rich.console import Console
@@ -29,6 +23,15 @@ from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
 from luna.core import permissions
 from luna.core.permissions import load_rules
 from luna.core.persistence import SessionIndex, make_title
+from luna.core.turn_events import (
+    Interrupted,
+    ReloadRequested,
+    TextDelta,
+    ToolFinished,
+    ToolStarted,
+    UsageDelta,
+    iter_turn,
+)
 from luna.extensions.subagents import subagent_summaries
 from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
@@ -50,14 +53,8 @@ __all__ = [
     "run_repl",
 ]
 
-_RELOAD_MARKER = "Run /reload"
-
 #: Tool names whose use marks a turn as mutating and triggers verification.
 _MUTATING = {"write_file", "edit_file", "delete", "execute"}
-
-#: Read-only navigation tools whose own progress-line label already says what
-#: happened — a successful call gets no extra detail line, only a failure does.
-_QUIET_ON_SUCCESS = {"read_file", "ls", "glob", "grep"}
 
 #: Matches a non-slash line invoking a subagent by name, e.g. ``@researcher do X``.
 _AT_AGENT_RE = re.compile(r"^@([\w-]+)\s+(.+)$", re.DOTALL)
@@ -156,64 +153,6 @@ def collect_decisions(
     return {"decisions": decisions}
 
 
-def _iter_interrupts(chunk: object):
-    if isinstance(chunk, dict) and "__interrupt__" in chunk:
-        yield from chunk["__interrupt__"]
-
-
-def _report_tool_calls(chunk: dict, progress: ToolProgress, requested: set[str]) -> None:
-    """Register newly-requested tool calls with the live progress indicator.
-
-    Scans generically (no hardcoded node name), matching ``_report_tools``'s
-    existing style — verified empirically that the model's own node update
-    carries the ``AIMessage`` with populated ``tool_calls`` before the
-    matching ``ToolMessage`` shows up in a later chunk, but this does not
-    hardcode that node's name.
-    """
-    for update in chunk.values():
-        if not isinstance(update, dict):
-            continue
-        for msg in update.get("messages", []) or []:
-            if not isinstance(msg, AIMessage):
-                continue
-            for call in msg.tool_calls or []:
-                call_id = call.get("id")
-                if not call_id or call_id in requested:
-                    continue
-                requested.add(call_id)
-                progress.start(call_id, call["name"], call.get("args") or {})
-
-
-def _report_tools(chunk: dict, progress: ToolProgress, seen: set[str], names: set[str]) -> bool:
-    """Report finished tool calls to the progress indicator.
-
-    Returns True if a tool asked for /reload. Every reported tool's name is
-    added to ``names``.
-    """
-    reload_requested = False
-    for update in chunk.values():
-        if not isinstance(update, dict):
-            continue
-        for msg in update.get("messages", []) or []:
-            if isinstance(msg, ToolMessage) and msg.tool_call_id not in seen:
-                seen.add(msg.tool_call_id)
-                if msg.name:
-                    names.add(msg.name)
-                body = str(msg.content) if msg.content else ""
-                detail = body.splitlines()[0][:120] if body else ""
-                ok = getattr(msg, "status", "success") != "error"
-                if ok and msg.name in _QUIET_ON_SUCCESS:
-                    # The label already says what ran (e.g. "read_file(/a.py)");
-                    # dumping the first line of a successful read's own content
-                    # (often a code line or a directory listing) is noise, not
-                    # information. A failure is always worth showing why.
-                    detail = ""
-                progress.finish(msg.tool_call_id, ok, detail)
-                if msg.name in ("manage_mcp", "manage_skills") and _RELOAD_MARKER in body:
-                    reload_requested = True
-    return reload_requested
-
-
 def _stream_turn(
     agent,
     payload,
@@ -229,8 +168,6 @@ def _stream_turn(
     Returns ``(final_text, reload_requested, turn_usage, tool_names_seen)``.
     """
     parts: list[str] = []
-    seen_tools: set[str] = set()
-    requested_tools: set[str] = set()
     tool_names_seen: set[str] = set()
     reload_requested = False
     turn_usage = TurnUsage()
@@ -240,43 +177,32 @@ def _stream_turn(
     open_turn(console)
     try:
         while True:
-            interrupts: list = []
-            for mode, chunk in agent.stream(
-                payload, config=config, stream_mode=["messages", "updates"]
-            ):
-                if mode == "messages":
-                    msg, meta = chunk
-                    if meta.get("langgraph_node") == "model" and isinstance(
-                        msg, (AIMessage, AIMessageChunk)
-                    ):
-                        turn_usage.merge(getattr(msg, "usage_metadata", None))
-                        text = msg.content if isinstance(msg.content, str) else ""
-                        if text:
-                            parts.append(text)
-                            answer.append(text)
-                elif mode == "updates":
-                    interrupts.extend(_iter_interrupts(chunk))
-                    # Finalize any in-progress text segment before showing
-                    # tool-progress lines: only one rich.live.Live can be
-                    # active on a console at a time, and text-generation for
-                    # this step is always complete by the time a graph node
-                    # finishes (this is the same "model" node completion
-                    # `_report_tool_calls` reads tool_calls from below).
+            interrupt_value: dict | None = None
+            for event in iter_turn(agent, payload, config):
+                if isinstance(event, TextDelta):
+                    parts.append(event.text)
+                    answer.append(event.text)
+                elif isinstance(event, UsageDelta):
+                    turn_usage.merge(event.usage_metadata)
+                elif isinstance(event, ToolStarted):
                     answer.stop()
-                    _report_tool_calls(chunk, progress, requested_tools)
-                    reload_requested |= _report_tools(chunk, progress, seen_tools, tool_names_seen)
+                    progress.start(event.call_id, event.name, event.args)
+                elif isinstance(event, ToolFinished):
+                    tool_names_seen.add(event.name)
+                    progress.finish(event.call_id, event.ok, event.detail)
+                elif isinstance(event, ReloadRequested):
+                    reload_requested = True
+                elif isinstance(event, Interrupted):
+                    interrupt_value = event.value
 
-            if not interrupts:
-                state = agent.get_state(config)
-                interrupts = list(getattr(state, "interrupts", ()) or [])
-            if not interrupts:
+            if interrupt_value is None:
                 break
 
             progress.pause()
             console.print()
             resume = collect_decisions(
                 console,
-                interrupts[0].value,
+                interrupt_value,
                 input_fn=input_fn,
                 rules=rules,
                 workdir=workdir,
