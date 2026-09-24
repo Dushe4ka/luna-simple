@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
+from langgraph.types import Command
 from sse_starlette.sse import EventSourceResponse
 from starlette.requests import Request
 
+from luna.core import permissions
 from luna.core.persistence import SessionIndex, make_title
 from luna.core.turn_events import (
     Interrupted,
@@ -55,17 +57,48 @@ async def _stream_turn_events(thread_id: str, workdir: str, agent, payload):
     up front, since any message — including one that immediately pauses on
     an approval interrupt — counts as activity on that session; ``turn_done``
     fires only when the turn completes without pausing on another interrupt.
+
+    Each interrupt is first checked against the project's permission rules,
+    mirroring ``luna.core.session.collect_decisions``: an ``allow`` match
+    auto-approves and a ``deny`` match auto-rejects, both without ever
+    surfacing an ``approval_needed`` event to the client. Without this the
+    rule the approval modal's "Always allow" button persists would be
+    honoured by a later CLI/REPL session but never by the TUI that wrote it,
+    so the user would be re-prompted for the identical action forever.
     """
     config = {"configurable": {"thread_id": thread_id}}
     index = SessionIndex()
     index.touch(thread_id)
-    interrupted = False
-    for event in iter_turn(agent, payload, config):
-        if isinstance(event, Interrupted):
-            interrupted = True
-        yield {"data": json.dumps(_event_dict(event))}
-    if not interrupted:
-        yield {"data": json.dumps({"event": "turn_done"})}
+    rules = permissions.load_rules(workdir)
+    while True:
+        interrupt_value = None
+        for event in iter_turn(agent, payload, config):
+            if isinstance(event, Interrupted):
+                interrupt_value = event.value
+                break
+            yield {"data": json.dumps(_event_dict(event))}
+        if interrupt_value is None:
+            yield {"data": json.dumps({"event": "turn_done"})}
+            return
+        requests = interrupt_value.get("action_requests") or [interrupt_value.get("action_request")]
+        request = requests[0]
+        name = request.get("action") or request.get("name")
+        args = request.get("args", {}) or {}
+        verdict = rules.match(name, args)
+        if verdict == "allow":
+            payload = Command(resume={"decisions": [{"type": "approve"}]})
+            continue
+        if verdict == "deny":
+            payload = Command(
+                resume={
+                    "decisions": [
+                        {"type": "reject", "message": f"blocked by a Luna permission rule ({name})"}
+                    ]
+                }
+            )
+            continue
+        yield {"data": json.dumps({"event": "approval_needed", "value": interrupt_value})}
+        return
 
 
 async def post_message(request: Request) -> EventSourceResponse:

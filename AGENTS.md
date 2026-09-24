@@ -114,10 +114,12 @@
   субагентов); `luna/turn/undo.py` — `undo()`/`redo()` принимают уже
   собранного агента параметром и лениво импортируют
   `langchain_core.messages` только внутри этих двух функций, остальной
-  модуль framework-free; `luna/server/approvals.py` — модульный импорт
-  `Command` из `langgraph.types` (зеркалит собственное использование в
-  `session.py`), нужен, чтобы завернуть решение пользователя в
-  `Command(resume=...)` и возобновить ход. Остальной `luna/server/`
+  модуль framework-free; `luna/server/approvals.py` и `luna/server/turns.py`
+  — модульный импорт `Command` из `langgraph.types` (зеркалит собственное
+  использование в `session.py`): в `approvals.py` он заворачивает решение
+  пользователя и возобновляет ход, в `turns.py` — автоматически
+  возобновляет ход по сработавшему правилу разрешений (`allow` / `deny`),
+  как это делает `collect_decisions` в REPL. Остальной `luna/server/`
   (общается с движком только через `luna/core/turn_events.py`'s
   `iter_turn`, который сам уже framework-free) и весь `luna/tui/` —
   прямых импортов `deepagents`/`langgraph` не держат.
