@@ -64,7 +64,7 @@ all = [
     "langchain-mcp-adapters>=0.3",
     "multilspy>=0.0.15",
 ]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
 
 [project.scripts]
 luna = "luna.cli:main"
@@ -96,3 +96,4 @@ packages = ["luna"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
