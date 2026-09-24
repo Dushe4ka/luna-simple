@@ -55,10 +55,12 @@ class ChatPane(Widget):
         transcript = self.query_one("#transcript", Markdown)
         stream = Markdown.get_stream(transcript)
         app = self.app
-        async for evt in app.client.send_message(self.thread_id, content, self._workdir):
-            if evt["event"] == "text_delta":
-                await stream.write(evt["text"])
-        await stream.stop()
+        try:
+            async for evt in app.client.send_message(self.thread_id, content, self._workdir):
+                if evt["event"] == "text_delta":
+                    await stream.write(evt["text"])
+        finally:
+            await stream.stop()
 
 
 class _CommandLabel(ListItem):
