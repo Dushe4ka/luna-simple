@@ -1524,12 +1524,16 @@ source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "httpx" },
+    { name = "httpx-sse" },
     { name = "langchain" },
     { name = "langchain-anthropic" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "questionary" },
     { name = "rich" },
+    { name = "sse-starlette" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -1596,6 +1600,7 @@ xai = [
 requires-dist = [
     { name = "deepagents", specifier = "~=0.7.13" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "httpx-sse", specifier = ">=0.4" },
     { name = "langchain", specifier = "~=1.4" },
     { name = "langchain-anthropic", specifier = ">=1.7" },
     { name = "langchain-deepseek", marker = "extra == 'all'", specifier = ">=0.1" },
@@ -1630,6 +1635,9 @@ requires-dist = [
     { name = "questionary", specifier = ">=2.1" },
     { name = "rich", specifier = ">=13.7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "sse-starlette", specifier = ">=3.0" },
+    { name = "starlette", specifier = ">=1.6" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["deepseek", "openai", "google", "ollama", "mistral", "xai", "groq", "fireworks", "together", "openrouter", "perplexity", "mcp", "lsp", "all", "dev"]
 
@@ -3171,8 +3179,8 @@ name = "uvicorn"
 version = "0.52.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
-    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "click" },
+    { name = "h11" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f2/0f/3f86e61397dd33bf2ccf28188c40db6a740658aeebbbf6e7dbc101a1f487/uvicorn-0.52.4.tar.gz", hash = "sha256:73acfee47a0b133c5de13d219492d62d8a31e935f4fe6e41a232451a15379f86", size = 100627, upload-time = "2026-08-19T06:27:41.821Z" }
 wheels = [
