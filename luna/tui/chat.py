@@ -17,9 +17,14 @@ class ChatPane(Widget):
 
     thread_id: reactive[str | None] = reactive(None)
 
-    def __init__(self, *, workdir: str) -> None:
+    def __init__(self, *, workdir: str, thread_id: str) -> None:
         super().__init__()
         self._workdir = workdir
+        # Required, not defaulted: the pane must always open on a real
+        # thread id resolved by the CLI. Leaving the reactive at its None
+        # default made every fresh session address a graph thread literally
+        # named "None" (and silently discarded --resume/--continue).
+        self.thread_id = thread_id
 
     def compose(self):
         """Build the transcript, autocomplete dropdown, and chat input."""

@@ -34,13 +34,18 @@ from luna.ui.splash import render_splash
 _SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init", "serve"}
 
 
-def run_tui(config, *, workdir: str) -> int:
+def run_tui(config, *, workdir: str, thread_id: str) -> int:
     """Launch the full-screen TUI, auto-starting the local server first."""
     from luna.server.run import ensure_running
     from luna.tui.app import LunaApp
 
     info = ensure_running(workdir)
-    app = LunaApp(base_url=f"http://127.0.0.1:{info['port']}", token=info["token"], workdir=workdir)
+    app = LunaApp(
+        base_url=f"http://127.0.0.1:{info['port']}",
+        token=info["token"],
+        workdir=workdir,
+        thread_id=thread_id,
+    )
     app.run()
     return 0
 
@@ -453,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if interactive:
-            return run_tui(config, workdir=config.workdir)
+            return run_tui(config, workdir=config.workdir, thread_id=start_thread)
         return run_repl(
             agent,
             console=console,

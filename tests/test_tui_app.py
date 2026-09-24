@@ -18,7 +18,7 @@ async def test_app_mounts_three_zones(tmp_path, fake_model):
     app_asgi = create_app(agent_factory=lambda: agent, token="t")
     transport = httpx.ASGITransport(app=app_asgi)
 
-    app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path))
+    app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id="t1")
     app.client._http = httpx.AsyncClient(transport=transport, base_url="http://test")
 
     async with app.run_test() as _pilot:
@@ -29,3 +29,22 @@ async def test_app_mounts_three_zones(tmp_path, fake_model):
         assert app.query_one(ChatPane) is not None
         assert app.query_one("#activity-sidebar") is not None
         assert app.query_one("#status-bar") is not None
+
+
+async def test_chat_pane_opens_on_the_thread_id_the_cli_resolved(tmp_path, fake_model):
+    """Regression (C1+C6): by the time the app is interactive, ChatPane must
+    already address the thread the CLI resolved — a fresh uuid4 hex, or the
+    one --resume/--continue picked. It used to stay at its ``None`` reactive
+    default unless the user clicked a session, so every fresh TUI turn went
+    to a graph thread literally named "None" and --resume was discarded.
+    """
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=fake_model(AIMessage(content="ok")))
+    app_asgi = create_app(agent_factory=lambda _workdir: agent, token="t")
+    transport = httpx.ASGITransport(app=app_asgi)
+
+    app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id="abc123")
+    app.client._http = httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    async with app.run_test():
+        assert app.query_one(ChatPane).thread_id == "abc123"

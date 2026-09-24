@@ -21,7 +21,7 @@ async def test_sessions_sidebar_lists_sessions_from_the_server(tmp_path, monkeyp
     app_asgi = create_app(agent_factory=lambda: agent, token="t")
     transport = httpx.ASGITransport(app=app_asgi)
 
-    app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path))
+    app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id="t1")
     app.client._http = httpx.AsyncClient(transport=transport, base_url="http://test")
 
     async with app.run_test():

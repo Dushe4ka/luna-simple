@@ -43,9 +43,21 @@ class LunaApp(App):
 
     BINDINGS = [("ctrl+b", "toggle_panels", "Toggle panels")]
 
-    def __init__(self, *, base_url: str, token: str, workdir: str) -> None:
+    def __init__(self, *, base_url: str, token: str, workdir: str, thread_id: str) -> None:
         super().__init__()
         self._workdir = workdir
+        # The CLI already resolved the thread to start on (a fresh uuid4 hex,
+        # or the one picked by --resume/--continue); the TUI must open on
+        # THAT thread. Passing it down to ChatPane as a required constructor
+        # argument — rather than leaving the reactive at its None default and
+        # hoping the user clicks a session — is what keeps every turn from
+        # landing on a literal graph thread named "None".
+        #
+        # NB: *not* `self._thread_id` — Textual's MessagePump already owns
+        # that attribute (it re-stamps it with `threading.get_ident()` when
+        # the app starts running), so storing the graph thread there would be
+        # silently overwritten with an OS thread id before compose() runs.
+        self._start_thread_id = thread_id
         self.client = ServerClient(base_url=base_url, token=token)
 
     def compose(self) -> ComposeResult:
@@ -62,7 +74,7 @@ class LunaApp(App):
         activity_sidebar.id = "activity-sidebar"
         with Horizontal():
             yield sessions_sidebar
-            yield ChatPane(workdir=self._workdir)
+            yield ChatPane(workdir=self._workdir, thread_id=self._start_thread_id)
             yield activity_sidebar
         yield StatusBar(id="status-bar")
         yield Footer()

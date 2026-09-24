@@ -43,7 +43,7 @@ class _HarnessApp(App):
         self.client = client
 
     def compose(self) -> ComposeResult:
-        yield ChatPane(workdir=".")
+        yield ChatPane(workdir=".", thread_id="t1")
 
 
 async def test_markdown_stream_stopped_even_when_sse_stream_raises():
