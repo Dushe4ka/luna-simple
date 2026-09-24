@@ -11,6 +11,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from luna.server.sessions import create_session, list_sessions
+
 
 class _AuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, *, token: str) -> None:
@@ -35,7 +37,11 @@ def create_app(agent_factory: Callable[[], object], *, token: str) -> Starlette:
     handlers to use.
     """
     app = Starlette(
-        routes=[Route("/health", _health)],
+        routes=[
+            Route("/health", _health),
+            Route("/sessions", list_sessions, methods=["GET"]),
+            Route("/sessions", create_session, methods=["POST"]),
+        ],
         middleware=[Middleware(_AuthMiddleware, token=token)],
     )
     app.state.agent_factory = agent_factory
