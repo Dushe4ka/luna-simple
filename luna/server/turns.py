@@ -51,18 +51,20 @@ async def _stream_turn_events(thread_id: str, workdir: str, agent, payload):
 
     Shared by :func:`post_message` and :mod:`luna.server.approvals`'s
     ``post_approve`` — both run one turn (a fresh message or a resume) and
-    stream identically-shaped events, recording ``turn_done``/touch only
-    when the turn didn't pause on another interrupt.
+    stream identically-shaped events. The session is touched unconditionally
+    up front, since any message — including one that immediately pauses on
+    an approval interrupt — counts as activity on that session; ``turn_done``
+    fires only when the turn completes without pausing on another interrupt.
     """
     config = {"configurable": {"thread_id": thread_id}}
     index = SessionIndex()
+    index.touch(thread_id)
     interrupted = False
     for event in iter_turn(agent, payload, config):
         if isinstance(event, Interrupted):
             interrupted = True
         yield {"data": json.dumps(_event_dict(event))}
     if not interrupted:
-        index.touch(thread_id)
         yield {"data": json.dumps({"event": "turn_done"})}
 
 
