@@ -63,47 +63,55 @@ class ChatPane(Widget):
         stream = Markdown.get_stream(transcript)
         app = self.app
         try:
-            async for evt in app.client.send_message(self.thread_id, content, self._workdir):
-                if evt["event"] == "text_delta":
-                    await stream.write(evt["text"])
-                elif evt["event"] == "tool_started":
-                    activity = app.query_one(ActivitySidebar)
-                    activity.tool_started(evt["call_id"], evt["name"], evt["args"])
-                elif evt["event"] == "tool_finished":
-                    activity = app.query_one(ActivitySidebar)
-                    activity.tool_finished(evt["call_id"], evt["name"], evt["ok"], evt["detail"])
-                elif evt["event"] == "approval_needed":
-                    requests = evt["value"].get("action_requests") or [
-                        evt["value"].get("action_request")
-                    ]
-                    # ModalScreen.push_screen_wait requires worker context
-                    # (Textual raises NoActiveWorker otherwise), so the
-                    # actual push+wait is delegated to the @work-decorated
-                    # _await_approval_decision helper below. on_input_submitted
-                    # itself stays a plain coroutine so it's still directly
-                    # awaitable (Task 8's regression test calls it that way)
-                    # and its try/finally around stream.stop() is unaffected.
-                    decision = await self._await_approval_decision(requests[0]).wait()
-                    async for resume_evt in app.client.approve(
-                        self.thread_id, decision, self._workdir
-                    ):
-                        if resume_evt["event"] == "text_delta":
-                            await stream.write(resume_evt["text"])
-                        elif resume_evt["event"] == "tool_started":
-                            activity = app.query_one(ActivitySidebar)
-                            activity.tool_started(
-                                resume_evt["call_id"], resume_evt["name"], resume_evt["args"]
-                            )
-                        elif resume_evt["event"] == "tool_finished":
-                            activity = app.query_one(ActivitySidebar)
-                            activity.tool_finished(
-                                resume_evt["call_id"],
-                                resume_evt["name"],
-                                resume_evt["ok"],
-                                resume_evt["detail"],
-                            )
+            # Resolved inside the try (not before it) so that even a failed
+            # lookup still runs `finally: stream.stop()` — Task 8's guarantee.
+            activity = app.query_one(ActivitySidebar)
+            # A turn can pause for approval more than once: the server's SSE
+            # stream always ends after an Interrupted, so a resumed stream
+            # that hits a *second* interrupt ends on another approval_needed.
+            # Loop until a stream finishes without one — mirroring
+            # luna.core.session._stream_turn's own `while True`. Handling only
+            # one round (the old nested `async for`) left the graph paused on
+            # the second interrupt with nothing in the UI to resume it.
+            event_stream = app.client.send_message(self.thread_id, content, self._workdir)
+            while True:
+                approval_value = None
+                async for evt in event_stream:
+                    pending = await self._apply_event(evt, stream, activity)
+                    if pending is not None:
+                        approval_value = pending
+                if approval_value is None:
+                    break
+                requests = approval_value.get("action_requests") or [
+                    approval_value.get("action_request")
+                ]
+                # ModalScreen.push_screen_wait requires worker context
+                # (Textual raises NoActiveWorker otherwise), so the actual
+                # push+wait is delegated to the @work-decorated
+                # _await_approval_decision helper below. on_input_submitted
+                # itself stays a plain coroutine so it's still directly
+                # awaitable (Task 8's regression test calls it that way) and
+                # its try/finally around stream.stop() is unaffected.
+                decision = await self._await_approval_decision(requests[0]).wait()
+                event_stream = app.client.approve(self.thread_id, decision, self._workdir)
         finally:
             await stream.stop()
+
+    async def _apply_event(self, evt: dict, stream, activity: ActivitySidebar) -> dict | None:
+        """Apply one SSE event to the transcript/activity sidebar.
+
+        Returns the interrupt's action-request payload if ``evt`` is an
+        ``approval_needed`` event, else ``None``.
+        """
+        if evt["event"] == "text_delta":
+            await stream.write(evt["text"])
+        elif evt["event"] == "tool_started":
+            activity.tool_started(evt["call_id"], evt["name"], evt["args"])
+        elif evt["event"] == "tool_finished":
+            activity.tool_finished(evt["call_id"], evt["name"], evt["ok"], evt["detail"])
+        elif evt["event"] == "approval_needed":
+            return evt["value"]
+        return None
 
     @work
     async def _await_approval_decision(self, action_request: dict) -> dict:
