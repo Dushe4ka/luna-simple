@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import Footer, Static
+from textual.widgets import Footer
 
 from luna.server.client import ServerClient
 from luna.tui.chat import ChatPane
 from luna.tui.sidebar_activity import ActivitySidebar
 from luna.tui.sidebar_sessions import SessionsSidebar
+from luna.tui.status_bar import StatusBar
 from luna.tui.theme import TUI_CSS_VARIABLES
 
 
@@ -63,7 +64,7 @@ class LunaApp(App):
             yield sessions_sidebar
             yield ChatPane(workdir=self._workdir)
             yield activity_sidebar
-        yield Static(id="status-bar")
+        yield StatusBar(id="status-bar")
         yield Footer()
 
     async def on_mount(self) -> None:

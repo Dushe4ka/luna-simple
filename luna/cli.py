@@ -34,6 +34,17 @@ from luna.ui.splash import render_splash
 _SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init", "serve"}
 
 
+def run_tui(config, *, workdir: str) -> int:
+    """Launch the full-screen TUI, auto-starting the local server first."""
+    from luna.server.run import ensure_running
+    from luna.tui.app import LunaApp
+
+    info = ensure_running(workdir)
+    app = LunaApp(base_url=f"http://127.0.0.1:{info['port']}", token=info["token"], workdir=workdir)
+    app.run()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser for the agent-run flow."""
     parser = argparse.ArgumentParser(
@@ -441,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
                 output_format=args.output_format,
             )
             return 0
+        if interactive:
+            return run_tui(config, workdir=config.workdir)
         return run_repl(
             agent,
             console=console,
