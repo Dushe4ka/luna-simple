@@ -7,10 +7,11 @@ import secrets
 import socket
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
-from luna.server.auth import read_token_file, write_token_file
+from luna.server.auth import read_token_file, token_path, write_token_file
 
 
 def _default_is_alive(pid: int) -> bool:
@@ -43,6 +44,11 @@ def ensure_running(
     if existing is not None and _is_alive(existing["pid"]):
         return existing
 
+    if existing is not None:
+        # Stale — remove it so a premature read below can't hand back
+        # dead credentials for a server that's no longer running.
+        token_path().unlink(missing_ok=True)
+
     port = _free_port()
     token = secrets.token_hex(16)
     if _spawn is not None:
@@ -54,7 +60,19 @@ def ensure_running(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    return read_token_file() or {"port": port, "token": token, "pid": 0}
+
+    # The real spawn is asynchronous: the new process writes its own token
+    # file only once it is up, so a single read here would race it (and,
+    # before the unlink above, could return the dead server's port — a port
+    # number some unrelated process may now own). Poll until the file the
+    # freshly-spawned server wrote actually appears. An injected `_spawn`
+    # writes synchronously, so this succeeds on the first check with no delay.
+    deadline = time.monotonic() + 5.0
+    data = read_token_file()
+    while (data is None or data["token"] != token) and time.monotonic() < deadline:
+        time.sleep(0.05)
+        data = read_token_file()
+    return data or {"port": port, "token": token, "pid": 0}
 
 
 def make_agent_factory(*, model=None) -> Callable[[str], object]:
