@@ -8,7 +8,7 @@ from luna.server.app import create_app
 @pytest.fixture
 async def client(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    app = create_app(agent_factory=lambda: None, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     headers = {"Authorization": "Bearer secret-token"}
     async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:

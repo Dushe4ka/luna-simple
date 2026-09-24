@@ -15,7 +15,7 @@ async def test_app_mounts_three_zones(tmp_path, fake_model):
     # tests/test_tui_sidebars.py) instead of hitting the network.
     cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
     agent = build_agent(cfg, model=fake_model(AIMessage(content="ok")))
-    app_asgi = create_app(agent_factory=lambda: agent, token="t")
+    app_asgi = create_app(agent_factory=lambda _workdir: agent, token="t")
     transport = httpx.ASGITransport(app=app_asgi)
 
     app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id="t1")

@@ -22,7 +22,7 @@ async def post_approve(request: Request) -> EventSourceResponse:
     thread_id = request.path_params["thread_id"]
     body = await request.json()
     workdir = body.get("workdir", ".")
-    agent = request.app.state.agent_factory()
+    agent = request.app.state.agent_factory(workdir)
     decision = dict(body["decision"])
     if "always" in decision:
         permissions.append_project_rule(workdir, decision["always"])

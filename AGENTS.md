@@ -69,7 +69,10 @@
   - `approvals.py` — `POST /sessions/{id}/approve`: возобновляет ход,
     остановленный на `Interrupted`, через `Command(resume=...)`
   - `run.py` — жизненный цикл процесса сервера: переиспользовать-или-
-    запустить (`ensure_running`) и сама подкоманда `luna serve`
+    запустить (`ensure_running`), реестр агентов по рабочим директориям
+    (`make_agent_factory` — свой агент на каждый `workdir`, потому что
+    корень `LocalShellBackend` фиксируется при сборке, плюс общий
+    SQLite-чекпойнтер) и сама подкоманда `luna serve`
   - `client.py` — асинхронный HTTP+SSE клиент к локальному серверу,
     которым пользуется TUI
 - `luna/tui/` — полноэкранный клиент на `Textual` поверх `luna/server/`

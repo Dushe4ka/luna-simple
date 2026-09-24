@@ -7,7 +7,7 @@ from luna.server.auth import read_token_file, token_path, write_token_file
 
 @pytest.fixture
 async def client():
-    app = create_app(agent_factory=lambda: None, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,
@@ -24,7 +24,7 @@ async def test_health_ok_with_valid_token(client):
 
 
 async def test_health_rejects_missing_token():
-    app = create_app(agent_factory=lambda: None, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/health")
@@ -32,7 +32,7 @@ async def test_health_rejects_missing_token():
 
 
 async def test_health_rejects_wrong_token():
-    app = create_app(agent_factory=lambda: None, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://test", headers={"Authorization": "Bearer wrong"}

@@ -41,7 +41,7 @@ async def test_approve_with_always_persists_a_project_rule(tmp_path, monkeypatch
     ]
     cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
     agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda: agent, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,
@@ -93,7 +93,7 @@ async def test_approve_resumes_a_blocked_edit(tmp_path, monkeypatch, fake_model)
     ]
     cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
     agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda: agent, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,

@@ -15,7 +15,7 @@ async def client(tmp_path, monkeypatch, fake_model):
     calls = [AIMessage(content="hello from the agent")]
     cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
     agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda: agent, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,
@@ -100,7 +100,7 @@ async def test_message_that_pauses_on_approval_still_bumps_updated(
     ]
     cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
     agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda: agent, token="secret-token")
+    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,

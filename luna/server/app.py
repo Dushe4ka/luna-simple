@@ -32,11 +32,13 @@ async def _health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def create_app(agent_factory: Callable[[], object], *, token: str) -> Starlette:
+def create_app(agent_factory: Callable[[str], object], *, token: str) -> Starlette:
     """Build the Starlette app.
 
-    ``agent_factory`` is stored on app.state for later tasks' route
-    handlers to use.
+    ``agent_factory(workdir)`` is stored on app.state for the route handlers
+    to use. It takes the request's ``workdir`` because one server process
+    serves many projects, and an agent's filesystem root is fixed at build
+    time — see :func:`luna.server.run.run_serve`.
     """
     app = Starlette(
         routes=[

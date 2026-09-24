@@ -74,7 +74,7 @@ async def post_message(request: Request) -> EventSourceResponse:
     body = await request.json()
     content = body["content"]
     workdir = body.get("workdir", ".")
-    agent = request.app.state.agent_factory()
+    agent = request.app.state.agent_factory(workdir)
     payload = {"messages": [{"role": "user", "content": content}]}
 
     index = SessionIndex()
