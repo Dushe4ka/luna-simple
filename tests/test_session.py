@@ -114,20 +114,29 @@ def test_stream_turn_pauses_and_resumes_progress_around_an_interrupt(monkeypatch
     )
 
     class _FakeAgent:
+        """Mimics a real agent's state machine across iter_turn's two calls:
+        ``get_state`` is now called both *before* streaming (iter_turn seeds
+        its dedup sets from persisted state) and *after* (to discover an
+        out-of-band interrupt) — so its answer must depend on how far
+        ``stream`` has progressed, not merely on "has get_state ever been
+        called before", or the extra pre-stream call reads back a stale
+        interrupt that hasn't actually happened yet.
+        """
+
         def __init__(self):
-            self._resumed = False
+            self._phase = 0  # 0: before first stream, 1: paused at interrupt, 2: resumed
 
         def stream(self, payload, config, stream_mode):
-            if not self._resumed:
+            if self._phase == 0:
                 yield "updates", {"model": {"messages": [tool_call]}}
+                self._phase = 1
             else:
                 yield "messages", (AIMessage(content="done"), {"langgraph_node": "model"})
+                self._phase = 2
 
         def get_state(self, config):
-            if not self._resumed:
-                self._resumed = True
-                return SimpleNamespace(values={}, interrupts=[interrupt])
-            return SimpleNamespace(values={}, interrupts=[])
+            interrupts = [interrupt] if self._phase == 1 else []
+            return SimpleNamespace(values={}, interrupts=interrupts)
 
     console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
     session._stream_turn(

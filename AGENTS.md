@@ -17,6 +17,10 @@
 - `luna/core/` — рантайм агента и его защита
   - `agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
   - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
+  - `turn_events.py` — `iter_turn`: чистый генератор типизированных событий
+    одного прохода `agent.stream(...)` (без `deepagents`/`langgraph`); из
+    него `session.py`'s `_stream_turn` строит REPL-рендер, а
+    `luna/server/turns.py` — SSE для TUI
   - `persistence.py` — SqliteSaver + индекс сессий
   - `toolguard.py` — middleware: deny-правила + снапшоты + `/plan`
   - `permissions.py` — правила allow/deny
@@ -52,6 +56,42 @@
   - `lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
     `hover` / `symbol_range`), extra `luna-simple[lsp]`
   - `initgen.py` — `luna init` / `/init`
+- `luna/server/` — локальный Starlette+SSE сервер, обёртка над
+  существующими session/agent/toolguard без изменения их логики
+  - `app.py` — сборка `Starlette`-приложения: маршруты + bearer-auth
+    middleware
+  - `auth.py` — файл токена сервера (`~/.config/luna/server.json`, права
+    0600), который читают TUI/CLI-клиенты
+  - `sessions.py` — `GET/POST /sessions` — тонкая обёртка над
+    `SessionIndex` (список сессий, относительное время активности)
+  - `turns.py` — `POST /sessions/{id}/messages`: гоняет `iter_turn` и
+    стримит его события как SSE
+  - `approvals.py` — `POST /sessions/{id}/approve`: возобновляет ход,
+    остановленный на `Interrupted`, через `Command(resume=...)`
+  - `run.py` — жизненный цикл процесса сервера: переиспользовать-или-
+    запустить (`ensure_running`), реестр агентов по рабочим директориям
+    (`make_agent_factory` — свой агент на каждый `workdir`, потому что
+    корень `LocalShellBackend` фиксируется при сборке, плюс общий
+    SQLite-чекпойнтер) и сама подкоманда `luna serve`
+  - `client.py` — асинхронный HTTP+SSE клиент к локальному серверу,
+    которым пользуется TUI
+- `luna/tui/` — полноэкранный клиент на `Textual` поверх `luna/server/`
+  - `app.py` — `LunaApp`: 3-зонная раскладка (сайдбары + чат + статус-бар),
+    `Ctrl+B` скрывает/показывает сайдбары
+  - `theme.py` — палитра `luna/ui/theme.py`, переведённая в CSS-переменные
+    Textual
+  - `chat.py` — центральная панель: стриминг ответа в Markdown-транскрипт,
+    автодополнение slash-команд, обработка approval-паузы
+  - `commands.py` — фильтрация списка slash-команд для автодополнения
+    (переиспользует `luna/repl/commands.py`'s `HELP`)
+  - `sidebar_sessions.py` — левый сайдбар: список сессий текущего
+    каталога, клик постит `SessionSelected`
+  - `sidebar_activity.py` — правый сайдбар: live-список инструментов,
+    выполняющихся в текущем ходе
+  - `approval_modal.py` — модальный диалог подтверждения мутирующих
+    действий (approve/always/reject) взамен блокирующего REPL-промпта
+  - `status_bar.py` — нижняя строка статуса: модель, стоимость,
+    закреплённый `@file`, режим `/plan`, глубина `/undo`
 - `luna/ui/` — тема `rich` и весь визуальный слой REPL
   - `theme.py` — цветовая палитра и `rich`-тема
   - `colors.py` — чистая RGB-математика (используется `splash.py` и `progress.py`)
@@ -74,7 +114,15 @@
   субагентов); `luna/turn/undo.py` — `undo()`/`redo()` принимают уже
   собранного агента параметром и лениво импортируют
   `langchain_core.messages` только внутри этих двух функций, остальной
-  модуль framework-free.
+  модуль framework-free; `luna/server/approvals.py` и `luna/server/turns.py`
+  — модульный импорт `Command` из `langgraph.types` (зеркалит собственное
+  использование в `session.py`): в `approvals.py` он заворачивает решение
+  пользователя и возобновляет ход, в `turns.py` — автоматически
+  возобновляет ход по сработавшему правилу разрешений (`allow` / `deny`),
+  как это делает `collect_decisions` в REPL. Остальной `luna/server/`
+  (общается с движком только через `luna/core/turn_events.py`'s
+  `iter_turn`, который сам уже framework-free) и весь `luna/tui/` —
+  прямых импортов `deepagents`/`langgraph` не держат.
 - ID моделей — в `luna/config/providers.py` или конфиге, никогда в логике агента.
 - Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
 - `subagents.toml` получил ключ `unsafe` — opt-in для мутирующих инструментов
