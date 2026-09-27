@@ -57,3 +57,11 @@ def test_trusted_folder_skips_the_prompt(tmp_path):
 
     console, _ = _console()
     assert ensure_trusted(console, str(tmp_path), input_fn=never) is True
+
+
+def test_prompt_shows_the_absolute_path_for_a_relative_workdir(tmp_path, monkeypatch):
+    """Regression: the CLI passes `workdir="."`, and the prompt showed just "."."""
+    monkeypatch.chdir(tmp_path)
+    console, buf = _console()
+    confirm_trust(console, ".", input_fn=lambda _p: "n")
+    assert str(tmp_path.resolve()) in buf.getvalue()

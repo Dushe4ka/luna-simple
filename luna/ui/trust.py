@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from rich.console import Console
 
@@ -26,7 +27,9 @@ def confirm_trust(console: Console, workdir: str, input_fn: Callable[[str], str]
     console.print("[bold]Доверяете этой папке?[/]")
     console.print()
     # soft_wrap: the full path must be visible — never ellipsis-truncated.
-    console.print(workdir, style=PALETTE["peri"], highlight=False, soft_wrap=True)
+    # Resolved: the CLI may pass a relative "." — the user must see the real folder.
+    shown = str(Path(workdir).resolve())
+    console.print(shown, style=PALETTE["peri"], highlight=False, soft_wrap=True)
     console.print()
     console.print(
         "Luna сможет читать и изменять файлы в этой папке и запускать в ней\n"
