@@ -20,6 +20,7 @@ from luna.core.turn_events import (
     ToolStarted,
     UsageDelta,
     args_preview,
+    text_of,
     iter_turn,
     tool_outcome,
 )
@@ -122,20 +123,6 @@ async def _stream_turn_events(thread_id: str, workdir: str, agent, payload):
         yield {"data": json.dumps({"event": "error", "message": f"{type(exc).__name__}: {exc}"})}
 
 
-def _text_of(content) -> str:
-    """Plain text of a message's content: a string, or the text blocks of a list."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            block if isinstance(block, str) else block.get("text", "")
-            for block in content
-            if isinstance(block, str) or (isinstance(block, dict) and block.get("type") == "text")
-        ]
-        return "".join(parts)
-    return ""
-
-
 def history_entries(raw_messages: list) -> list[dict]:
     """Turn a thread's raw messages into the transcript the TUI replays.
 
@@ -149,7 +136,7 @@ def history_entries(raw_messages: list) -> list[dict]:
     for m in raw_messages:
         kind = getattr(m, "type", None)
         if kind in ("human", "ai"):
-            text = _text_of(m.content)
+            text = text_of(m.content)
             if text:
                 entries.append({"role": kind, "content": text})
             for call in getattr(m, "tool_calls", None) or []:

@@ -22,6 +22,20 @@ _QUIET_ON_SUCCESS = {"read_file", "ls", "glob", "grep"}
 _RELOAD_MARKER = "Run /reload"
 
 
+def text_of(content) -> str:
+    """Plain text of a message's content: a string, or the text blocks of a list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block if isinstance(block, str) else block.get("text", "")
+            for block in content
+            if isinstance(block, str) or (isinstance(block, dict) and block.get("type") == "text")
+        ]
+        return "".join(parts)
+    return ""
+
+
 def tool_outcome(message) -> tuple[bool, str]:
     """Return ``(ok, detail)`` for a finished tool call's ``ToolMessage``.
 
@@ -30,7 +44,7 @@ def tool_outcome(message) -> tuple[bool, str]:
     the live ``ToolFinished`` event and the server's history replay so both
     show identical rows.
     """
-    body = str(message.content) if message.content else ""
+    body = text_of(message.content) if message.content else ""
     detail = body.splitlines()[0][:120] if body else ""
     ok = getattr(message, "status", "success") != "error"
     if ok and getattr(message, "name", None) in _QUIET_ON_SUCCESS:

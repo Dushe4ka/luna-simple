@@ -168,3 +168,11 @@ def test_args_preview_first_non_empty_string_collapsed_and_truncated():
     long = args_preview({"q": "x" * 100})
     assert len(long) == 40 and long.endswith("…")
     assert args_preview({"n": 3}) == ""
+
+
+def test_tool_outcome_reads_text_from_block_content():
+    """MCP tools often return content blocks; the └ line must show text, not a list repr."""
+    msg = ToolMessage(
+        content=[{"type": "text", "text": "3 files\nmore"}], tool_call_id="c1", name="mcp_ls"
+    )
+    assert tool_outcome(msg) == (True, "3 files")
