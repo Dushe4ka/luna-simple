@@ -88,3 +88,18 @@ async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path, fake_mod
         await pilot.pause()
         ids = [i.data_thread_id for i in app.query_one(SessionsSidebar).query(".session-item")]
         assert "t-new" in ids
+
+
+async def test_header_shows_the_real_folder_name_for_a_relative_workdir(
+    tmp_path, monkeypatch, fake_model
+):
+    """Regression: the CLI passes `workdir="."`, which rendered as "◐ ." / "."."""
+    project = tmp_path / "Luna_pi"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    app = _app(project, fake_model)
+    app._workdir = "."
+    async with app.run_test():
+        sidebar = app.query_one(SessionsSidebar)
+        name = str(sidebar.query_one(".project-name", Label).render())
+        assert name == "◐ Luna_pi"

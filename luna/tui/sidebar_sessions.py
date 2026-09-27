@@ -51,10 +51,11 @@ class SessionsSidebar(Widget):
 
     def compose(self):
         """Yield the project header and the session list."""
+        # Resolved for display only: the CLI may pass a relative "." here.
+        resolved = Path(self._workdir).resolve()
         with Vertical():
-            name = Path(self._workdir).name or self._workdir
-            yield Label(f"◐ {name}", classes="project-name")
-            yield Label(short_path(self._workdir, 28), classes="project-path")
+            yield Label(f"◐ {resolved.name or resolved}", classes="project-name")
+            yield Label(short_path(str(resolved), 28), classes="project-path")
             yield ListView(id="session-list")
 
     async def refresh_sessions(self) -> None:
