@@ -20,20 +20,14 @@
     border-right: solid $border;
 }
 
-#activity-sidebar {
-    width: 30;
-    background: $panel;
-    border-left: solid $border;
-}
-
 ChatPane {
     /* Without an explicit width, ChatPane has no basis to share the
-       Horizontal row's space with its two fixed-width sidebar siblings —
-       confirmed empirically via a real pty at a merely-160-column
-       terminal: ChatPane claimed the *entire* remaining width as if
-       #activity-sidebar didn't exist, pushing it (silently, no error,
-       nothing crops or wraps) off past the right edge of the screen
-       entirely — not narrow, not hidden, just never drawn. `1fr` is what
+       Horizontal row's space with its fixed-width sidebar sibling —
+       confirmed empirically via a real pty: ChatPane once claimed the
+       *entire* remaining width as if a sibling sidebar didn't exist,
+       pushing it (silently, no error, nothing crops or wraps) off past
+       the right edge of the screen — not narrow, not hidden, just never
+       drawn. `1fr` is what
        lets it actually share the row instead of overflowing past it.
     */
     width: 1fr;
@@ -67,27 +61,34 @@ ChatPane #transcript {
 }
 
 UserMessage {
-    background: $peri 12%;
-    border-left: thick $peri;
     color: $moon;
-    margin: 0 1 1 1;
-    padding: 0 1;
+    margin: 1 1 1 1;
+    padding: 0;
 }
 
 LunaMessage {
-    background: $mauve 10%;
-    border-left: thick $mauve;
     color: $moon;
-    margin: 0 1 1 1;
-    padding: 0 1;
+    margin: 0 1 1 3;
+    padding: 0;
 }
 
 SystemMessage {
-    background: $panel;
-    border-left: thick $border;
     color: $moon-dim;
-    margin: 0 1 1 1;
-    padding: 0 1;
+    margin: 0 1 1 3;
+    padding: 0;
+}
+
+ToolRow {
+    height: auto;
+    margin: 0 1 1 3;
+}
+
+ToolRow PulseGlyph {
+    margin: 0;
+}
+
+ToolRow .tool-detail {
+    color: $moon-dim;
 }
 
 LunaBanner {
@@ -132,10 +133,6 @@ PulseGlyph {
 
 ChatPane PulseGlyph {
     margin: 0 1 1 2;
-}
-
-ActivitySidebar PulseGlyph {
-    padding: 0 1;
 }
 
 /* --- Sidebar headers + rows ---------------------------------------------- */

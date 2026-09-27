@@ -19,7 +19,7 @@ def transcript_text(transcript) -> str:
     return "\n".join(child.source for child in transcript.query(Markdown))
 
 
-async def test_app_mounts_three_zones(tmp_path, fake_model):
+async def test_app_mounts_sidebar_chat_and_status_bar(tmp_path, fake_model):
     # Task 9 wired `SessionsSidebar.refresh_sessions()` into `on_mount`, so
     # mounting the app now makes a real request through `app.client` — back
     # it with an in-process ASGI transport (same pattern as
@@ -38,7 +38,7 @@ async def test_app_mounts_three_zones(tmp_path, fake_model):
         # ChatPane widget, which (per its verbatim reference code) does not
         # carry that id itself — address it by type instead.
         assert app.query_one(ChatPane) is not None
-        assert app.query_one("#activity-sidebar") is not None
+        assert not app.query("#activity-sidebar")
         assert app.query_one("#status-bar") is not None
 
 
@@ -116,16 +116,9 @@ async def test_status_bar_has_real_visible_content_height_not_just_a_border(tmp_
         assert status_bar.size.height > 0, "status bar's content box has no room for its text"
 
 
-async def test_activity_sidebar_stays_on_screen_at_a_realistic_terminal_width(tmp_path, fake_model):
-    """Regression: ChatPane had no explicit `width` in its CSS, so it had no
-    basis to share the app's Horizontal row with its two fixed-width
-    sidebar siblings — it claimed the *entire* remaining width as if
-    `#activity-sidebar` (width: 30) didn't exist, silently pushing that
-    whole sidebar (header, every tool-call row) past the right edge of the
-    screen. No error, nothing wrapped or clipped visibly — Textual just
-    never draws a widget positioned entirely outside the viewport. `width:
-    1fr` is what makes ChatPane actually share the row.
-    """
+async def test_chat_fills_the_width_right_of_the_sessions_sidebar(tmp_path, fake_model):
+    """Regression guard for the old `width: 1fr` bug: ChatPane must share the
+    row with the sidebar and end exactly at the terminal's right edge."""
     cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
     agent = build_agent(cfg, model=fake_model(AIMessage(content="ok")))
     app_asgi = create_app(agent_factory=lambda _workdir: agent, token="t")
@@ -134,11 +127,11 @@ async def test_activity_sidebar_stays_on_screen_at_a_realistic_terminal_width(tm
     app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id="t1")
     app.client._http = httpx.AsyncClient(transport=transport, base_url="http://test")
 
-    async with app.run_test(size=(160, 45)):
-        sidebar = app.query_one("#activity-sidebar")
-        assert sidebar.region.x + sidebar.region.width <= 160, (
-            f"activity sidebar at {sidebar.region!r} is off-screen in a 160-column terminal"
-        )
+    async with app.run_test(size=(120, 40)):
+        sidebar = app.query_one("#sessions-sidebar")
+        chat = app.query_one(ChatPane)
+        assert chat.region.x == sidebar.region.x + sidebar.region.width
+        assert chat.region.x + chat.region.width == 120
 
 
 async def test_chat_transcript_shows_prior_history_on_mount(tmp_path):

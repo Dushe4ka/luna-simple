@@ -1,7 +1,6 @@
 import time
 
 import httpx
-import pytest
 from langchain_core.messages import AIMessage
 from textual.widgets import Input, Label
 
@@ -89,36 +88,3 @@ async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path, fake_mod
         await pilot.pause()
         ids = [i.data_thread_id for i in app.query_one(SessionsSidebar).query(".session-item")]
         assert "t-new" in ids
-
-
-@pytest.mark.asyncio
-async def test_activity_sidebar_adds_and_resolves_a_tool_entry():
-    from luna.tui.sidebar_activity import ActivitySidebar
-
-    sidebar = ActivitySidebar()
-    sidebar.tool_started("1", "read_file", {"file_path": "/a.py"})
-    assert sidebar.pending_count() == 1
-    sidebar.tool_finished("1", "read_file", True, "")
-    assert sidebar.pending_count() == 0
-
-
-def test_activity_sidebar_does_not_shadow_widgets_private_render_method():
-    """Regression: this class's own list-refresh helper used to be named
-    ``_render`` — the exact same name as ``textual.widget.Widget``'s own
-    private ``_render()``, which Textual's rendering pipeline calls
-    directly to get the widget's paintable ``Visual``. The override made
-    that internal call return ``None`` (this helper's own return value)
-    instead of a ``Visual``, crashing the whole app — but *only* once this
-    sidebar was actually laid out on screen, which a `run_test()` headless
-    Pilot session never triggers (confirmed empirically: calling
-    `tool_started` and even a forced `refresh(layout=True)` under
-    `run_test()` never reproduced it — only a real pty did) and neither did
-    the test above, since `is_mounted` is False for a bare, un-added
-    instance. This static identity check is what actually catches it, at
-    plain import time, with no widget mounting or real terminal needed.
-    """
-    from textual.widget import Widget
-
-    from luna.tui.sidebar_activity import ActivitySidebar
-
-    assert ActivitySidebar._render is Widget._render

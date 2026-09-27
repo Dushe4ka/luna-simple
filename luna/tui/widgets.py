@@ -43,8 +43,8 @@ class PulseGlyph(Static):
     """A single-line label whose leading glyph twinkles and breathes color.
 
     Used both as the "Luna is thinking" placeholder in the chat transcript
-    (before the first token of a reply arrives) and as each in-flight tool
-    call's row in the activity sidebar.
+    (before the first token of a reply arrives) and as each running tool
+    call's row (``ToolRow``) in that same transcript.
 
     Follows the same pattern as Textual's own ``LoadingIndicator``: driven
     by ``auto_refresh`` + ``render()`` (computed from elapsed wall-clock
@@ -64,10 +64,9 @@ class PulseGlyph(Static):
     ) -> None:
         super().__init__(id=id)
         self.label_text = label
-        #: When set, an elapsed-seconds counter is appended — used for the
-        #: activity sidebar's tool-call rows, skipped for the chat
-        #: transcript's "thinking" placeholder, which has no meaningful
-        #: single start time (it spans tool calls too).
+        #: When set, an elapsed-seconds counter is appended. Not used by
+        #: the chat's "thinking" placeholder, which has no meaningful single
+        #: start time (it spans tool calls too).
         self._started_at = started_at
         self._mounted_at = 0.0
 

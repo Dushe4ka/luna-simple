@@ -13,8 +13,8 @@ from textual.widgets.markdown import MarkdownStream
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import HELP, filter_commands
-from luna.tui.sidebar_activity import ActivitySidebar
 from luna.tui.status_bar import StatusBar
+from luna.tui.tool_row import ToolRow
 from luna.tui.widgets import PulseGlyph
 
 #: Commands handled locally, without ever reaching the agent — each needs
@@ -24,15 +24,15 @@ _LOCALLY_SUPPORTED = ("/exit", "/quit", "/clear", "/help", "/commands")
 
 
 class UserMessage(Markdown):
-    """One "You" turn — its own colored panel, distinct from Luna's replies."""
+    """The user's message, prefixed with "› " — no panel, no label."""
 
 
 class LunaMessage(Markdown):
-    """One "Luna" turn — its own colored panel, distinct from the user's."""
+    """A block of Luna's reply text, indented under the user's message."""
 
 
 class SystemMessage(Markdown):
-    """Local-command output (help text, "not yet in the TUI" notices) — neutral, unlabeled."""
+    """Local-command output (help text, "not yet in the TUI" notices) — dim, unlabeled."""
 
 
 def _help_markdown() -> str:
@@ -41,55 +41,86 @@ def _help_markdown() -> str:
     return "**Команды**\n\n" + "\n".join(lines)
 
 
-def render_history(messages: list[dict]) -> list[Markdown]:
-    """Build one styled message widget per turn, ready to mount into the transcript.
+def render_history(messages: list[dict]) -> list[Widget]:
+    """Build one widget per history entry, ready to mount into the transcript.
 
-    Mirrors the live turn's own UserMessage/LunaMessage split (see
-    ``ChatPane.on_input_submitted``) so replaying history looks identical
+    Mirrors the live turn exactly — user line, inline tool rows (finished,
+    without durations), Luna's text — so replaying history looks identical
     to having watched it happen live.
     """
-    widgets: list[Markdown] = []
+    widgets: list[Widget] = []
     for m in messages:
         if m["role"] == "human":
-            widgets.append(UserMessage(f"**You**\n\n{m['content']}"))
+            widgets.append(UserMessage(f"› {m['content']}"))
+        elif m["role"] == "tool":
+            widgets.append(
+                ToolRow(m["name"], m.get("args_preview", ""), result=(m["ok"], m["detail"]))
+            )
         else:
-            widgets.append(LunaMessage(f"**Luna**\n\n{m['content']}"))
+            widgets.append(LunaMessage(m["content"]))
     return widgets
 
 
 class _LiveReply:
-    """Lazily creates Luna's reply widget on the turn's first bit of content.
+    """Streams one turn into the transcript: text blocks and inline tool rows.
 
-    Keeps the "thinking" placeholder visible until there is actually
-    something to show — a turn that only calls tools and never speaks
-    would otherwise flash an empty "**Luna**" panel for no reason. The
-    underlying ``MarkdownStream`` is created once and reused across an
-    entire turn, including any approval round-trips, then stopped exactly
-    once in ``stop()``.
+    Keeps the "thinking" placeholder visible until there is something to
+    show. Each tool call closes the current text block, so text the model
+    writes after a tool lands *below* that tool's row instead of being
+    appended to a block above it. Any tool still running when the turn
+    ends (an error, a dropped stream) is marked failed so it stops pulsing.
     """
 
     def __init__(self, transcript: VerticalScroll, thinking: PulseGlyph) -> None:
         self._transcript = transcript
         self._thinking = thinking
-        self._response: LunaMessage | None = None
         self._stream: MarkdownStream | None = None
+        self._tools: dict[str, ToolRow] = {}
+
+    def _thinking_shown(self) -> bool:
+        # Not ``is_mounted``: that stays True after ``remove()``, and mounting
+        # ``before=`` a removed widget raises MountError.
+        return self._thinking.parent is not None
+
+    async def _mount(self, widget: Widget) -> None:
+        if self._thinking_shown():
+            await self._transcript.mount(widget, before=self._thinking)
+        else:
+            await self._transcript.mount(widget)
+        self._transcript.anchor()
+
+    async def _end_text_block(self) -> None:
+        if self._stream is not None:
+            await self._stream.stop()
+            self._stream = None
 
     async def write(self, text: str) -> None:
         if self._stream is None:
-            if self._thinking.is_mounted:
+            if self._thinking_shown():
                 await self._thinking.remove()
-            self._response = LunaMessage("**Luna**\n\n")
-            await self._transcript.mount(self._response)
-            self._transcript.anchor()
-            self._stream = Markdown.get_stream(self._response)
+            response = LunaMessage("")
+            await self._mount(response)
+            self._stream = Markdown.get_stream(response)
         await self._stream.write(text)
 
-    async def stop(self) -> None:
-        if self._stream is not None:
-            await self._stream.stop()
-        elif self._thinking.is_mounted:
-            await self._thinking.remove()
+    async def tool_started(self, call_id: str, name: str, preview: str) -> None:
+        await self._end_text_block()
+        row = ToolRow(name, preview)
+        self._tools[call_id] = row
+        await self._mount(row)
 
+    async def tool_finished(self, call_id: str, ok: bool, detail: str) -> None:
+        row = self._tools.pop(call_id, None)
+        if row is not None:
+            await row.finish(ok, detail)
+
+    async def stop(self) -> None:
+        await self._end_text_block()
+        for row in self._tools.values():
+            await row.finish(False, "прервано")
+        self._tools.clear()
+        if self._thinking_shown():
+            await self._thinking.remove()
 
 class ChatPane(Widget):
     """Chat transcript + input row, streamed via the server's SSE endpoint.
@@ -335,7 +366,7 @@ class ChatPane(Widget):
         # exactly like nothing had happened at all. A blinking placeholder
         # takes the assistant's spot right away too, so waiting for the
         # first token (or a tool call) never looks like the TUI has frozen.
-        await transcript.mount(UserMessage(f"**You**\n\n{content}"))
+        await transcript.mount(UserMessage(f"› {content}"))
         thinking = PulseGlyph("Luna думает")
         await transcript.mount(thinking)
         transcript.anchor()
@@ -346,9 +377,6 @@ class ChatPane(Widget):
         turn_usage = TurnUsage()
         app = self.app
         try:
-            # Resolved inside the try (not before it) so that even a failed
-            # lookup still runs `finally: reply.stop()` — Task 8's guarantee.
-            activity = app.query_one(ActivitySidebar)
             # A turn can pause for approval more than once: the server's SSE
             # stream always ends after an Interrupted, so a resumed stream
             # that hits a *second* interrupt ends on another approval_needed.
@@ -360,7 +388,7 @@ class ChatPane(Widget):
             while True:
                 approval_value = None
                 async for evt in event_stream:
-                    pending = await self._apply_event(evt, reply, activity, turn_usage)
+                    pending = await self._apply_event(evt, reply, turn_usage)
                     if pending is not None:
                         approval_value = pending
                 if approval_value is None:
@@ -382,9 +410,9 @@ class ChatPane(Widget):
             self.post_message(self.TurnFinished())
 
     async def _apply_event(
-        self, evt: dict, reply: _LiveReply, activity: ActivitySidebar, turn_usage: TurnUsage
+        self, evt: dict, reply: _LiveReply, turn_usage: TurnUsage
     ) -> dict | None:
-        """Apply one SSE event to the transcript/activity sidebar/status bar.
+        """Apply one SSE event to the transcript/status bar.
 
         Returns the interrupt's action-request payload if ``evt`` is an
         ``approval_needed`` event, else ``None``.
@@ -400,9 +428,9 @@ class ChatPane(Widget):
             self._session_usage.add_turn(turn_usage)
             self._refresh_status_bar()
         elif evt["event"] == "tool_started":
-            activity.tool_started(evt["call_id"], evt["name"], evt["args"])
+            await reply.tool_started(evt["call_id"], evt["name"], evt.get("args_preview", ""))
         elif evt["event"] == "tool_finished":
-            activity.tool_finished(evt["call_id"], evt["name"], evt["ok"], evt["detail"])
+            await reply.tool_finished(evt["call_id"], evt["ok"], evt["detail"])
         elif evt["event"] == "approval_needed":
             return evt["value"]
         elif evt["event"] == "error":

@@ -8,7 +8,6 @@ from textual.widgets.markdown import MarkdownStream
 
 from luna.tui.chat import ChatPane, LunaMessage, UserMessage, render_history
 from luna.tui.commands import filter_commands
-from luna.tui.sidebar_activity import ActivitySidebar
 from luna.tui.status_bar import StatusBar
 
 
@@ -43,9 +42,10 @@ async def test_render_history_labels_human_and_ai_turns_you_then_luna():
 
         assert "fix the bug" in widgets[0].source
         assert "done" in widgets[1].source
-        assert widgets[0].source.index("fix the bug") < widgets[1].source.index("done")
-        assert "**You**" in widgets[0].source
-        assert "**Luna**" in widgets[1].source
+        messages = [w for w in transcript.children if w in widgets]
+        assert messages == widgets  # human turn first, then Luna's reply
+        assert widgets[0].source.startswith("› ")
+        assert "**Luna**" not in widgets[1].source
 
 
 def test_filter_commands_matches_prefix():
@@ -86,11 +86,6 @@ class _HarnessApp(App):
 
     def compose(self) -> ComposeResult:
         yield ChatPane(workdir=".", thread_id="t1", provider="anthropic", model="claude-sonnet-5")
-        # on_input_submitted resolves the activity sidebar once per turn
-        # (instead of re-querying it per event), so the harness must host
-        # one. ChatPane mounts its own StatusBar now (compose() below) —
-        # do not also yield one here, or #status-bar's id collides.
-        yield ActivitySidebar()
 
 
 class _NeverCallMeClient:
@@ -125,7 +120,7 @@ async def test_clear_command_empties_the_transcript_locally():
     async with app.run_test():
         chat = app.query_one(ChatPane)
         transcript = chat.query_one("#transcript", VerticalScroll)
-        await transcript.mount(UserMessage("**You**\n\nhello"))
+        await transcript.mount(UserMessage("› hello"))
         assert "hello" in transcript_text(transcript)
 
         inp = chat.query_one("#chat-input", Input)
@@ -547,3 +542,92 @@ async def test_usage_delta_events_update_the_status_bar_once_the_turn_completes(
         assert chat._session_usage.totals == (100, 20, 220)
         assert "ctx" in status_bar.usage_summary
         assert "220" in status_bar.usage_summary  # session total, from indicator_line
+
+
+class _ToolThenTextClient:
+    async def get_history(self, thread_id, workdir):
+        return []
+
+    async def send_message(self, thread_id, content, workdir):
+        yield {"event": "text_delta", "text": "Сейчас поищу."}
+        yield {
+            "event": "tool_started",
+            "call_id": "c1",
+            "name": "web_search",
+            "args": {},
+            "args_preview": "погода",
+        }
+        yield {
+            "event": "tool_finished",
+            "call_id": "c1",
+            "name": "web_search",
+            "ok": True,
+            "detail": "8 результатов",
+        }
+        yield {"event": "text_delta", "text": "Завтра +12."}
+        yield {"event": "turn_done"}
+
+
+async def test_tool_row_sits_between_the_text_before_and_after_it():
+    from luna.tui.chat import LunaMessage
+    from luna.tui.tool_row import ToolRow
+
+    app = _HarnessApp(_ToolThenTextClient())
+    async with app.run_test():
+        chat = app.query_one(ChatPane)
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "погода?"))
+        transcript = chat.query_one("#transcript", VerticalScroll)
+        kinds = [
+            type(w).__name__
+            for w in transcript.children
+            if isinstance(w, (UserMessage, LunaMessage, ToolRow))
+        ]
+        assert kinds == ["UserMessage", "LunaMessage", "ToolRow", "LunaMessage"]
+        assert transcript.query_one(ToolRow).is_finished
+
+
+class _DiesMidToolClient:
+    async def get_history(self, thread_id, workdir):
+        return []
+
+    async def send_message(self, thread_id, content, workdir):
+        yield {
+            "event": "tool_started",
+            "call_id": "c1",
+            "name": "execute",
+            "args": {},
+            "args_preview": "sleep 99",
+        }
+        raise RuntimeError("connection dropped mid-tool")
+
+
+async def test_a_turn_that_dies_mid_tool_stops_the_pulse():
+    from luna.tui.tool_row import ToolRow
+    from luna.tui.widgets import PulseGlyph
+
+    app = _HarnessApp(_DiesMidToolClient())
+    async with app.run_test():
+        chat = app.query_one(ChatPane)
+        inp = chat.query_one("#chat-input", Input)
+        try:
+            await chat.on_input_submitted(Input.Submitted(inp, "run it"))
+        except RuntimeError:
+            pass
+        row = chat.query_one(ToolRow)
+        assert row.is_finished
+        assert len(row.query(PulseGlyph)) == 0
+
+
+def test_render_history_builds_tool_rows():
+    from luna.tui.chat import render_history
+    from luna.tui.tool_row import ToolRow
+
+    widgets = render_history(
+        [
+            {"role": "human", "content": "hi"},
+            {"role": "tool", "name": "ls", "args_preview": "/", "ok": True, "detail": ""},
+            {"role": "ai", "content": "done"},
+        ]
+    )
+    assert isinstance(widgets[1], ToolRow)

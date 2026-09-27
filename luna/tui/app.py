@@ -8,7 +8,6 @@ from textual.widgets import Footer
 
 from luna.server.client import ServerClient
 from luna.tui.chat import ChatPane
-from luna.tui.sidebar_activity import ActivitySidebar
 from luna.tui.sidebar_sessions import SessionsSidebar
 from luna.tui.theme import TUI_VARIABLES
 
@@ -76,19 +75,15 @@ class LunaApp(App):
         return TUI_VARIABLES
 
     def compose(self) -> ComposeResult:
-        """Build the layout: two sidebars, the chat pane, and the footer."""
-        # SessionsSidebar/ActivitySidebar's __init__ signatures (verbatim from
-        # the task brief) don't forward an `id=` kwarg to Widget.__init__, so
-        # the id is assigned on the instance instead — DOMNode.id is settable
-        # once, before mount — to keep matching the existing
-        # #sessions-sidebar/#activity-sidebar CSS selectors and the Task 7
-        # widget-lookup test.
+        """Build the layout: sessions sidebar, chat pane, footer."""
+        # SessionsSidebar's __init__ doesn't forward an `id=` kwarg to
+        # Widget.__init__, so the id is assigned on the instance instead —
+        # DOMNode.id is settable once, before mount — to keep matching the
+        # #sessions-sidebar CSS selector and the widget-lookup tests.
         sessions_sidebar = SessionsSidebar(
             workdir=self._workdir, current_thread_id=self._start_thread_id
         )
         sessions_sidebar.id = "sessions-sidebar"
-        activity_sidebar = ActivitySidebar()
-        activity_sidebar.id = "activity-sidebar"
         with Horizontal():
             yield sessions_sidebar
             # The status bar is one of ChatPane's own children now (right
@@ -104,7 +99,6 @@ class LunaApp(App):
                 model=self._model,
                 pricing=self._pricing,
             )
-            yield activity_sidebar
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -128,7 +122,7 @@ class LunaApp(App):
     async def on_sessions_sidebar_new_session_requested(
         self, event: SessionsSidebar.NewSessionRequested
     ) -> None:
-        """The "+ новая сессия" row does the same as Ctrl+N."""
+        """Handle the "+ новая сессия" row exactly like Ctrl+N."""
         await self.action_new_session()
 
     async def action_new_session(self) -> None:
@@ -152,10 +146,9 @@ class LunaApp(App):
         self.query_one("#chat-input").focus()
 
     def action_toggle_panels(self) -> None:
-        """Show/hide the two sidebars (Ctrl+B)."""
-        for widget_id in ("#sessions-sidebar", "#activity-sidebar"):
-            widget = self.query_one(widget_id)
-            widget.display = not widget.display
+        """Show/hide the sessions sidebar (Ctrl+B)."""
+        sidebar = self.query_one("#sessions-sidebar")
+        sidebar.display = not sidebar.display
 
     async def on_unmount(self) -> None:
         """Close the server client's HTTP connection when the app exits."""

@@ -40,4 +40,9 @@ TUI_VARIABLES: dict[str, str] = {
     "border": PALETTE["blue"],
     "mauve": PALETTE["mauve"],
     "accent": PALETTE["accent"],
+    #: Tool-call outcome dots. Both clear 4.5:1 against ``bg`` (#0b1026):
+    #: pastel tones keep them in the moon/night palette instead of a
+    #: saturated traffic-light green/red.
+    "ok": "#8fd6a8",
+    "err": "#e88b8b",
 }
