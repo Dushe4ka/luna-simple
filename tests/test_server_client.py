@@ -48,3 +48,26 @@ async def test_client_create_and_list_sessions(transport):
         pass
     sessions = await client.list_sessions(workdir)
     assert any(s["thread_id"] == thread_id for s in sessions)
+
+
+def _untrusted_client() -> ServerClient:
+    app = create_app(agent_factory=lambda _w: None, token="t", trust_check=lambda _w: False)
+    client = ServerClient(base_url="http://test", token="t")
+    client._http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    return client
+
+
+async def test_http_errors_become_a_readable_server_error(tmp_path):
+    from luna.server.client import ServerError
+
+    client = _untrusted_client()
+    with pytest.raises(ServerError, match="не отмечена как доверенная"):
+        await client.list_sessions(str(tmp_path))
+
+
+async def test_streaming_http_errors_become_a_readable_server_error(tmp_path):
+    from luna.server.client import ServerError
+
+    client = _untrusted_client()
+    with pytest.raises(ServerError, match="не отмечена как доверенная"):
+        [e async for e in client.send_message("t1", "hi", str(tmp_path))]

@@ -89,3 +89,23 @@ def test_enter_at_the_picker_accepts():
 
 def test_down_then_enter_refuses():
     assert _ask_with_keys("\x1b[B\r") == "no"
+
+
+def test_unsaved_trust_is_reported_and_refused(tmp_path):
+    """If the index cannot store trust, the server would 403 every request —
+    say so up front instead of launching a TUI that cannot work."""
+
+    class _BrokenIndex:
+        def is_trusted(self, path):
+            return False
+
+        def trust(self, path):
+            pass  # e.g. ~/.config/luna not writable
+
+        def touch(self, path):
+            pass
+
+    console, buf = _console()
+    ok = ensure_trusted(console, str(tmp_path), index=_BrokenIndex(), input_fn=lambda _p: "y")
+    assert ok is False
+    assert "Не удалось сохранить" in buf.getvalue()

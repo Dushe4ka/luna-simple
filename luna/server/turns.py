@@ -20,8 +20,8 @@ from luna.core.turn_events import (
     ToolStarted,
     UsageDelta,
     args_preview,
-    text_of,
     iter_turn,
+    text_of,
     tool_outcome,
 )
 from luna.server.trust import trust_error

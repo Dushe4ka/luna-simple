@@ -6,7 +6,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer
 
-from luna.server.client import ServerClient
+from luna.server.client import ServerClient, ServerError
 from luna.tui.chat import ChatPane
 from luna.tui.sidebar_sessions import SessionsSidebar
 from luna.tui.theme import TUI_VARIABLES
@@ -127,7 +127,12 @@ class LunaApp(App):
 
     async def action_new_session(self) -> None:
         """Start a fresh thread in this project (Ctrl+N)."""
-        await self._open_thread(await self.client.create_session(self._workdir))
+        try:
+            thread_id = await self.client.create_session(self._workdir)
+        except ServerError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        await self._open_thread(thread_id)
 
     async def on_chat_pane_turn_finished(self, event: ChatPane.TurnFinished) -> None:
         """Re-fetch the list so a new session appears and the order updates."""

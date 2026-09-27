@@ -10,6 +10,8 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView
 
+from luna.server.client import ServerError
+
 #: Client-side labels for the server's language-neutral ``group`` values.
 GROUP_LABELS = {
     "today": "Сегодня",
@@ -64,7 +66,11 @@ class SessionsSidebar(Widget):
         Group headers are disabled ``ListItem``s: ``ListView`` skips disabled
         items when moving the cursor, and they cannot be selected.
         """
-        sessions = await self.app.client.list_sessions(self._workdir)
+        try:
+            sessions = await self.app.client.list_sessions(self._workdir)
+        except ServerError as exc:
+            self.notify(str(exc), severity="error")
+            return
         list_view = self.query_one("#session-list", ListView)
         await list_view.clear()
         items: list[ListItem] = [ListItem(_NewSessionRow(), classes="new-session-item")]

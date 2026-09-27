@@ -11,6 +11,7 @@ from textual.widgets import Input, ListItem, ListView, Markdown
 from textual.widgets.markdown import MarkdownStream
 
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line
+from luna.server.client import ServerError
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import HELP, filter_commands
 from luna.tui.status_bar import StatusBar
@@ -222,7 +223,11 @@ class ChatPane(Widget):
         """
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.remove_children()
-        messages = await self.app.client.get_history(self.thread_id, self._workdir)
+        try:
+            messages = await self.app.client.get_history(self.thread_id, self._workdir)
+        except ServerError as exc:
+            await transcript.mount(SystemMessage(f"⚠ {exc}"))
+            return
         if messages:
             await transcript.mount_all(render_history(messages))
             transcript.anchor()
@@ -384,27 +389,30 @@ class ChatPane(Widget):
             # luna.core.session._stream_turn's own `while True`. Handling only
             # one round (the old nested `async for`) left the graph paused on
             # the second interrupt with nothing in the UI to resume it.
-            event_stream = app.client.send_message(self.thread_id, content, self._workdir)
-            while True:
-                approval_value = None
-                async for evt in event_stream:
-                    pending = await self._apply_event(evt, reply, turn_usage)
-                    if pending is not None:
-                        approval_value = pending
-                if approval_value is None:
-                    break
-                requests = approval_value.get("action_requests") or [
-                    approval_value.get("action_request")
-                ]
-                # ModalScreen.push_screen_wait requires worker context
-                # (Textual raises NoActiveWorker otherwise), so the actual
-                # push+wait is delegated to the @work-decorated
-                # _await_approval_decision helper below. on_input_submitted
-                # itself stays a plain coroutine so it's still directly
-                # awaitable (Task 8's regression test calls it that way) and
-                # its try/finally around reply.stop() is unaffected.
-                decision = await self._await_approval_decision(requests[0]).wait()
-                event_stream = app.client.approve(self.thread_id, decision, self._workdir)
+            try:
+                event_stream = app.client.send_message(self.thread_id, content, self._workdir)
+                while True:
+                    approval_value = None
+                    async for evt in event_stream:
+                        pending = await self._apply_event(evt, reply, turn_usage)
+                        if pending is not None:
+                            approval_value = pending
+                    if approval_value is None:
+                        break
+                    requests = approval_value.get("action_requests") or [
+                        approval_value.get("action_request")
+                    ]
+                    # ModalScreen.push_screen_wait requires worker context
+                    # (Textual raises NoActiveWorker otherwise), so the actual
+                    # push+wait is delegated to the @work-decorated
+                    # _await_approval_decision helper below. on_input_submitted
+                    # itself stays a plain coroutine so it's still directly
+                    # awaitable (Task 8's regression test calls it that way) and
+                    # its try/finally around reply.stop() is unaffected.
+                    decision = await self._await_approval_decision(requests[0]).wait()
+                    event_stream = app.client.approve(self.thread_id, decision, self._workdir)
+            except ServerError as exc:
+                await reply.write(f"\n\n**⚠** {exc}\n\n")
         finally:
             await reply.stop()
             self.post_message(self.TurnFinished())

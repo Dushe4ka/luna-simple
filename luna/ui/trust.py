@@ -101,6 +101,13 @@ def ensure_trusted(
         trusted = False
     if trusted:
         index.trust(workdir)
+        if not index.is_trusted(workdir):
+            # The server re-checks trust per request, so an unsaved "yes"
+            # would only lead to a TUI where every request is refused.
+            console.print(
+                "Не удалось сохранить доверие: база ~/.config/luna/sessions.db недоступна."
+            )
+            return False
     else:
         console.print(REFUSED_MESSAGE)
     return trusted

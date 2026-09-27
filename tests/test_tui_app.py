@@ -218,3 +218,25 @@ async def test_chat_pane_opens_on_the_thread_id_the_cli_resolved(tmp_path, fake_
 
     async with app.run_test():
         assert app.query_one(ChatPane).thread_id == "abc123"
+
+
+async def test_server_refusal_is_shown_instead_of_crashing_the_tui(tmp_path):
+    """Regression: any 4xx from the server raised HTTPStatusError out of
+    on_mount and killed the TUI with a traceback."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import Input
+
+    app_asgi = create_app(agent_factory=lambda _w: None, token="t", trust_check=lambda _w: False)
+    transport = httpx.ASGITransport(app=app_asgi)
+    app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id="t1")
+    app.client._http = httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        text = transcript_text(chat.query_one("#transcript", VerticalScroll))
+        assert "не отмечена как доверенная" in text
+    assert app.return_code in (None, 0)
