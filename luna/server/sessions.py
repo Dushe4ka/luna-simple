@@ -9,6 +9,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from luna.core.persistence import SessionIndex
+from luna.server.trust import trust_error
 
 
 def _relative_time(updated: float, *, now: float | None = None) -> str:
@@ -29,6 +30,8 @@ def _relative_time(updated: float, *, now: float | None = None) -> str:
 async def list_sessions(request: Request) -> JSONResponse:
     """List sessions for a workdir, newest first."""
     workdir = request.query_params.get("workdir")
+    if (error := trust_error(request, workdir)) is not None:
+        return error
     index = SessionIndex()
     rows = index.list(workdir=workdir)
     return JSONResponse(
@@ -50,5 +53,7 @@ async def list_sessions(request: Request) -> JSONResponse:
 async def create_session(request: Request) -> JSONResponse:
     """Create a new session with a random thread_id."""
     body = await request.json()
+    if (error := trust_error(request, body.get("workdir"))) is not None:
+        return error
     thread_id = uuid.uuid4().hex
     return JSONResponse({"thread_id": thread_id, "workdir": body.get("workdir", ".")})

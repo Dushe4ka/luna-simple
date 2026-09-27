@@ -160,6 +160,22 @@ def make_agent_factory(*, model=None) -> Callable[[str], object]:
     return agent_factory
 
 
+def make_trust_check() -> Callable[[str], bool]:
+    """Build the server's trust check against ``luna_projects``.
+
+    Opens a fresh :class:`luna.core.projects.ProjectIndex` per call: trust is
+    written by a separate CLI process, possibly long after this server
+    started, and must take effect immediately.
+    """
+
+    def trust_check(workdir: str) -> bool:
+        from luna.core.projects import ProjectIndex
+
+        return ProjectIndex().is_trusted(workdir)
+
+    return trust_check
+
+
 def run_serve(argv: list[str]) -> int:
     """`luna serve` subcommand — runs uvicorn in the foreground."""
     import argparse
@@ -177,7 +193,9 @@ def run_serve(argv: list[str]) -> int:
     token = args.token or secrets.token_hex(16)
     write_token_file(port=port, token=token, pid=os.getpid(), fingerprint=_code_fingerprint())
 
-    app = create_app(agent_factory=make_agent_factory(), token=token)
+    app = create_app(
+        agent_factory=make_agent_factory(), token=token, trust_check=make_trust_check()
+    )
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
 

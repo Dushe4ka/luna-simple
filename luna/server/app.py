@@ -32,13 +32,21 @@ async def _health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def create_app(agent_factory: Callable[[str], object], *, token: str) -> Starlette:
+def create_app(
+    agent_factory: Callable[[str], object],
+    *,
+    token: str,
+    trust_check: Callable[[str], bool] | None = None,
+) -> Starlette:
     """Build the Starlette app.
 
     ``agent_factory(workdir)`` is stored on app.state for the route handlers
     to use. It takes the request's ``workdir`` because one server process
     serves many projects, and an agent's filesystem root is fixed at build
     time — see :func:`luna.server.run.run_serve`.
+
+    ``trust_check(workdir)`` gates every workdir-scoped route (see
+    :mod:`luna.server.trust`); ``None`` disables the check.
     """
     app = Starlette(
         routes=[
@@ -52,4 +60,5 @@ def create_app(agent_factory: Callable[[str], object], *, token: str) -> Starlet
         middleware=[Middleware(_AuthMiddleware, token=token)],
     )
     app.state.agent_factory = agent_factory
+    app.state.trust_check = trust_check
     return app

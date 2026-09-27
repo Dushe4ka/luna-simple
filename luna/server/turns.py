@@ -21,6 +21,7 @@ from luna.core.turn_events import (
     UsageDelta,
     iter_turn,
 )
+from luna.server.trust import trust_error
 
 
 def _event_dict(event) -> dict:
@@ -131,7 +132,10 @@ async def get_history(request: Request) -> JSONResponse:
     error, so a brand-new session's history is just ``[]``.
     """
     thread_id = request.path_params["thread_id"]
-    workdir = request.query_params.get("workdir", ".")
+    raw_workdir = request.query_params.get("workdir")
+    if (error := trust_error(request, raw_workdir)) is not None:
+        return error
+    workdir = raw_workdir or "."
     agent = request.app.state.agent_factory(workdir)
     config = {"configurable": {"thread_id": thread_id}}
     raw_messages = agent.get_state(config).values.get("messages", [])
@@ -143,10 +147,12 @@ async def get_history(request: Request) -> JSONResponse:
     return JSONResponse({"messages": messages})
 
 
-async def post_message(request: Request) -> EventSourceResponse:
+async def post_message(request: Request) -> EventSourceResponse | JSONResponse:
     """Run one turn via iter_turn and stream its events as SSE."""
     thread_id = request.path_params["thread_id"]
     body = await request.json()
+    if (error := trust_error(request, body.get("workdir"))) is not None:
+        return error
     content = body["content"]
     workdir = body.get("workdir", ".")
     agent = request.app.state.agent_factory(workdir)
