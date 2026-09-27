@@ -118,7 +118,7 @@ class SessionIndex:
             return None
         return Row(*row) if row else None
 
-    def list(self, workdir: str | None = None, limit: int = 20) -> list[Row]:
+    def list(self, workdir: str | None = None, limit: int = 200) -> list[Row]:
         """Sessions newest first; ``[]`` if unavailable."""
         if self._conn is None:
             return []

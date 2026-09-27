@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import date, datetime
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -11,20 +12,51 @@ from starlette.responses import JSONResponse
 from luna.core.persistence import SessionIndex
 from luna.server.trust import trust_error
 
+_MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+_WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
-def _relative_time(updated: float, *, now: float | None = None) -> str:
-    """Render a Unix timestamp as a short relative label ("2м", "вчера", "18 сен")."""
+
+def session_group(updated: float, *, now: float | None = None) -> str:
+    """Bucket a timestamp by local calendar day: today/yesterday/week/older.
+
+    Calendar days, not 24-hour windows: 23:59 yesterday is "yesterday" even
+    when it is only two minutes ago. A future timestamp (clock skew) counts
+    as today.
+    """
     now = time.time() if now is None else now
-    delta = max(0, now - updated)
-    if delta < 60:
-        return "сейчас"
-    if delta < 3600:
-        return f"{int(delta // 60)}м"
-    if delta < 86400:
+    days = (date.fromtimestamp(now) - date.fromtimestamp(updated)).days
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return "week"
+    return "older"
+
+
+def relative_time(updated: float, *, now: float | None = None) -> str:
+    """Short label matching the session's day group.
+
+    "11м"/"3ч" today, "14:02" yesterday, "вт" this week, "25 сен" earlier.
+
+    Russian month names come from a fixed table, not ``strftime("%b")``,
+    which follows the process locale (it rendered "Sep").
+    """
+    now = time.time() if now is None else now
+    group = session_group(updated, now=now)
+    when = datetime.fromtimestamp(updated)
+    if group == "today":
+        delta = max(0.0, now - updated)
+        if delta < 60:
+            return "сейчас"
+        if delta < 3600:
+            return f"{int(delta // 60)}м"
         return f"{int(delta // 3600)}ч"
-    if delta < 172800:
-        return "вчера"
-    return time.strftime("%d %b", time.localtime(updated))
+    if group == "yesterday":
+        return when.strftime("%H:%M")
+    if group == "week":
+        return _WEEKDAYS[when.weekday()]
+    return f"{when.day} {_MONTHS[when.month - 1]}"
 
 
 async def list_sessions(request: Request) -> JSONResponse:
@@ -42,7 +74,8 @@ async def list_sessions(request: Request) -> JSONResponse:
                     "workdir": r.workdir,
                     "title": r.title,
                     "updated": r.updated,
-                    "relative_time": _relative_time(r.updated),
+                    "group": session_group(r.updated),
+                    "relative_time": relative_time(r.updated),
                 }
                 for r in rows
             ]
