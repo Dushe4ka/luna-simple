@@ -34,14 +34,8 @@ def _parse_sse(raw: str) -> list[dict]:
     return events
 
 
-async def test_get_history_returns_prior_human_and_ai_turns_only(tmp_path):
-    """Tool-call/tool-result messages must be omitted — the transcript only
-    ever showed the assistant's own text (via text_delta), so replaying
-    history must reconstruct exactly that, not the raw message list.
-    """
+async def test_get_history_includes_tool_calls_in_order(tmp_path):
     from types import SimpleNamespace
-
-    from luna.server.app import create_app
 
     class _StubAgent:
         def get_state(self, config):
@@ -49,8 +43,24 @@ async def test_get_history_returns_prior_human_and_ai_turns_only(tmp_path):
                 values={
                     "messages": [
                         SimpleNamespace(type="human", content="what does this repo do"),
-                        SimpleNamespace(type="ai", content="", tool_calls=[{"name": "read_file"}]),
-                        SimpleNamespace(type="tool", content="file contents here"),
+                        SimpleNamespace(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "c1",
+                                    "name": "read_file",
+                                    "args": {"file_path": "/README.md"},
+                                }
+                            ],
+                        ),
+                        SimpleNamespace(
+                            type="tool",
+                            content="# Luna",
+                            tool_call_id="c1",
+                            name="read_file",
+                            status="success",
+                        ),
                         SimpleNamespace(type="ai", content="it parses the config file"),
                     ]
                 }
@@ -64,13 +74,68 @@ async def test_get_history_returns_prior_human_and_ai_turns_only(tmp_path):
         headers={"Authorization": "Bearer secret-token"},
     ) as c:
         resp = await c.get("/sessions/t1/messages", params={"workdir": str(tmp_path)})
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "messages": [
-            {"role": "human", "content": "what does this repo do"},
-            {"role": "ai", "content": "it parses the config file"},
+
+    assert resp.json()["messages"] == [
+        {"role": "human", "content": "what does this repo do"},
+        {
+            "role": "tool",
+            "name": "read_file",
+            "args_preview": "/README.md",
+            "ok": True,
+            "detail": "",
+        },
+        {"role": "ai", "content": "it parses the config file"},
+    ]
+
+
+def test_history_shows_only_text_from_block_content():
+    """Anthropic AI messages that call tools carry a list of content blocks."""
+    from types import SimpleNamespace
+
+    from luna.server.turns import history_entries
+
+    blocks = [
+        {"type": "text", "text": "Сейчас посмотрю."},
+        {"type": "tool_use", "id": "c1", "name": "ls", "input": {}},
+    ]
+    entries = history_entries([SimpleNamespace(type="ai", content=blocks, tool_calls=[])])
+    assert entries == [{"role": "ai", "content": "Сейчас посмотрю."}]
+
+
+def test_history_marks_errored_tool_calls():
+    from types import SimpleNamespace
+
+    from luna.server.turns import history_entries
+
+    entries = history_entries(
+        [
+            SimpleNamespace(
+                type="ai",
+                content="",
+                tool_calls=[{"id": "c1", "name": "execute", "args": {"command": "false"}}],
+            ),
+            SimpleNamespace(
+                type="tool", content="exit 1", tool_call_id="c1", name="execute", status="error"
+            ),
         ]
-    }
+    )
+    assert entries == [
+        {
+            "role": "tool",
+            "name": "execute",
+            "args_preview": "false",
+            "ok": False,
+            "detail": "exit 1",
+        }
+    ]
+
+
+def test_tool_started_event_carries_args_preview():
+    from luna.core.turn_events import ToolStarted
+    from luna.server.turns import _event_dict
+
+    evt = _event_dict(ToolStarted("c1", "web_search", {"query": "погода Орёл"}))
+    assert evt["args_preview"] == "погода Орёл"
 
 
 async def test_get_history_on_a_fresh_thread_is_empty(client):

@@ -19,7 +19,9 @@ from luna.core.turn_events import (
     ToolFinished,
     ToolStarted,
     UsageDelta,
+    args_preview,
     iter_turn,
+    tool_outcome,
 )
 from luna.server.trust import trust_error
 
@@ -35,6 +37,7 @@ def _event_dict(event) -> dict:
             "call_id": event.call_id,
             "name": event.name,
             "args": event.args,
+            "args_preview": args_preview(event.args),
         }
     if isinstance(event, ToolFinished):
         return {
@@ -119,14 +122,59 @@ async def _stream_turn_events(thread_id: str, workdir: str, agent, payload):
         yield {"data": json.dumps({"event": "error", "message": f"{type(exc).__name__}: {exc}"})}
 
 
-async def get_history(request: Request) -> JSONResponse:
-    """Return the thread's prior human/assistant turns, oldest first.
+def _text_of(content) -> str:
+    """Plain text of a message's content: a string, or the text blocks of a list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block if isinstance(block, str) else block.get("text", "")
+            for block in content
+            if isinstance(block, str) or (isinstance(block, dict) and block.get("type") == "text")
+        ]
+        return "".join(parts)
+    return ""
 
-    Reconstructs the same text a live turn already streams via
-    ``text_delta`` — tool-call messages are omitted (that's what
-    ``ActivitySidebar``'s live tool_started/tool_finished events cover, not
-    the transcript) — so a client that replays this on session-open/switch
-    sees the identical shape it would have seen watching the turns live.
+
+def history_entries(raw_messages: list) -> list[dict]:
+    """Turn a thread's raw messages into the transcript the TUI replays.
+
+    Human and AI text plus one entry per finished tool call, in order, with
+    the same ``ok``/``detail`` the live ``tool_finished`` event carries
+    (:func:`luna.core.turn_events.tool_outcome`). Durations are not stored,
+    so replayed tool rows have none.
+    """
+    calls: dict[str, dict] = {}
+    entries: list[dict] = []
+    for m in raw_messages:
+        kind = getattr(m, "type", None)
+        if kind in ("human", "ai"):
+            text = _text_of(m.content)
+            if text:
+                entries.append({"role": kind, "content": text})
+            for call in getattr(m, "tool_calls", None) or []:
+                if call.get("id"):
+                    calls[call["id"]] = call
+        elif kind == "tool":
+            call = calls.get(getattr(m, "tool_call_id", None), {})
+            ok, detail = tool_outcome(m)
+            entries.append(
+                {
+                    "role": "tool",
+                    "name": getattr(m, "name", None) or call.get("name", ""),
+                    "args_preview": args_preview(call.get("args") or {}),
+                    "ok": ok,
+                    "detail": detail,
+                }
+            )
+    return entries
+
+
+async def get_history(request: Request) -> JSONResponse:
+    """Return the thread's prior turns, oldest first.
+
+    Includes finished tool calls (see :func:`history_entries`) so a replayed
+    session shows the same inline tool rows the live transcript did.
     A thread the agent has never seen resolves to an empty snapshot (same
     behaviour ``session.py``'s resume recap already relies on), not an
     error, so a brand-new session's history is just ``[]``.
@@ -139,11 +187,7 @@ async def get_history(request: Request) -> JSONResponse:
     agent = request.app.state.agent_factory(workdir)
     config = {"configurable": {"thread_id": thread_id}}
     raw_messages = agent.get_state(config).values.get("messages", [])
-    messages = [
-        {"role": m.type, "content": m.content}
-        for m in raw_messages
-        if getattr(m, "type", None) in ("human", "ai") and (m.content or "")
-    ]
+    messages = history_entries(raw_messages)
     return JSONResponse({"messages": messages})
 
 

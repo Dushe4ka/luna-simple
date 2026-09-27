@@ -22,6 +22,31 @@ _QUIET_ON_SUCCESS = {"read_file", "ls", "glob", "grep"}
 _RELOAD_MARKER = "Run /reload"
 
 
+def tool_outcome(message) -> tuple[bool, str]:
+    """Return ``(ok, detail)`` for a finished tool call's ``ToolMessage``.
+
+    ``detail`` is the body's first line (max 120 chars), blank on success
+    for the read-only navigation tools in ``_QUIET_ON_SUCCESS``. Shared by
+    the live ``ToolFinished`` event and the server's history replay so both
+    show identical rows.
+    """
+    body = str(message.content) if message.content else ""
+    detail = body.splitlines()[0][:120] if body else ""
+    ok = getattr(message, "status", "success") != "error"
+    if ok and getattr(message, "name", None) in _QUIET_ON_SUCCESS:
+        detail = ""
+    return ok, detail
+
+
+def args_preview(args: dict, limit: int = 40) -> str:
+    """Return the first non-empty string argument, whitespace-collapsed and truncated."""
+    for value in args.values():
+        if isinstance(value, str) and value.strip():
+            text = " ".join(value.split())
+            return text if len(text) <= limit else text[: limit - 1] + "…"
+    return ""
+
+
 @dataclass
 class TextDelta:
     """A chunk of streamed assistant text."""
@@ -126,10 +151,7 @@ def iter_turn(agent, payload, config: dict) -> Iterator[TurnEvent]:
                     elif isinstance(m, ToolMessage) and m.tool_call_id not in seen_tools:
                         seen_tools.add(m.tool_call_id)
                         body = str(m.content) if m.content else ""
-                        detail = body.splitlines()[0][:120] if body else ""
-                        ok = getattr(m, "status", "success") != "error"
-                        if ok and m.name in _QUIET_ON_SUCCESS:
-                            detail = ""
+                        ok, detail = tool_outcome(m)
                         yield ToolFinished(m.tool_call_id, m.name or "", ok, detail)
                         if m.name in ("manage_mcp", "manage_skills") and _RELOAD_MARKER in body:
                             yield ReloadRequested()

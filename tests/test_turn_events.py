@@ -1,4 +1,4 @@
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from luna.config.config import LunaConfig
 from luna.core.agent import build_agent
@@ -7,7 +7,9 @@ from luna.core.turn_events import (
     TextDelta,
     ToolFinished,
     ToolStarted,
+    args_preview,
     iter_turn,
+    tool_outcome,
 )
 
 
@@ -144,3 +146,25 @@ def test_iter_turn_does_not_repeat_tool_started_across_a_resume(tmp_path, fake_m
     all_events = first_pass + resume_pass
     started_ids = [e.call_id for e in all_events if isinstance(e, ToolStarted)]
     assert started_ids == ["1"]  # exactly once, not twice
+
+
+def test_tool_outcome_first_line_of_body():
+    msg = ToolMessage(content="8 results\nmore", tool_call_id="c1", name="web_search")
+    assert tool_outcome(msg) == (True, "8 results")
+
+
+def test_tool_outcome_quiet_tools_have_no_detail_on_success():
+    msg = ToolMessage(content="line 1\nline 2", tool_call_id="c1", name="read_file")
+    assert tool_outcome(msg) == (True, "")
+
+
+def test_tool_outcome_error_keeps_detail_even_for_quiet_tools():
+    msg = ToolMessage(content="No such file", tool_call_id="c1", name="read_file", status="error")
+    assert tool_outcome(msg) == (False, "No such file")
+
+
+def test_args_preview_first_non_empty_string_collapsed_and_truncated():
+    assert args_preview({"n": 3, "query": "  погода\n Орёл  "}) == "погода Орёл"
+    long = args_preview({"q": "x" * 100})
+    assert len(long) == 40 and long.endswith("…")
+    assert args_preview({"n": 3}) == ""
