@@ -41,6 +41,16 @@ class ServerClient:
         resp.raise_for_status()
         return resp.json()["thread_id"]
 
+    async def get_history(self, thread_id: str, workdir: str) -> list[dict]:
+        """Return the thread's prior human/assistant turns, oldest first."""
+        resp = await self._http.get(
+            f"/sessions/{thread_id}/messages",
+            params={"workdir": workdir},
+            headers=self._auth_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()["messages"]
+
     async def _stream(self, path: str, body: dict) -> AsyncIterator[dict]:
         async with self._http.stream("POST", path, json=body, headers=self._auth_headers()) as resp:
             resp.raise_for_status()

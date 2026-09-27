@@ -51,6 +51,7 @@ openrouter = ["langchain-openrouter>=0.1"]
 perplexity = ["langchain-perplexity>=1.0"]
 mcp = ["langchain-mcp-adapters>=0.3"]
 lsp = ["multilspy>=0.0.15"]
+websearch = ["ddgs>=8.0"]
 all = [
     "langchain-deepseek>=0.1",
     "langchain-openai>=1.0",
@@ -68,6 +69,7 @@ all = [
     "langchain-perplexity>=1.0",
     "langchain-mcp-adapters>=0.3",
     "multilspy>=0.0.15",
+    "ddgs>=8.0",
 ]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
 

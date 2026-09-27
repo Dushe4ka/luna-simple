@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from textual.containers import Vertical
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView
 
 
 class SessionsSidebar(Widget):
-    """Lists sessions for the current workdir; posts SessionSelected on click."""
+    """Lists sessions for the current workdir; posts SessionSelected on click.
+
+    Styling lives in ``luna/tui/luna.tcss`` (external stylesheet), not a
+    ``DEFAULT_CSS`` string here.
+    """
 
     class SessionSelected(Message):
         """Posted when the user clicks a session in the list."""
@@ -22,8 +27,10 @@ class SessionsSidebar(Widget):
         self._workdir = workdir
 
     def compose(self):
-        """Yield the ListView that renders the session list."""
-        yield ListView(id="session-list")
+        """Yield a header label and the ListView that renders the session list."""
+        with Vertical():
+            yield Label("Sessions", classes="sidebar-header")
+            yield ListView(id="session-list")
 
     async def refresh_sessions(self) -> None:
         """Fetch the session list from the server and repopulate the list view."""
@@ -31,7 +38,7 @@ class SessionsSidebar(Widget):
         list_view = self.query_one("#session-list", ListView)
         list_view.clear()
         for s in sessions:
-            item = ListItem(Label(f"{s['title']}  ·  {s['relative_time']}"))
+            item = ListItem(_SessionRow(s["title"], s["relative_time"]))
             item.data_thread_id = s["thread_id"]  # plain attribute, no reactive needed here
             await list_view.append(item)
 
@@ -40,3 +47,22 @@ class SessionsSidebar(Widget):
         thread_id = getattr(event.item, "data_thread_id", None)
         if thread_id:
             self.post_message(self.SessionSelected(thread_id))
+
+
+class _SessionRow(Widget):
+    """A session's two-line row: full title (ellipsis-truncated) + dim time.
+
+    Replaces the old single ``f"{title}  ·  {time}"`` label, which — inside
+    the sidebar's fixed 24-column width, with no wrap or truncation marker —
+    just hard-clipped mid-word and silently dropped the trailing time on any
+    title long enough to reach it.
+    """
+
+    def __init__(self, title: str, relative_time: str) -> None:
+        super().__init__()
+        self._title = title
+        self._relative_time = relative_time
+
+    def compose(self):
+        yield Label(self._title, classes="session-title")
+        yield Label(self._relative_time, classes="session-time")

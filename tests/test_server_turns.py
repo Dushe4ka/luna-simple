@@ -34,6 +34,90 @@ def _parse_sse(raw: str) -> list[dict]:
     return events
 
 
+async def test_get_history_returns_prior_human_and_ai_turns_only(tmp_path):
+    """Tool-call/tool-result messages must be omitted — the transcript only
+    ever showed the assistant's own text (via text_delta), so replaying
+    history must reconstruct exactly that, not the raw message list.
+    """
+    from types import SimpleNamespace
+
+    from luna.server.app import create_app
+
+    class _StubAgent:
+        def get_state(self, config):
+            return SimpleNamespace(
+                values={
+                    "messages": [
+                        SimpleNamespace(type="human", content="what does this repo do"),
+                        SimpleNamespace(type="ai", content="", tool_calls=[{"name": "read_file"}]),
+                        SimpleNamespace(type="tool", content="file contents here"),
+                        SimpleNamespace(type="ai", content="it parses the config file"),
+                    ]
+                }
+            )
+
+    app = create_app(agent_factory=lambda _workdir: _StubAgent(), token="secret-token")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": "Bearer secret-token"},
+    ) as c:
+        resp = await c.get("/sessions/t1/messages", params={"workdir": str(tmp_path)})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "messages": [
+            {"role": "human", "content": "what does this repo do"},
+            {"role": "ai", "content": "it parses the config file"},
+        ]
+    }
+
+
+async def test_get_history_on_a_fresh_thread_is_empty(client):
+    """A thread the agent has never seen resolves to an empty snapshot (the
+    same behaviour session.py's resume recap already relies on), not an
+    error — a brand-new session's history is just an empty list.
+    """
+    c, tmp_path = client
+    resp = await c.get("/sessions/never-used/messages", params={"workdir": str(tmp_path)})
+    assert resp.status_code == 200
+    assert resp.json() == {"messages": []}
+
+
+async def test_a_turn_that_raises_surfaces_an_error_event_not_silence(tmp_path, monkeypatch):
+    """Regression: reproduces a real incident where a provider call failed
+    (DeepSeek returned HTTP 402, insufficient balance) deep inside
+    ``agent.stream()``. Before this fix, the exception propagated out of
+    the async generator and the SSE response just ended with zero bytes —
+    from the client's side, indistinguishable from the turn still being in
+    progress. It must surface as an explicit ``error`` event instead.
+    """
+    from tests.conftest import FakeToolCallingModel
+
+    class _BoomModel(FakeToolCallingModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            raise RuntimeError("insufficient balance")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
+    agent = build_agent(cfg, model=_BoomModel())
+    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": "Bearer secret-token"},
+    ) as c:
+        async with c.stream(
+            "POST",
+            "/sessions/boom/messages",
+            json={"content": "hi", "workdir": str(tmp_path)},
+        ) as resp:
+            raw = "".join([chunk async for chunk in resp.aiter_text()])
+    events = _parse_sse(raw)
+    assert any(e["event"] == "error" and "insufficient balance" in e["message"] for e in events)
+
+
 async def test_message_streams_text_delta_and_turn_done(client):
     c, tmp_path = client
     async with c.stream(

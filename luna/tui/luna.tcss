@@ -1,0 +1,182 @@
+/* Luna TUI stylesheet.
+ *
+ * Consolidated here — not scattered as DEFAULT_CSS strings inside every
+ * widget's own .py file — per Textual's own guidance (docs/guide/widgets.md,
+ * "Static widget > Default CSS"): DEFAULT_CSS is for widgets meant to be
+ * *distributed standalone* (bundled CSS travels with the class, e.g. via
+ * PyPI); for an application's own widgets, "it is best to keep your CSS in
+ * an external file" — one place to see it all, live-editable, higher
+ * cascade specificity than any widget-bundled CSS. Colors below ($bg,
+ * $panel, $moon, ...) come from LunaApp.get_theme_variable_defaults()
+ * (luna/tui/theme.py) and are already available here without any
+ * per-file $var declaration.
+ */
+
+/* --- App shell: sidebars + chat column ---------------------------------- */
+
+#sessions-sidebar {
+    width: 24;
+    background: $panel;
+    border-right: solid $border;
+}
+
+#activity-sidebar {
+    width: 30;
+    background: $panel;
+    border-left: solid $border;
+}
+
+ChatPane {
+    /* Without an explicit width, ChatPane has no basis to share the
+       Horizontal row's space with its two fixed-width sidebar siblings —
+       confirmed empirically via a real pty at a merely-160-column
+       terminal: ChatPane claimed the *entire* remaining width as if
+       #activity-sidebar didn't exist, pushing it (silently, no error,
+       nothing crops or wraps) off past the right edge of the screen
+       entirely — not narrow, not hidden, just never drawn. `1fr` is what
+       lets it actually share the row instead of overflowing past it.
+    */
+    width: 1fr;
+    background: $bg;
+}
+
+/* --- Status bar (ChatPane's own child, right under the input) ---------- */
+
+#status-bar {
+    /* `height: 1` is border-box (Textual, like CSS, counts a border
+       toward the declared height, not on top of it) — a `border-top`
+       here once left ZERO rows for the text itself: `.region.height` (1)
+       looked fine, but `.size.height` (the actual content box) measured
+       0, so the status bar was invisible from day one, well before it
+       ever had real content to show. Confirmed empirically via a real
+       pty (Textual's headless test driver reports a misleadingly
+       normal-looking `.region` for this exact failure — only `.size`
+       exposes it). $panel's lighter tone against $bg already reads as a
+       distinct strip without a border line.
+    */
+    height: 1;
+    background: $panel;
+    color: $moon-dim;
+    padding: 0 1;
+}
+
+/* --- Chat transcript + message bubbles ---------------------------------- */
+
+ChatPane #transcript {
+    height: 1fr;
+}
+
+UserMessage {
+    background: $peri 12%;
+    border-left: thick $peri;
+    color: $moon;
+    margin: 0 1 1 1;
+    padding: 0 1;
+}
+
+LunaMessage {
+    background: $mauve 10%;
+    border-left: thick $mauve;
+    color: $moon;
+    margin: 0 1 1 1;
+    padding: 0 1;
+}
+
+SystemMessage {
+    background: $panel;
+    border-left: thick $border;
+    color: $moon-dim;
+    margin: 0 1 1 1;
+    padding: 0 1;
+}
+
+LunaBanner {
+    height: auto;
+    padding: 1 0 2 0;
+}
+
+/* --- Slash-command autocomplete + input --------------------------------- */
+
+ChatPane #autocomplete {
+    /* A *fixed* height, not `auto`/`max-height` — ListView is a
+       ScrollableContainer, and its auto-content-height measurement does
+       not simply sum its children (confirmed: with 23+ real commands
+       populated, it measured to 2 rows regardless of `max-height: 10`,
+       rendering as an unreadable sliver). ChatPane.on_input_changed sets
+       the actual height reactively, one row per match capped at 10, so a
+       broad prefix like "/" doesn't take over the screen.
+    */
+    height: 10;
+    background: $panel;
+    border: round $border;
+    padding: 0 1;
+}
+
+ChatPane #chat-input {
+    border: round $border;
+}
+
+ChatPane #chat-input:focus {
+    border: round $peri;
+}
+
+/* --- Shared pulsing indicator (chat "thinking" placeholder + tool rows) - */
+
+PulseGlyph {
+    height: 1;
+    /* Fallback color for the `animation_level == "none"` static bullet —
+       the animated frame overrides this with an explicit Rich style. */
+    color: $peri;
+    text-style: italic;
+}
+
+ChatPane PulseGlyph {
+    margin: 0 1 1 2;
+}
+
+ActivitySidebar PulseGlyph {
+    padding: 0 1;
+}
+
+/* --- Sidebar headers + rows ---------------------------------------------- */
+
+.sidebar-header {
+    height: 1;
+    width: 1fr;
+    padding: 0 1;
+    color: $moon-dim;
+    text-style: bold;
+}
+
+SessionsSidebar _SessionRow {
+    layout: vertical;
+    width: 1fr;
+    height: auto;
+}
+
+SessionsSidebar .session-title {
+    width: 1fr;
+    color: $moon;
+    text-overflow: ellipsis;
+    text-wrap: nowrap;
+}
+
+SessionsSidebar .session-time {
+    width: 1fr;
+    color: $moon-dim;
+}
+
+/* --- Approval modal ------------------------------------------------------ */
+
+ApprovalModal {
+    align: center middle;
+}
+
+ApprovalModal > Vertical {
+    width: 80%;
+    height: auto;
+    max-height: 80%;
+    background: $bg;
+    border: round $peri;
+    padding: 1 2;
+}

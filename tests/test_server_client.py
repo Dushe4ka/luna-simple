@@ -27,6 +27,17 @@ async def test_client_send_message_yields_parsed_events(transport):
     assert events[-1] == {"event": "turn_done"}
 
 
+async def test_client_get_history_returns_prior_turns(transport):
+    asgi_transport, workdir = transport
+    client = ServerClient(base_url="http://test", token="secret-token")
+    client._http = httpx.AsyncClient(transport=asgi_transport, base_url="http://test")
+    async for _ in client.send_message("t1", "hi", workdir):
+        pass
+    messages = await client.get_history("t1", workdir)
+    assert {"role": "human", "content": "hi"} in messages
+    assert {"role": "ai", "content": "hi back"} in messages
+
+
 async def test_client_create_and_list_sessions(transport):
     asgi_transport, workdir = transport
     client = ServerClient(base_url="http://test", token="secret-token")

@@ -7,7 +7,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from luna.core.permissions import suggest_rule
-from luna.tui.theme import TUI_CSS_VARIABLES
 from luna.ui.approve import describe_action
 
 
@@ -17,28 +16,13 @@ class ApprovalModal(ModalScreen[dict]):
     (``edit`` is not implemented here — see this task's Interfaces note
     for why; the three options here match ``prompt_decision``'s other
     three branches exactly.)
-    """
 
-    # TUI_CSS_VARIABLES is included directly (not just relied on via
-    # LunaApp.CSS's cascade) so this modal's styling is self-contained —
-    # it renders correctly under any host App, including the bare
-    # textual.app.App used by this module's own tests.
-    DEFAULT_CSS = (
-        TUI_CSS_VARIABLES
-        + """
-    ApprovalModal {
-        align: center middle;
-    }
-    ApprovalModal > Vertical {
-        width: 80%;
-        height: auto;
-        max-height: 80%;
-        background: $bg;
-        border: round $peri;
-        padding: 1 2;
-    }
+    Styling lives in ``luna/tui/luna.tcss`` (external stylesheet loaded by
+    ``LunaApp.CSS_PATH``), not a ``DEFAULT_CSS`` string here — this
+    module's own tests mount it under a bare, unstyled ``textual.app.App``
+    and only assert on button-click/dismiss behavior, never on layout, so
+    that's harmless there.
     """
-    )
 
     def __init__(self, action_request: dict) -> None:
         super().__init__()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -12,6 +13,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from luna.server.auth import read_token_file, token_path, write_token_file
+
+
+def log_path(env=None) -> Path:
+    """Path to the background-spawned server's stdout/stderr log.
+
+    Without this, a turn that fails inside the server process (a provider
+    error, an unhandled exception) is completely invisible: the process is
+    detached with no controlling terminal, so anything it prints just goes
+    nowhere. Same directory/naming convention as ``token_path``.
+    """
+    return token_path(env).parent / "server.log"
 
 
 def _default_is_alive(pid: int) -> bool:
@@ -28,25 +40,60 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _code_fingerprint() -> float:
+    """Latest mtime across every ``.py`` file in the installed ``luna`` package.
+
+    Not a version-string check: this project's version number does not
+    bump on every local edit made during active development (an editable
+    install), so two runs of the same nominal version can still be
+    genuinely different code. Real incident this fixes: a background
+    server spawned days earlier kept being silently reused across many
+    unrelated code changes (new tools, new routes, bugfixes) — it was
+    still running whatever it had originally imported, so none of that
+    ever took effect until the process was found and killed by hand.
+    """
+    root = Path(__file__).resolve().parent.parent  # .../luna/
+    return max((p.stat().st_mtime for p in root.rglob("*.py")), default=0.0)
+
+
+def _default_kill(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+
+
 def ensure_running(
     workdir: str,
     *,
     on_warn: Callable[[str], None] = print,
     _is_alive: Callable[[int], bool] = _default_is_alive,
     _spawn: Callable[[int, str], None] | None = None,
+    _fingerprint: Callable[[], float] | None = None,
+    _kill: Callable[[int], None] | None = None,
 ) -> dict:
     """Return the running server's token-file dict, starting one if needed.
 
     ``_spawn(port, token)`` is injected for testing; the real default
-    launches ``luna serve`` as a detached background subprocess.
+    launches ``luna serve`` as a detached background subprocess. A live
+    server whose recorded ``fingerprint`` (see :func:`_code_fingerprint`)
+    doesn't match the code on disk right now is treated the same as a dead
+    one — restarted, not reused — so local edits actually take effect
+    instead of running invisibly against a stale, already-imported copy of
+    the code until someone finds and kills the old process by hand.
     """
+    fingerprint = (_fingerprint or _code_fingerprint)()
     existing = read_token_file()
     if existing is not None and _is_alive(existing["pid"]):
-        return existing
+        if existing.get("fingerprint") == fingerprint:
+            return existing
+        on_warn("Luna server code changed since it started — restarting the background server")
+        (_kill or _default_kill)(existing["pid"])
 
     if existing is not None:
-        # Stale — remove it so a premature read below can't hand back
-        # dead credentials for a server that's no longer running.
+        # Stale (dead, or just killed above for being outdated) — remove it
+        # so a premature read below can't hand back dead credentials for a
+        # server that's no longer running.
         token_path().unlink(missing_ok=True)
 
     port = _free_port()
@@ -54,12 +101,15 @@ def ensure_running(
     if _spawn is not None:
         _spawn(port, token)
     else:
-        subprocess.Popen(
-            [sys.executable, "-m", "luna.server.run", "--port", str(port), "--token", token],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", buffering=1) as log_file:
+            subprocess.Popen(
+                [sys.executable, "-m", "luna.server.run", "--port", str(port), "--token", token],
+                start_new_session=True,
+                stdout=log_file,
+                stderr=log_file,
+            )
 
     # The real spawn is asynchronous: the new process writes its own token
     # file only once it is up, so a single read here would race it (and,
@@ -125,7 +175,7 @@ def run_serve(argv: list[str]) -> int:
 
     port = args.port or _free_port()
     token = args.token or secrets.token_hex(16)
-    write_token_file(port=port, token=token, pid=os.getpid())
+    write_token_file(port=port, token=token, pid=os.getpid(), fingerprint=_code_fingerprint())
 
     app = create_app(agent_factory=make_agent_factory(), token=token)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

@@ -28,6 +28,18 @@ MCP_REGISTRY: dict[str, dict] = {
     "memory": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]},
     "time": {"command": "uvx", "args": ["mcp-server-time"]},
     "playwright": {"command": "npx", "args": ["-y", "@playwright/mcp@latest"]},
+    # Web search: comparable terminal coding agents (OpenCode confirmed,
+    # researched directly rather than assumed) don't bundle a hosted search
+    # backend of their own — they point users at Tavily's own official MCP
+    # server (github.com/tavily-ai/tavily-mcp), built specifically for LLM
+    # tool-calling (structured, ranked results, an extract/crawl endpoint
+    # beyond plain search). Same shape as the existing `github` entry:
+    # ${ENV} expansion already handles a server needing an API key.
+    "tavily": {
+        "command": "npx",
+        "args": ["-y", "tavily-mcp"],
+        "env": {"TAVILY_API_KEY": "${TAVILY_API_KEY}"},
+    },
 }
 
 SKILL_REGISTRY: dict[str, dict] = {

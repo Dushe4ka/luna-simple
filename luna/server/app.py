@@ -13,7 +13,7 @@ from starlette.routing import Route
 
 from luna.server.approvals import post_approve
 from luna.server.sessions import create_session, list_sessions
-from luna.server.turns import post_message
+from luna.server.turns import get_history, post_message
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -45,6 +45,7 @@ def create_app(agent_factory: Callable[[str], object], *, token: str) -> Starlet
             Route("/health", _health),
             Route("/sessions", list_sessions, methods=["GET"]),
             Route("/sessions", create_session, methods=["POST"]),
+            Route("/sessions/{thread_id}/messages", get_history, methods=["GET"]),
             Route("/sessions/{thread_id}/messages", post_message, methods=["POST"]),
             Route("/sessions/{thread_id}/approve", post_approve, methods=["POST"]),
         ],

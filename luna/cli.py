@@ -45,6 +45,9 @@ def run_tui(config, *, workdir: str, thread_id: str) -> int:
         token=info["token"],
         workdir=workdir,
         thread_id=thread_id,
+        provider=config.provider,
+        model=config.model,
+        pricing=config.pricing,
     )
     app.run()
     return 0

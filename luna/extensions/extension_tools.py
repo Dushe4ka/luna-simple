@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from luna.config.providers import LunaConfigError
 from luna.extensions import mcp, skills
 from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
+from luna.extensions.websearch import web_search
 from luna.turn.memory import append_note
 
 
@@ -106,7 +107,7 @@ def remember(
     return f"noted in {path.as_posix()}. Run /reload to load it into context."
 
 
-EXTENSION_TOOLS = [manage_mcp, manage_skills, remember, save_skill]
+EXTENSION_TOOLS = [manage_mcp, manage_skills, remember, save_skill, web_search]
 EXTENSION_INTERRUPTS = {
     "manage_mcp": True,
     "manage_skills": True,

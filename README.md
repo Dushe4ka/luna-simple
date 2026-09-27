@@ -213,6 +213,19 @@ luna --provider ollama "объясни этот стек-трейс"
 
 Можно по-прежнему пользоваться обычным окружением / `.env` — см. `.env.example`.
 
+## Поиск в интернете
+
+Инструмент `web_search` встроен и работает без какой-либо настройки: он
+пробует Tavily (`TAVILY_API_KEY`), затем Brave (`BRAVE_API_KEY`), а если
+ни один ключ не задан — бесплатный поиск без ключа через пакет `ddgs`
+(`pip install ddgs` или `pip install "luna-simple[websearch]"`). Подход —
+по образцу того, как это устроено в Hermes Agent и OpenClaw: агент сам
+выбирает первый доступный бэкенд, ничего вручную включать не нужно.
+
+Отдельно `luna mcp add tavily` (см. ниже) даёт доступ к более широкому
+набору инструментов Tavily (`tavily-extract`/`tavily-crawl`) сверх
+обычного поиска — нужен тем, кому мало простого `web_search`.
+
 ## Расширение Luna
 
 Luna может получать новые возможности по запросу — вы через CLI, либо сам агент
@@ -220,6 +233,7 @@ Luna может получать новые возможности по запр
 
 ```bash
 luna mcp add github            # из встроенного реестра
+luna mcp add tavily             # extract/crawl Tavily сверх web_search (нужен TAVILY_API_KEY)
 luna mcp add custom -- npx -y my-mcp-server
 luna mcp list
 luna skills add pdf            # имя из реестра

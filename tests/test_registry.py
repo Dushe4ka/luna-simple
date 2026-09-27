@@ -10,6 +10,19 @@ def test_builtin_mcp_lookup():
     assert "@modelcontextprotocol/server-filesystem" in spec["args"]
 
 
+def test_builtin_mcp_tavily_web_search_expands_its_api_key_env_var():
+    """Web search is Tavily's own official MCP server (tavily-mcp), the
+    same way OpenCode — a comparable terminal coding agent, checked
+    directly rather than assumed — points users at it rather than bundling
+    a hosted search backend of its own. Its API key follows the same
+    ${ENV} pattern the existing `github` entry already uses.
+    """
+    spec = resolve_mcp("tavily")
+    assert spec["command"] == "npx"
+    assert "tavily-mcp" in spec["args"]
+    assert spec["env"]["TAVILY_API_KEY"] == "${TAVILY_API_KEY}"
+
+
 def test_builtin_skill_lookup():
     assert resolve_skill("pdf")["repo"] == "anthropics/skills"
 

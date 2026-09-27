@@ -102,6 +102,7 @@ _TOOL_NAMES = (
     "manage_mcp",
     "manage_skills",
     "save_skill",
+    "web_search",
 )
 
 
