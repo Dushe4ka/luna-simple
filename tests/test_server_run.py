@@ -222,3 +222,24 @@ def test_ensure_running_never_returns_a_dead_servers_credentials(tmp_path, monke
     assert result == {"port": new_port, "token": new_token, "pid": 0}
     assert result != {"port": 12345, "token": "stale", "pid": 999}
     assert not token_path().exists()
+
+
+def test_ensure_running_spawns_the_shared_server_outside_any_project(tmp_path, monkeypatch):
+    """Regression: the server inherited the launching project's cwd; deleting
+    that folder later made every request's path resolution crash with
+    FileNotFoundError (500s for all projects)."""
+    from pathlib import Path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["kwargs"] = kwargs
+            port = args[args.index("--port") + 1]
+            token = args[args.index("--token") + 1]
+            write_token_file(port=int(port), token=token, pid=4242)
+
+    monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
+    ensure_running(str(tmp_path), on_warn=lambda m: None, _is_alive=lambda pid: False)
+    assert captured["kwargs"]["cwd"] == str(Path.home())

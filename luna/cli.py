@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import uuid
+from pathlib import Path
 
 from luna import __version__
 from luna.config.config import config_path, load_config, set_config_values
@@ -467,7 +468,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if interactive:
-            return run_tui(config, workdir=config.workdir, thread_id=start_thread)
+            # Absolute: the shared server would resolve a relative "." against
+            # its own cwd, i.e. whichever project happened to start it.
+            workdir = str(Path(config.workdir).resolve())
+            return run_tui(config, workdir=workdir, thread_id=start_thread)
         return run_repl(
             agent,
             console=console,

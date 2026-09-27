@@ -76,3 +76,13 @@ def test_run_serve_wires_the_real_trust_check(tmp_path, monkeypatch):
     assert check(str(tmp_path)) is False
     ProjectIndex().trust(str(tmp_path))
     assert check(str(tmp_path)) is True
+
+
+async def test_relative_workdir_is_rejected_not_resolved_against_the_servers_cwd(tmp_path):
+    """The server is shared by every project: "." would mean *its* cwd, i.e.
+    whichever project happened to start it — mixing projects' sessions."""
+    ProjectIndex().trust(str(tmp_path))
+    async with _client(make_trust_check()) as c:
+        resp = await c.get("/sessions", params={"workdir": "."})
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "workdir_not_absolute", "workdir": "."}

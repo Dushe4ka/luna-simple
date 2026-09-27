@@ -107,6 +107,9 @@ def ensure_running(
             subprocess.Popen(
                 [sys.executable, "-m", "luna.server.run", "--port", str(port), "--token", token],
                 start_new_session=True,
+                # One server serves every project: never tie its cwd to the
+                # launching folder, which may be deleted while it runs.
+                cwd=str(Path.home()),
                 stdout=log_file,
                 stderr=log_file,
             )

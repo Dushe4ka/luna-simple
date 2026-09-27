@@ -7,6 +7,8 @@ web/desktop client must not be able to bypass the CLI's trust prompt.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -21,6 +23,12 @@ def trust_error(request: Request, workdir: str | None) -> JSONResponse | None:
         return None
     if not workdir:
         return JSONResponse({"error": "workdir_required"}, status_code=400)
+    if not Path(workdir).is_absolute():
+        # The server is shared by every project, so "." would resolve against
+        # *its* cwd — whichever project started it — and mix projects' data.
+        return JSONResponse(
+            {"error": "workdir_not_absolute", "workdir": workdir}, status_code=400
+        )
     if not check(workdir):
         return JSONResponse(
             {"error": "workdir_not_trusted", "workdir": workdir}, status_code=403

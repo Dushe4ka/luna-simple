@@ -152,12 +152,17 @@ SessionsSidebar .project-name {
 }
 
 SessionsSidebar .project-path {
+    /* $moon-dim, not $border: $border on $panel is 3.02:1, below the 4.5:1
+       minimum theme.py already sets for persistent secondary text. */
     padding: 0 1 1 1;
-    color: $border;
+    color: $moon-dim;
 }
 
 SessionsSidebar #session-list {
     background: $panel;
+    /* The default 2-column scrollbar squeezed every row and knocked the
+       right-aligned times out of line once the list overflowed. */
+    scrollbar-size-vertical: 1;
 }
 
 SessionsSidebar ListItem {
@@ -166,8 +171,10 @@ SessionsSidebar ListItem {
 }
 
 SessionsSidebar ListItem.session-group {
+    /* Uppercase + $moon-dim (8.14:1) separates groups from $moon titles
+       without dropping below the contrast minimum like $border did. */
     margin-top: 1;
-    color: $border;
+    color: $moon-dim;
     text-style: none;
 }
 
