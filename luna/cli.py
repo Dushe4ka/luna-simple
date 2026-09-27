@@ -30,6 +30,7 @@ from luna.server.run import run_serve
 from luna.ui.console import get_console
 from luna.ui.interact import arrow_pick
 from luna.ui.splash import render_splash
+from luna.ui.trust import ensure_trusted
 
 _SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init", "serve"}
 
@@ -386,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = args.prompt_pos or args.prompt
     interactive = console.is_terminal and sys.stdin.isatty() and not args.no_input
+
+    # Trust gate: only the TUI path asks. `-p` and a piped-stdin REPL are
+    # scripted invocations, where the invocation itself is the consent.
+    if interactive and not prompt and not ensure_trusted(console, config.workdir):
+        return 1
 
     if not _has_api_key(config.provider, merge_providers(config.custom_providers)):
         if interactive:

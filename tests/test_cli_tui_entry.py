@@ -16,6 +16,7 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
         pytest.fail("run_repl should not be called when interactive")
 
     monkeypatch.setattr(cli_mod, "run_tui", fake_run_tui)
+    monkeypatch.setattr(cli_mod, "ensure_trusted", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "build_agent", lambda *a, **k: object())
     monkeypatch.setattr(cli_mod, "run_repl", fail_run_repl)
@@ -34,6 +35,7 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
 
 
 def _force_interactive(monkeypatch, cli_mod):
+    monkeypatch.setattr(cli_mod, "ensure_trusted", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "build_agent", lambda *a, **k: object())
     monkeypatch.setattr(
@@ -109,3 +111,27 @@ def test_main_still_dispatches_repl_when_not_interactive(monkeypatch, tmp_path):
 
     assert code == 0
     assert calls == {"repl": 0}
+
+
+def test_refusing_trust_exits_1_without_launching_the_tui(monkeypatch, tmp_path):
+    import luna.cli as cli_mod
+
+    _force_interactive(monkeypatch, cli_mod)
+    monkeypatch.setattr(cli_mod, "ensure_trusted", lambda *a, **k: False)
+    monkeypatch.setattr(
+        cli_mod, "run_tui", lambda *a, **k: pytest.fail("TUI must not start in an untrusted folder")
+    )
+
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 1
+
+
+def test_one_shot_prompt_never_asks_for_trust(monkeypatch, tmp_path):
+    import luna.cli as cli_mod
+
+    _force_interactive(monkeypatch, cli_mod)
+    monkeypatch.setattr(
+        cli_mod, "ensure_trusted", lambda *a, **k: pytest.fail("-p must not prompt for trust")
+    )
+    monkeypatch.setattr(cli_mod, "run_once", lambda *a, **k: None)
+
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path), "-p", "hi"]) == 0
