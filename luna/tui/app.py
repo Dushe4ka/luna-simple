@@ -30,7 +30,10 @@ class LunaApp(App):
     # not a DEFAULT_CSS string duplicated across every widget's .py file.
     CSS_PATH = "luna.tcss"
 
-    BINDINGS = [("ctrl+b", "toggle_panels", "Toggle panels")]
+    BINDINGS = [
+        ("ctrl+b", "toggle_panels", "Панель"),
+        ("ctrl+n", "new_session", "Новая сессия"),
+    ]
 
     def __init__(
         self,
@@ -80,7 +83,9 @@ class LunaApp(App):
         # once, before mount — to keep matching the existing
         # #sessions-sidebar/#activity-sidebar CSS selectors and the Task 7
         # widget-lookup test.
-        sessions_sidebar = SessionsSidebar(workdir=self._workdir)
+        sessions_sidebar = SessionsSidebar(
+            workdir=self._workdir, current_thread_id=self._start_thread_id
+        )
         sessions_sidebar.id = "sessions-sidebar"
         activity_sidebar = ActivitySidebar()
         activity_sidebar.id = "activity-sidebar"
@@ -117,14 +122,33 @@ class LunaApp(App):
     async def on_sessions_sidebar_session_selected(
         self, event: SessionsSidebar.SessionSelected
     ) -> None:
-        """Switch the chat pane to the clicked session's thread and reload it.
+        """Switch the chat pane to the picked session's thread and reload it."""
+        await self._open_thread(event.thread_id)
+
+    async def on_sessions_sidebar_new_session_requested(
+        self, event: SessionsSidebar.NewSessionRequested
+    ) -> None:
+        """The "+ новая сессия" row does the same as Ctrl+N."""
+        await self.action_new_session()
+
+    async def action_new_session(self) -> None:
+        """Start a fresh thread in this project (Ctrl+N)."""
+        await self._open_thread(await self.client.create_session(self._workdir))
+
+    async def on_chat_pane_turn_finished(self, event: ChatPane.TurnFinished) -> None:
+        """Re-fetch the list so a new session appears and the order updates."""
+        await self.query_one(SessionsSidebar).refresh_sessions()
+
+    async def _open_thread(self, thread_id: str) -> None:
+        """Point the chat at ``thread_id``, replay its history, sync the highlight.
 
         Without the reload, the transcript kept showing whatever the
         previously-open session had streamed into it.
         """
         chat = self.query_one(ChatPane)
-        chat.thread_id = event.thread_id
+        chat.thread_id = thread_id
         await chat.load_history()
+        self.query_one(SessionsSidebar).set_current(thread_id)
         self.query_one("#chat-input").focus()
 
     def action_toggle_panels(self) -> None:

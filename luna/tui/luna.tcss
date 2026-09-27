@@ -15,7 +15,7 @@
 /* --- App shell: sidebars + chat column ---------------------------------- */
 
 #sessions-sidebar {
-    width: 24;
+    width: 30;
     background: $panel;
     border-right: solid $border;
 }
@@ -148,10 +148,48 @@ ActivitySidebar PulseGlyph {
     text-style: bold;
 }
 
-SessionsSidebar _SessionRow {
-    layout: vertical;
+SessionsSidebar .project-name {
+    padding: 0 1;
+    color: $moon;
+    text-style: bold;
+}
+
+SessionsSidebar .project-path {
+    padding: 0 1 1 1;
+    color: $border;
+}
+
+SessionsSidebar #session-list {
+    background: $panel;
+}
+
+SessionsSidebar ListItem {
+    background: $panel;
+    padding: 0 1;
+}
+
+SessionsSidebar ListItem.session-group {
+    margin-top: 1;
+    color: $border;
+    text-style: none;
+}
+
+SessionsSidebar ListItem.session-item.-current {
+    background: $peri;
+}
+
+SessionsSidebar ListItem.session-item.-current Label {
+    color: $bg;
+}
+
+SessionsSidebar ListItem.new-session-item .session-title {
+    color: $peri;
+}
+
+SessionsSidebar _SessionRow,
+SessionsSidebar _NewSessionRow {
+    height: 1;
     width: 1fr;
-    height: auto;
 }
 
 SessionsSidebar .session-title {
@@ -162,7 +200,8 @@ SessionsSidebar .session-title {
 }
 
 SessionsSidebar .session-time {
-    width: 1fr;
+    width: auto;
+    padding-left: 1;
     color: $moon-dim;
 }
 

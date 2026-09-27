@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from textual import events, work
 from textual.containers import Vertical, VerticalScroll
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Markdown
@@ -97,6 +98,9 @@ class ChatPane(Widget):
     stylesheet, loaded by ``LunaApp.CSS_PATH``), not a ``DEFAULT_CSS``
     string here — see that file's header comment for why.
     """
+
+    class TurnFinished(Message):
+        """Posted after a turn's stream ends, so the sidebar can re-sort."""
 
     thread_id: reactive[str | None] = reactive(None)
 
@@ -375,6 +379,7 @@ class ChatPane(Widget):
                 event_stream = app.client.approve(self.thread_id, decision, self._workdir)
         finally:
             await reply.stop()
+            self.post_message(self.TurnFinished())
 
     async def _apply_event(
         self, evt: dict, reply: _LiveReply, activity: ActivitySidebar, turn_usage: TurnUsage
