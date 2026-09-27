@@ -631,3 +631,40 @@ def test_render_history_builds_tool_rows():
         ]
     )
     assert isinstance(widgets[1], ToolRow)
+
+
+class _ApprovalClient:
+    """First stream pauses for approval; records which thread each call used."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def get_history(self, thread_id, workdir):
+        return []
+
+    async def send_message(self, thread_id, content, workdir):
+        self.calls.append(("send", thread_id))
+        yield {"event": "approval_needed", "value": {"action_requests": [{"name": "execute"}]}}
+
+    async def approve(self, thread_id, decision, workdir):
+        self.calls.append(("approve", thread_id))
+        yield {"event": "turn_done"}
+
+
+async def test_approval_resumes_the_thread_the_turn_started_on():
+    """Regression: switching sessions while a turn waited for approval sent
+    the decision to the *new* thread, leaving the original paused forever."""
+    client = _ApprovalClient()
+    app = _HarnessApp(client)
+    async with app.run_test():
+        chat = app.query_one(ChatPane)
+
+        class _Decision:
+            async def wait(self):
+                chat.thread_id = "some-other-session"  # user switched meanwhile
+                return {"type": "approve"}
+
+        chat._await_approval_decision = lambda _req: _Decision()
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "run it"))
+    assert client.calls == [("send", "t1"), ("approve", "t1")]

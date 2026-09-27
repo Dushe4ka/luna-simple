@@ -103,3 +103,14 @@ async def test_header_shows_the_real_folder_name_for_a_relative_workdir(
         sidebar = app.query_one(SessionsSidebar)
         name = str(sidebar.query_one(".project-name", Label).render())
         assert name == "◐ Luna_pi"
+
+
+async def test_switching_sessions_is_blocked_while_a_turn_is_running(tmp_path, fake_model):
+    app = _app(tmp_path, fake_model, thread_id="t1")
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        chat.busy = True
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        assert chat.thread_id == "t1"
+        assert SessionIndex().list(str(tmp_path)) == []  # no orphan session created

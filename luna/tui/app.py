@@ -127,6 +127,8 @@ class LunaApp(App):
 
     async def action_new_session(self) -> None:
         """Start a fresh thread in this project (Ctrl+N)."""
+        if self._turn_running():
+            return
         try:
             thread_id = await self.client.create_session(self._workdir)
         except ServerError as exc:
@@ -138,12 +140,21 @@ class LunaApp(App):
         """Re-fetch the list so a new session appears and the order updates."""
         await self.query_one(SessionsSidebar).refresh_sessions()
 
+    def _turn_running(self) -> bool:
+        """Refuse (with a notice) to switch sessions while a turn is streaming."""
+        if self.query_one(ChatPane).busy:
+            self.notify("Дождитесь окончания ответа, затем переключайте сессию.")
+            return True
+        return False
+
     async def _open_thread(self, thread_id: str) -> None:
         """Point the chat at ``thread_id``, replay its history, sync the highlight.
 
         Without the reload, the transcript kept showing whatever the
         previously-open session had streamed into it.
         """
+        if self._turn_running():
+            return
         chat = self.query_one(ChatPane)
         chat.thread_id = thread_id
         await chat.load_history()

@@ -160,6 +160,8 @@ class ChatPane(Widget):
         # via its post-turn "ctx ~X/Y · ..." indicator, now surfaced in the
         # status bar instead of being silently dropped by the TUI).
         self._session_usage = SessionUsage()
+        #: True while a turn streams; the app refuses to switch sessions then.
+        self.busy = False
 
     def compose(self):
         """Build the transcript, autocomplete dropdown, input, and status bar.
@@ -376,6 +378,11 @@ class ChatPane(Widget):
         await transcript.mount(thinking)
         transcript.anchor()
         reply = _LiveReply(transcript, thinking)
+        # Pinned for the whole turn: the user may open another session while
+        # this one waits for approval, and the decision must resume *this*
+        # thread, not whichever one the pane shows by then.
+        thread_id = self.thread_id
+        self.busy = True
         # One accumulator for the whole turn (including any approval
         # round-trips) — merged from each `usage_delta` event, then folded
         # into the session total exactly once, on `turn_done`.
@@ -390,7 +397,7 @@ class ChatPane(Widget):
             # one round (the old nested `async for`) left the graph paused on
             # the second interrupt with nothing in the UI to resume it.
             try:
-                event_stream = app.client.send_message(self.thread_id, content, self._workdir)
+                event_stream = app.client.send_message(thread_id, content, self._workdir)
                 while True:
                     approval_value = None
                     async for evt in event_stream:
@@ -410,10 +417,11 @@ class ChatPane(Widget):
                     # awaitable (Task 8's regression test calls it that way) and
                     # its try/finally around reply.stop() is unaffected.
                     decision = await self._await_approval_decision(requests[0]).wait()
-                    event_stream = app.client.approve(self.thread_id, decision, self._workdir)
+                    event_stream = app.client.approve(thread_id, decision, self._workdir)
             except ServerError as exc:
                 await reply.write(f"\n\n**⚠** {exc}\n\n")
         finally:
+            self.busy = False
             await reply.stop()
             self.post_message(self.TurnFinished())
 
