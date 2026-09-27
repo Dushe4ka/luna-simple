@@ -9,7 +9,8 @@ Status: approved in conversation, awaiting written-spec review
    directory, gated by a Claude-Code-style trust prompt, so the future
    web/desktop client (Hermes-like) can list projects and their sessions
    from the same store.
-2. Stop tests from writing into the user's real `sessions.db`.
+2. Remove the 3 stray sessions left in the user's real `sessions.db` by
+   manual runs in `tempfile` directories.
 3. Redesign the TUI: layout A (sessions sidebar + chat) without the right
    activity column, a Claude-Code-style chat transcript (variant B), and a
    session list grouped by day (variant 1). Mockups:
@@ -22,8 +23,11 @@ Status: approved in conversation, awaiting written-spec review
   `/sessions?workdir=` already filters by it. Per-project separation works;
   the screenshot's sessions were all from `Luna_pi`.
 - The DB contains 3 sessions whose `workdir` is
-  `/private/var/folders/.../T/tmp*` — leaked from tests. No
-  `tests/conftest.py` isolates `XDG_CONFIG_HOME`.
+  `/private/var/folders/.../T/tmp*` (created 2026-09-25/26, titles "say hi",
+  "привет"). They are **not** a test leak — `tests/conftest.py` has
+  isolated `XDG_CONFIG_HOME` via the autouse `isolated_config_home` fixture
+  since 2026-09-06, and pytest dirs are named `pytest-of-*`. They come from
+  manual runs of the real `luna` in `tempfile.mkdtemp()` dirs.
 - A session row is only written on the first message (`turns.py`
   `post_message`, `session.py`), so there are no empty sessions.
 - `SessionIndex.list` defaults to `limit=20`.
@@ -71,8 +75,9 @@ session proceed for this launch only.
 
 ### Trust prompt
 
-In `luna/cli.py`, before `ensure_running` / the REPL loop, for interactive
-modes (TUI and REPL):
+In `luna/cli.py`, on the TUI launch path only (`interactive and not
+prompt` — `interactive` always leads to the TUI, so it is the only
+interactive mode), before `run_tui` / `ensure_running`:
 
 ```
  Доверяете этой папке?
@@ -95,27 +100,30 @@ modes (TUI and REPL):
 - "Нет", Esc, Ctrl+C → print one line ("Luna не запущена: папка не отмечена
   как доверенная."), exit code 1, nothing written to the DB.
 - Trusted folder → no prompt, `ProjectIndex.touch(path)`.
-- Non-interactive `luna -p "..."` → no prompt, no trust record (the explicit
-  `-p` invocation is the consent, as in Claude Code).
-- Non-TTY stdin in an interactive mode → treated like "Нет" with the same
-  message plus a hint to run once in a terminal or use `-p`.
+- Non-interactive `luna -p "..."` and the piped-stdin REPL → no prompt, no
+  trust record (a scripted invocation is the consent, as with Claude
+  Code's `-p`).
+- If `arrow_pick` reports no real terminal (returns `None`), fall back to a
+  plain `input()` "[y/N]" question; anything but `y`/`д` means "Нет".
 
 ### Server enforcement
 
-`luna/server` rejects any request whose `workdir` is not trusted
-(`ProjectIndex.is_trusted`) with `403 {"error": "workdir_not_trusted",
-"workdir": ...}` — on `/sessions` (GET/POST) and all
-`/sessions/{thread_id}/*` routes. One helper in `luna/server/app.py`
-(`_require_trusted(request, workdir)`) is used by every handler. This keeps
+`create_app` gains `trust_check: Callable[[str], bool] | None = None`,
+stored on `app.state`. `luna serve` (`run_serve`) passes
+`ProjectIndex().is_trusted`; `None` (tests, embedding) disables the check,
+so the 23 existing `create_app(...)` call sites in tests keep working. When
+set, every route that takes a `workdir` — `/sessions` (GET/POST) and all
+`/sessions/{thread_id}/*` routes — answers `400 {"error":
+"workdir_required"}` if it is missing and `403 {"error":
+"workdir_not_trusted", "workdir": ...}` if untrusted. One helper,
+`luna/server/trust.py: trust_error(request, workdir) -> JSONResponse |
+None`, is used by every handler. This keeps
 a future web/desktop client from bypassing the CLI prompt; such a client
 will implement its own trust UI and call a `POST /projects/trust` endpoint
 added then, not now.
 
-### Test isolation and cleanup
+### Cleanup
 
-- New `tests/conftest.py` with an autouse fixture setting
-  `XDG_CONFIG_HOME` to `tmp_path` for every test, so no test can touch
-  `~/.config/luna`.
 - One-off cleanup (a documented manual step in the plan, not code): delete
   the 3 `luna_sessions` rows whose `workdir` starts with `/private/var/folders/`
   and their checkpoints (`checkpoints`/`writes` rows with those `thread_id`s).
@@ -227,10 +235,10 @@ the duration live, and is omitted in replayed history.
   workdirs trusted and is idempotent; degrades to no-op on DB failure.
 - CLI trust flow: prompt shown for an untrusted dir; "Нет" exits 1 and
   writes nothing; "Да" records trust; trusted dir skips prompt; `-p`
-  skips prompt; non-TTY refuses.
-- Server: 403 `workdir_not_trusted` on each route for an untrusted dir.
-- `conftest.py` isolation: a test asserting `config_dir()` is under
-  `tmp_path`.
+  skips prompt; the `input()` fallback accepts only `y`/`д`.
+- Server: 403 `workdir_not_trusted` on each route for an untrusted dir,
+  400 without `workdir`, no check when `trust_check=None`, and `run_serve`
+  wires the real check.
 - Grouping and `relative_time`: fixed `now` at day boundaries (23:59 /
   00:01), yesterday, 6 and 8 days back, Russian month names.
 - `get_history`: returns tool entries between human/ai messages, with
