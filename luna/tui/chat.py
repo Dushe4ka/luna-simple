@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from rich.text import Text
 from textual import events, work
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Input, ListItem, ListView, Markdown
+from textual.widgets import Input, ListItem, ListView, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line
@@ -15,6 +16,7 @@ from luna.server.client import ServerError
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import HELP, filter_commands
 from luna.tui.status_bar import StatusBar
+from luna.tui.theme import TUI_VARIABLES
 from luna.tui.tool_row import ToolRow
 from luna.tui.widgets import PulseGlyph
 
@@ -24,8 +26,25 @@ from luna.tui.widgets import PulseGlyph
 _LOCALLY_SUPPORTED = ("/exit", "/quit", "/clear", "/help", "/commands")
 
 
-class UserMessage(Markdown):
-    """The user's message, prefixed with "› " — no panel, no label."""
+def user_line(text: str) -> Text:
+    """Render the user's message as literal text behind a bold ``$peri`` "› " marker."""
+    line = Text()
+    line.append("› ", style=f"bold {TUI_VARIABLES['peri']}")
+    line.append(text)
+    return line
+
+
+class UserMessage(Static):
+    """The user's message: literal text, never Markdown.
+
+    Markdown would turn ``__init__`` into a bold "init" and ``# x`` into a
+    heading — wrong for what people type into a coding agent. ``source``
+    keeps the raw text, like the Markdown-based message widgets have.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__(user_line(text))
+        self.source = text
 
 
 class LunaMessage(Markdown):
@@ -52,7 +71,7 @@ def render_history(messages: list[dict]) -> list[Widget]:
     widgets: list[Widget] = []
     for m in messages:
         if m["role"] == "human":
-            widgets.append(UserMessage(f"› {m['content']}"))
+            widgets.append(UserMessage(m["content"]))
         elif m["role"] == "tool":
             widgets.append(
                 ToolRow(m["name"], m.get("args_preview", ""), result=(m["ok"], m["detail"]))
@@ -373,7 +392,7 @@ class ChatPane(Widget):
         # exactly like nothing had happened at all. A blinking placeholder
         # takes the assistant's spot right away too, so waiting for the
         # first token (or a tool call) never looks like the TUI has frozen.
-        await transcript.mount(UserMessage(f"› {content}"))
+        await transcript.mount(UserMessage(content))
         thinking = PulseGlyph("Luna думает")
         await transcript.mount(thinking)
         transcript.anchor()

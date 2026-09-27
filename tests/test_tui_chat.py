@@ -14,11 +14,12 @@ from luna.tui.status_bar import StatusBar
 def transcript_text(transcript: VerticalScroll) -> str:
     """Join every mounted message widget's ``.source`` in DOM (chronological) order.
 
-    ``#transcript`` holds one Markdown subclass per turn (UserMessage /
+    ``#transcript`` holds one message widget per turn (UserMessage /
     LunaMessage / SystemMessage) instead of one shared Markdown widget, so
     a plain ``.source`` lookup no longer exists on the container itself.
     """
-    return "\n".join(child.source for child in transcript.query(Markdown))
+    widgets = transcript.query("UserMessage, LunaMessage, SystemMessage")
+    return "\n".join(child.source for child in widgets)
 
 
 async def test_render_history_labels_human_and_ai_turns_you_then_luna():
@@ -44,7 +45,7 @@ async def test_render_history_labels_human_and_ai_turns_you_then_luna():
         assert "done" in widgets[1].source
         messages = [w for w in transcript.children if w in widgets]
         assert messages == widgets  # human turn first, then Luna's reply
-        assert widgets[0].source.startswith("› ")
+        assert widgets[0].source == "fix the bug"
         assert "**Luna**" not in widgets[1].source
 
 
@@ -120,7 +121,7 @@ async def test_clear_command_empties_the_transcript_locally():
     async with app.run_test():
         chat = app.query_one(ChatPane)
         transcript = chat.query_one("#transcript", VerticalScroll)
-        await transcript.mount(UserMessage("› hello"))
+        await transcript.mount(UserMessage("hello"))
         assert "hello" in transcript_text(transcript)
 
         inp = chat.query_one("#chat-input", Input)
@@ -668,3 +669,20 @@ async def test_approval_resumes_the_thread_the_turn_started_on():
         inp = chat.query_one("#chat-input", Input)
         await chat.on_input_submitted(Input.Submitted(inp, "run it"))
     assert client.calls == [("send", "t1"), ("approve", "t1")]
+
+
+async def test_user_message_is_literal_text_with_a_peri_marker():
+    """Regression: user text went through Markdown, so `__init__` became a
+    bold "init" and `# x` a heading; the spec asks for a bold $peri "›"."""
+
+    from luna.tui.chat import user_line
+    from luna.tui.theme import TUI_VARIABLES
+
+    msg = UserMessage("fix __init__ and # header")
+    assert not isinstance(msg, Markdown)
+    assert msg.source == "fix __init__ and # header"
+    line = user_line("fix __init__")
+    assert line.plain == "› fix __init__"
+    marker = line.spans[0]
+    assert (marker.start, marker.end) == (0, 2)
+    assert TUI_VARIABLES["peri"] in str(marker.style) and "bold" in str(marker.style)

@@ -1,6 +1,5 @@
 import httpx
 from langchain_core.messages import AIMessage
-from textual.widgets import Markdown
 
 from luna.config.config import LunaConfig
 from luna.core.agent import build_agent
@@ -12,11 +11,12 @@ from luna.tui.chat import ChatPane
 def transcript_text(transcript) -> str:
     """Join every mounted message widget's ``.source`` in DOM order.
 
-    ``#transcript`` holds one Markdown subclass per turn (UserMessage /
+    ``#transcript`` holds one message widget per turn (UserMessage /
     LunaMessage) instead of one shared Markdown widget, so a plain
     ``.source`` lookup no longer exists on the container itself.
     """
-    return "\n".join(child.source for child in transcript.query(Markdown))
+    widgets = transcript.query("UserMessage, LunaMessage, SystemMessage")
+    return "\n".join(child.source for child in widgets)
 
 
 async def test_app_mounts_sidebar_chat_and_status_bar(tmp_path, fake_model):
