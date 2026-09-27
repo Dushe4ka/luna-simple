@@ -8,18 +8,50 @@ from pathlib import Path
 from rich.console import Console
 
 from luna.core.projects import ProjectIndex
-from luna.ui.interact import arrow_pick
+from luna.ui.interact import _real_terminal
 from luna.ui.theme import PALETTE
 
 REFUSED_MESSAGE = "Luna не запущена: папка не отмечена как доверенная."
 _YES = {"y", "yes", "д", "да"}
 
 
+def trust_question(**prompt_kwargs):
+    """Build the "Да / Нет" picker with Esc bound to refusal.
+
+    questionary's ``select`` only binds Ctrl+C to cancel; Esc did nothing and
+    left the prompt hanging. Esc here exits with ``KeyboardInterrupt``, which
+    :func:`ensure_trusted` treats exactly like "Нет". ``prompt_kwargs``
+    (``input``/``output``) exist for tests.
+    """
+    import questionary
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+    from prompt_toolkit.keys import Keys
+
+    question = questionary.select(
+        "",
+        choices=[
+            questionary.Choice("Да, доверяю", value="yes"),
+            questionary.Choice("Нет, выйти", value="no"),
+        ],
+        use_shortcuts=True,
+        **prompt_kwargs,
+    )
+    escape = KeyBindings()
+
+    @escape.add(Keys.Escape, eager=True)
+    def _refuse(event) -> None:
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+
+    app = question.application
+    app.key_bindings = merge_key_bindings([app.key_bindings, escape])
+    return question
+
+
 def confirm_trust(console: Console, workdir: str, input_fn: Callable[[str], str] = input) -> bool:
     """Ask whether ``workdir`` is trusted; ``True`` only on an explicit yes.
 
     Uses the arrow-key picker in a real terminal and falls back to a plain
-    ``[y/N]`` question otherwise (``arrow_pick`` returns ``None`` there).
+    ``[y/N]`` question otherwise.
     Esc / Ctrl+C propagate as ``KeyboardInterrupt`` for the caller to treat
     as a refusal.
     """
@@ -37,10 +69,12 @@ def confirm_trust(console: Console, workdir: str, input_fn: Callable[[str], str]
         style=PALETTE["moon_dim"],
     )
     console.print()
-    choice = arrow_pick(console, input_fn, [("yes", "Да, доверяю"), ("no", "Нет, выйти")])
-    if choice is None:
+    if not _real_terminal(console, input_fn):
         return input_fn("Доверяете? [y/N] ").strip().lower() in _YES
-    return choice == "yes"
+    console.print("Enter — подтвердить · Esc — выйти", style=PALETTE["moon_dim"])
+    # unsafe_ask: let Ctrl+C / Esc propagate as KeyboardInterrupt without
+    # questionary's own "Cancelled by user" line.
+    return trust_question().unsafe_ask() == "yes"
 
 
 def ensure_trusted(

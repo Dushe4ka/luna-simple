@@ -65,3 +65,27 @@ def test_prompt_shows_the_absolute_path_for_a_relative_workdir(tmp_path, monkeyp
     console, buf = _console()
     confirm_trust(console, ".", input_fn=lambda _p: "n")
     assert str(tmp_path.resolve()) in buf.getvalue()
+
+
+def _ask_with_keys(keys: str):
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from luna.ui.trust import trust_question
+
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        return trust_question(input=inp, output=DummyOutput()).unsafe_ask()
+
+
+def test_escape_at_the_picker_counts_as_refusal():
+    with pytest.raises(KeyboardInterrupt):
+        _ask_with_keys("\x1b")
+
+
+def test_enter_at_the_picker_accepts():
+    assert _ask_with_keys("\r") == "yes"
+
+
+def test_down_then_enter_refuses():
+    assert _ask_with_keys("\x1b[B\r") == "no"
