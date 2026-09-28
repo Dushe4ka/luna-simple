@@ -71,3 +71,32 @@ async def test_streaming_http_errors_become_a_readable_server_error(tmp_path):
     client = _untrusted_client()
     with pytest.raises(ServerError, match="не отмечена как доверенная"):
         [e async for e in client.send_message("t1", "hi", str(tmp_path))]
+
+
+async def test_turn_stream_has_no_read_timeout():
+    """Regression: the default 5 s read timeout killed any turn where the model
+    was silent for >5 s (e.g. digesting web_search results); SSE pings only
+    every 15 s, so a live turn looked dead to the client."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, text='data: {"event": "turn_done"}\n\n')
+
+    client = ServerClient(base_url="http://test", token="t")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+    [e async for e in client.send_message("t1", "hi", "/repo")]
+    assert seen["timeout"]["read"] is None
+    assert seen["timeout"]["connect"] == 5.0
+
+
+async def test_a_dropped_stream_becomes_a_readable_server_error():
+    from luna.server.client import ServerError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("connection reset", request=request)
+
+    client = ServerClient(base_url="http://test", token="t")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+    with pytest.raises(ServerError, match="Связь с сервером Luna"):
+        [e async for e in client.send_message("t1", "hi", "/repo")]

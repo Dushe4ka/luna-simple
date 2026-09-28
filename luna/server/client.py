@@ -7,6 +7,11 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+#: A turn streams for as long as the agent works: the model can stay silent
+#: well past httpx's default 5 s read timeout (sse-starlette only pings every
+#: 15 s), so reads never time out; connecting still does.
+_STREAM_TIMEOUT = httpx.Timeout(5.0, read=None)
+
 #: Human-readable text for the server's machine-readable error codes.
 _ERROR_TEXT = {
     "workdir_not_trusted": (
@@ -83,13 +88,18 @@ class ServerClient:
         return resp.json()["messages"]
 
     async def _stream(self, path: str, body: dict) -> AsyncIterator[dict]:
-        async with self._http.stream("POST", path, json=body, headers=self._auth_headers()) as resp:
-            if resp.is_error:
-                await resp.aread()  # a streamed body must be read before .json()
-                raise _server_error(resp)
-            async for line in resp.aiter_lines():
-                if line.startswith("data:"):
-                    yield json.loads(line[len("data:") :].strip())
+        try:
+            async with self._http.stream(
+                "POST", path, json=body, headers=self._auth_headers(), timeout=_STREAM_TIMEOUT
+            ) as resp:
+                if resp.is_error:
+                    await resp.aread()  # a streamed body must be read before .json()
+                    raise _server_error(resp)
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        yield json.loads(line[len("data:") :].strip())
+        except httpx.TransportError as exc:
+            raise ServerError(f"Связь с сервером Luna прервалась: {type(exc).__name__}") from exc
 
     def send_message(self, thread_id: str, content: str, workdir: str) -> AsyncIterator[dict]:
         """Send a user message; yields parsed SSE event dicts."""
