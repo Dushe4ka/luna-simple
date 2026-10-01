@@ -72,6 +72,7 @@ def test_run_serve_wires_the_real_trust_check(tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "write_token_file", lambda **k: None)
 
     assert run_mod.run_serve(["--port", "1", "--token", "x"]) == 0
+    assert captured["session_agent_factory"] is not None
     check = captured["trust_check"]
     assert check(str(tmp_path)) is False
     ProjectIndex().trust(str(tmp_path))

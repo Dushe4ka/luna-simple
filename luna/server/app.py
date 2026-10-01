@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from luna.server.approvals import post_approve
+from luna.server.runtime import RuntimeRegistry
 from luna.server.sessions import create_session, list_sessions
 from luna.server.turns import get_history, post_message
 
@@ -33,10 +34,11 @@ async def _health(request: Request) -> JSONResponse:
 
 
 def create_app(
-    agent_factory: Callable[[str], object],
+    agent_factory: Callable[[str], object] | None = None,
     *,
     token: str,
     trust_check: Callable[[str], bool] | None = None,
+    session_agent_factory: Callable[[object], object] | None = None,
 ) -> Starlette:
     """Build the Starlette app.
 
@@ -44,6 +46,10 @@ def create_app(
     to use. It takes the request's ``workdir`` because one server process
     serves many projects, and an agent's filesystem root is fixed at build
     time — see :func:`luna.server.run.run_serve`.
+
+    ``session_agent_factory(runtime)`` builds one agent per session (production);
+    the older per-workdir ``agent_factory(workdir)`` is kept for tests and is
+    adapted to a session factory.
 
     ``trust_check(workdir)`` gates every workdir-scoped route (see
     :mod:`luna.server.trust`); ``None`` disables the check.
@@ -59,6 +65,14 @@ def create_app(
         ],
         middleware=[Middleware(_AuthMiddleware, token=token)],
     )
+    if session_agent_factory is None:
+        if agent_factory is None:
+            raise TypeError("create_app needs agent_factory or session_agent_factory")
+
+        def session_agent_factory(runtime):
+            return agent_factory(runtime.workdir)
+
     app.state.agent_factory = agent_factory
+    app.state.runtimes = RuntimeRegistry(session_agent_factory)
     app.state.trust_check = trust_check
     return app

@@ -163,6 +163,30 @@ def make_agent_factory(*, model=None) -> Callable[[str], object]:
     return agent_factory
 
 
+def make_session_agent_factory(*, model=None) -> Callable[[object], object]:
+    """Build one agent per *session* (not per workdir).
+
+    Each agent gets the session's own undo journal (``session_id`` =
+    thread id, as the REPL does), a plan-mode flag read from that session's
+    state on every tool call, and the session's provider/model overrides.
+    ``model`` injects a fake chat model in tests, like ``build_agent``'s.
+    """
+
+    def build(runtime) -> object:
+        from luna.core.agent import build_agent
+        from luna.core.persistence import checkpointer
+
+        return build_agent(
+            runtime.config(),
+            model=model,
+            checkpointer=checkpointer(),
+            session_id=runtime.thread_id,
+            plan_flag=lambda: runtime.state.plan,
+        )
+
+    return build
+
+
 def make_trust_check() -> Callable[[str], bool]:
     """Build the server's trust check against ``luna_projects``.
 
@@ -197,7 +221,9 @@ def run_serve(argv: list[str]) -> int:
     write_token_file(port=port, token=token, pid=os.getpid(), fingerprint=_code_fingerprint())
 
     app = create_app(
-        agent_factory=make_agent_factory(), token=token, trust_check=make_trust_check()
+        token=token,
+        trust_check=make_trust_check(),
+        session_agent_factory=make_session_agent_factory(),
     )
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
