@@ -77,6 +77,8 @@ def test_all_24_repl_commands_are_registered():
 def test_tools_lists_builtin_tools():
     result = run_line("/tools", FakeEnv())
     assert "read_file" in result.text and "web_search" in result.text
+    # in code spans, so Markdown in the TUI doesn't eat <server>/<tool> as HTML tags
+    assert "`mcp__<server>__<tool>`" in result.text
 
 
 def test_usage_without_turns_and_with_turns():

@@ -98,7 +98,7 @@ register_ui("/help", "show this help")
 @register("/tools", "list the agent's tools", "read")
 def _tools(env, arg):
     return CommandResult(
-        text=", ".join(TOOL_NAMES) + "\n\n*(+ any MCP tools as mcp__<server>__<tool>)*"
+        text=", ".join(TOOL_NAMES) + "\n\n(+ any MCP tools as `mcp__<server>__<tool>`)"
     )
 
 
