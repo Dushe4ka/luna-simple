@@ -215,3 +215,38 @@ ApprovalModal > Vertical {
     border: round $peri;
     padding: 1 2;
 }
+
+/* --- Command pickers + notices ---------------------------------------- */
+
+ChoiceModal, ConfirmModal {
+    align: center middle;
+}
+
+ChoiceModal > Vertical, ConfirmModal > Vertical {
+    width: 60%;
+    height: auto;
+    max-height: 70%;
+    background: $bg;
+    border: round $peri;
+    padding: 1 2;
+}
+
+ChoiceModal #picker-list {
+    height: auto;
+    max-height: 20;
+    background: $bg;
+}
+
+.picker-title {
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.picker-hint {
+    color: $moon-dim;
+    padding-top: 1;
+}
+
+NoticeRow {
+    margin: 0 1 1 3;
+}

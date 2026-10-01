@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from luna.repl.commands import HELP
 
+#: Used until the server's list arrives (or if it cannot be fetched).
+FALLBACK_COMMANDS = [{"name": n, "help": h, "kind": "mutate"} for n, h in HELP.items()]
+
 
 def filter_commands(prefix: str) -> list[tuple[str, str]]:
     """Return (name, help_text) pairs whose name starts with ``prefix``."""

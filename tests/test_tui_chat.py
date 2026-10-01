@@ -67,7 +67,31 @@ def test_filter_commands_no_match_returns_empty():
     assert filter_commands("/zzz-nope") == []
 
 
-class _FakeClient:
+class _BaseFakeClient:
+    """Defaults for the server calls a ChatPane makes besides the turn itself."""
+
+    async def get_history(self, thread_id, workdir):
+        return []
+
+    async def get_state(self, thread_id, workdir):
+        return {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "plan": False,
+            "pinned": [],
+            "usage_summary": "",
+        }
+
+    async def list_commands(self, workdir):
+        from luna.tui.commands import FALLBACK_COMMANDS
+
+        return FALLBACK_COMMANDS
+
+    async def run_command(self, thread_id, line, workdir):
+        raise AssertionError(f"unexpected command {line!r}")
+
+
+class _FakeClient(_BaseFakeClient):
     """Sends one text_delta then raises, mimicking a dropped SSE connection."""
 
     async def get_history(self, thread_id, workdir):
@@ -89,7 +113,7 @@ class _HarnessApp(App):
         yield ChatPane(workdir=".", thread_id="t1", provider="anthropic", model="claude-sonnet-5")
 
 
-class _NeverCallMeClient:
+class _NeverCallMeClient(_BaseFakeClient):
     """Fails the test the instant `send_message` is invoked."""
 
     async def get_history(self, thread_id, workdir):
@@ -141,26 +165,9 @@ async def test_help_command_lists_commands_without_asking_the_agent():
 
         transcript = chat.query_one("#transcript", VerticalScroll)
         text = transcript_text(transcript)
+        assert "**Команды**" in text
         assert "/clear" in text
         assert "/undo" in text
-
-
-async def test_unsupported_command_gets_an_honest_message_not_the_model():
-    """A real, known REPL command the TUI doesn't implement yet (e.g.
-    `/undo`) must say so plainly — not silently masquerade as a chat
-    message the model then answers as if it understood "/undo" as English.
-    """
-    app = _HarnessApp(_NeverCallMeClient())
-    async with app.run_test():
-        chat = app.query_one(ChatPane)
-        inp = chat.query_one("#chat-input", Input)
-        inp.value = "/undo"
-        await chat.on_input_submitted(Input.Submitted(inp, "/undo"))
-
-        transcript = chat.query_one("#transcript", VerticalScroll)
-        text = transcript_text(transcript)
-        assert "/undo" in text
-        assert "пока не работает" in text
 
 
 async def test_markdown_stream_stopped_even_when_sse_stream_raises():
@@ -313,7 +320,7 @@ async def test_enter_on_open_dropdown_fills_input_instead_of_sending_a_turn():
         assert dropdown.display is False
 
 
-class _ErrorFakeClient:
+class _ErrorFakeClient(_BaseFakeClient):
     """A turn that fails server-side: one text_delta, then an error event."""
 
     async def get_history(self, thread_id, workdir):
@@ -343,7 +350,7 @@ async def test_error_event_is_rendered_visibly_not_silently_dropped():
         assert "insufficient balance" in transcript_text(transcript)
 
 
-class _ApprovalFakeClient:
+class _ApprovalFakeClient(_BaseFakeClient):
     """Emits an approval_needed event, then (once resumed) a text_delta."""
 
     def __init__(self) -> None:
@@ -401,7 +408,7 @@ async def test_approval_needed_pushes_modal_and_resumes_with_decision():
         assert client.approve_calls == [("t1", {"type": "approve"}, ".")]
 
 
-class _TwoApprovalFakeClient:
+class _TwoApprovalFakeClient(_BaseFakeClient):
     """A turn that pauses for approval TWICE before finishing.
 
     The server's SSE stream always ends after an ``Interrupted``, so a
@@ -504,7 +511,7 @@ async def test_status_bar_shows_model_and_provider_as_soon_as_the_chat_pane_moun
         assert status_bar.provider == "anthropic"
 
 
-class _UsageFakeClient:
+class _UsageFakeClient(_BaseFakeClient):
     """One turn: two usage_delta chunks, a reply, then turn_done."""
 
     async def get_history(self, thread_id, workdir):
@@ -545,7 +552,7 @@ async def test_usage_delta_events_update_the_status_bar_once_the_turn_completes(
         assert "220" in status_bar.usage_summary  # session total, from indicator_line
 
 
-class _ToolThenTextClient:
+class _ToolThenTextClient(_BaseFakeClient):
     async def get_history(self, thread_id, workdir):
         return []
 
@@ -588,7 +595,7 @@ async def test_tool_row_sits_between_the_text_before_and_after_it():
         assert transcript.query_one(ToolRow).is_finished
 
 
-class _DiesMidToolClient:
+class _DiesMidToolClient(_BaseFakeClient):
     async def get_history(self, thread_id, workdir):
         return []
 
@@ -634,7 +641,7 @@ def test_render_history_builds_tool_rows():
     assert isinstance(widgets[1], ToolRow)
 
 
-class _ApprovalClient:
+class _ApprovalClient(_BaseFakeClient):
     """First stream pauses for approval; records which thread each call used."""
 
     def __init__(self) -> None:

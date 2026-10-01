@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer
@@ -139,6 +140,11 @@ class LunaApp(App):
     async def on_chat_pane_turn_finished(self, event: ChatPane.TurnFinished) -> None:
         """Re-fetch the list so a new session appears and the order updates."""
         await self.query_one(SessionsSidebar).refresh_sessions()
+
+    @work
+    async def _ask(self, screen):
+        """Show a modal and wait for its answer (push_screen_wait needs a worker)."""
+        return await self.push_screen_wait(screen)
 
     def _turn_running(self) -> bool:
         """Refuse (with a notice) to switch sessions while a turn is streaming."""

@@ -14,16 +14,12 @@ from textual.widgets.markdown import MarkdownStream
 from luna.config.usage import SessionUsage, TurnUsage, indicator_line
 from luna.server.client import ServerError
 from luna.tui.banner import LunaBanner
-from luna.tui.commands import HELP, filter_commands
+from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
+from luna.tui.pickers import ChoiceModal, ConfirmModal
 from luna.tui.status_bar import StatusBar
 from luna.tui.theme import TUI_VARIABLES
 from luna.tui.tool_row import ToolRow
 from luna.tui.widgets import PulseGlyph
-
-#: Commands handled locally, without ever reaching the agent — each needs
-#: no server/agent state, only the TUI's own widgets. Everything else in
-#: HELP gets an honest "not yet in the TUI" message on submit instead.
-_LOCALLY_SUPPORTED = ("/exit", "/quit", "/clear", "/help", "/commands")
 
 
 def user_line(text: str) -> Text:
@@ -52,13 +48,25 @@ class LunaMessage(Markdown):
 
 
 class SystemMessage(Markdown):
-    """Local-command output (help text, "not yet in the TUI" notices) — dim, unlabeled."""
+    """Local-command output (help text, command results) — dim, unlabeled."""
 
 
-def _help_markdown() -> str:
-    """Render the full command list as markdown, ready to show as a SystemMessage."""
-    lines = [f"- `{name}` — {text}" for name, text in HELP.items()]
-    return "**Команды**\n\n" + "\n".join(lines)
+_NOTICE_COLOURS = {
+    "dim": TUI_VARIABLES["moon-dim"],
+    "ok": TUI_VARIABLES["moon-dim"],
+    "info": TUI_VARIABLES["peri"],
+    "warn": "#e8c37a",
+    "error": TUI_VARIABLES["err"],
+}
+
+
+class NoticeRow(Static):
+    """A short status line (command result, verify, formatter, reload)."""
+
+    def __init__(self, level: str, text: str) -> None:
+        super().__init__(Text(text, style=_NOTICE_COLOURS.get(level, "")))
+        self.level = level
+        self.text = text
 
 
 def render_history(messages: list[dict]) -> list[Widget]:
@@ -134,6 +142,10 @@ class _LiveReply:
         if row is not None:
             await row.finish(ok, detail)
 
+    async def notice(self, level: str, text: str) -> None:
+        await self._end_text_block()
+        await self._mount(NoticeRow(level, text))
+
     async def stop(self) -> None:
         await self._end_text_block()
         for row in self._tools.values():
@@ -181,6 +193,8 @@ class ChatPane(Widget):
         self._session_usage = SessionUsage()
         #: True while a turn streams; the app refuses to switch sessions then.
         self.busy = False
+        #: Built-in + project commands from the server (help, autocomplete).
+        self._commands: list[dict] = list(FALLBACK_COMMANDS)
 
     def compose(self):
         """Build the transcript, autocomplete dropdown, input, and status bar.
@@ -216,6 +230,27 @@ class ChatPane(Widget):
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.mount(LunaBanner(), before=0)
         self._refresh_status_bar()
+        self._commands = await self._load_commands()
+
+    async def _load_commands(self) -> list[dict]:
+        try:
+            return await self.app.client.list_commands(self._workdir)
+        except ServerError:
+            return list(FALLBACK_COMMANDS)
+
+    async def refresh_state(self) -> None:
+        """Pull this session's settings from the server into the status bar."""
+        try:
+            state = await self.app.client.get_state(self.thread_id, self._workdir)
+        except ServerError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        bar = self.query_one(StatusBar)
+        bar.provider = state["provider"] or ""
+        bar.model = state["model"] or ""
+        bar.plan_mode = bool(state["plan"])
+        bar.usage_summary = state["usage_summary"]
+        self.set_class(bool(state["plan"]), "-plan")
 
     def _refresh_status_bar(self) -> None:
         """Push the current model/provider/usage figures into the status bar.
@@ -341,40 +376,80 @@ class ChatPane(Widget):
         dropdown.display = False
         return True
 
-    async def _run_local_command(self, content: str, transcript: VerticalScroll) -> None:
-        """Handle a "/"-prefixed line locally — it must never reach the agent.
+    _LOCAL = ("/exit", "/quit", "/clear", "/help", "/new", "/sessions", "/resume")
 
-        Mirrors ``luna.repl.commands.dispatch``'s own rule: any line
-        starting with "/" is *always* a command attempt, recognized or
-        not, and is never sent to the model as a chat message. Before
-        this, the TUI sent every "/" line straight through — a real
-        incident: submitting ``/quit`` got the model role-playing a reply
-        ("Пока! Обращайся, когда понадобится.") as if it were small talk,
-        instead of actually exiting. Only the handful of commands that
-        need no agent/server state are implemented here; everything else
-        in ``HELP`` gets an honest "not yet in the TUI" message.
-        """
-        name, _, _ = content.partition(" ")
+    async def _run_command(self, line: str) -> None:
+        """Run a slash command: client-side ones here, the rest on the server."""
+        transcript = self.query_one("#transcript", VerticalScroll)
+        name, _, arg = line.partition(" ")
         if name in ("/exit", "/quit"):
             self.app.exit()
-        elif name == "/clear":
+            return
+        if name == "/clear":
             await transcript.remove_children()
-        elif name in ("/help", "/commands"):
-            await transcript.mount(SystemMessage(_help_markdown()))
-            transcript.anchor()
+            return
+        await transcript.mount(UserMessage(line))
+        if name == "/help":
+            await transcript.mount(SystemMessage(self._help_markdown()))
+        elif name == "/new":
+            await self.app.action_new_session()
+        elif name in ("/sessions", "/resume"):
+            await self.app.open_session_picker(arg.strip())
         else:
-            supported = ", ".join(f"`{n}`" for n in _LOCALLY_SUPPORTED)
-            await transcript.mount(
-                SystemMessage(
-                    f"*`{name}` пока не работает в TUI — сейчас доступны "
-                    f"{supported}. Остальные команды есть в построчном REPL "
-                    f"(`luna` без полноэкранного режима).*"
-                )
-            )
-            transcript.anchor()
+            try:
+                result = await self.app.client.run_command(self.thread_id, line, self._workdir)
+            except ServerError as exc:
+                await transcript.mount(NoticeRow("error", str(exc)))
+            else:
+                await self._render_command_result(result)
+        transcript.anchor()
+
+    async def _render_command_result(self, result: dict) -> None:
+        transcript = self.query_one("#transcript", VerticalScroll)
+        for notice in result.get("notices", []):
+            await transcript.mount(NoticeRow(notice["level"], notice["text"]))
+        if result.get("text"):
+            await transcript.mount(SystemMessage(result["text"]))
+        transcript.anchor()
+        if result.get("choice"):
+            choice = result["choice"]
+            options = [tuple(o) for o in choice["options"]]
+            picked = await self._ask(ChoiceModal(choice["title"], options)).wait()
+            if picked is not None:
+                await self._run_command(choice["resubmit"].format(value=picked))
+        elif result.get("confirm"):
+            confirm = result["confirm"]
+            if await self._ask(ConfirmModal(confirm["question"])).wait():
+                await self._run_command(confirm["resubmit"])
+            else:
+                await transcript.mount(NoticeRow("dim", confirm["cancelled"]))
+        elif result.get("prompt"):
+            await self._send(result["prompt"], echo=None)
+        if result.get("effects"):
+            await self.refresh_state()
+
+    def _help_markdown(self) -> str:
+        groups = {
+            "ui": "Интерфейс",
+            "read": "Просмотр",
+            "mutate": "Изменения",
+            "prompt": "Задачи агенту",
+        }
+        lines = ["**Команды**"]
+        for kind, title in groups.items():
+            items = [c for c in self._commands if c["kind"] == kind]
+            if items:
+                lines.append(f"\n*{title}*\n")
+                lines += [f"- `{c['name']}` — {c['help']}" for c in items]
+        return "\n".join(lines)
+
+    @work
+    async def _ask(self, screen):
+        """Show a modal and wait for its answer (push_screen_wait needs a worker)."""
+        return await self.app.push_screen_wait(screen)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Send the message and stream the response into the transcript."""
+        """Send the line (a slash command or a message) for this session."""
         if event.input.id != "chat-input":
             return
         if self._accept_highlighted_command():
@@ -382,17 +457,28 @@ class ChatPane(Widget):
         content = event.value
         event.input.value = ""
         self.query_one("#autocomplete", ListView).display = False
-        transcript = self.query_one("#transcript", VerticalScroll)
-        if content.startswith("/"):
-            await self._run_local_command(content, transcript)
+        if not content.strip():
             return
+        await self.submit(content)
+
+    async def submit(self, content: str) -> None:
+        """Handle one submitted line: a slash command or a chat message."""
+        if content.startswith("/"):
+            await self._run_command(content)
+        else:
+            await self._send(content, echo=content)
+
+    async def _send(self, content: str, echo: str | None) -> None:
+        """Stream one turn; echo is the user line to show (None = already shown)."""
+        transcript = self.query_one("#transcript", VerticalScroll)
         # Echo the user's own message into the transcript immediately —
         # before it, only the assistant's streamed text ever appeared, so
         # submitting a message that got a slow (or empty) reply looked
         # exactly like nothing had happened at all. A blinking placeholder
         # takes the assistant's spot right away too, so waiting for the
         # first token (or a tool call) never looks like the TUI has frozen.
-        await transcript.mount(UserMessage(content))
+        if echo is not None:
+            await transcript.mount(UserMessage(echo))
         thinking = PulseGlyph("Luna думает")
         await transcript.mount(thinking)
         transcript.anchor()
@@ -466,6 +552,8 @@ class ChatPane(Widget):
             await reply.tool_started(evt["call_id"], evt["name"], evt.get("args_preview", ""))
         elif evt["event"] == "tool_finished":
             await reply.tool_finished(evt["call_id"], evt["ok"], evt["detail"])
+        elif evt["event"] == "notice":
+            await reply.notice(evt["level"], evt["text"])
         elif evt["event"] == "approval_needed":
             return evt["value"]
         elif evt["event"] == "error":
