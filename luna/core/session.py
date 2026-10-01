@@ -36,9 +36,8 @@ from luna.extensions.subagents import subagent_summaries
 from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
 from luna.repl.commands import CommandContext, dispatch
-from luna.turn import diagnose, fmt, gitinfo, undo
+from luna.turn import engine, gitinfo, undo
 from luna.turn.context import PinnedFiles, expand_mentions, render_pinned
-from luna.turn.verify import run_verify
 from luna.ui.answer import AnswerRenderer
 from luna.ui.approve import prompt_decision
 from luna.ui.progress import ToolProgress
@@ -71,8 +70,8 @@ _COMPACT_ASK = (
 )
 
 
-def compact_thread(agent, thread_id: str, console: Console) -> None:
-    """Replace this thread's message history with a model-written summary, in place."""
+def compact_history(agent, thread_id: str) -> tuple[bool, str]:
+    """Replace this thread's history with a model-written summary: (ok, message)."""
     config = {"configurable": {"thread_id": thread_id}}
     pre = agent.get_state(config).values.get("messages", [])
     result = agent.invoke({"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config)
@@ -91,8 +90,7 @@ def compact_thread(agent, thread_id: str, console: Console) -> None:
     if not summary:
         added = agent.get_state(config).values["messages"][len(pre) :]
         agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in added]})
-        console.print(f"[{PALETTE['mauve']}]/compact: no summary produced[/]")
-        return
+        return False, "/compact: no summary produced"
     agent.update_state(
         config,
         {
@@ -102,7 +100,13 @@ def compact_thread(agent, thread_id: str, console: Console) -> None:
             ]
         },
     )
-    console.print(f"[{PALETTE['blue']}]compacted — history replaced with a summary[/]")
+    return True, "compacted — history replaced with a summary"
+
+
+def compact_thread(agent, thread_id: str, console: Console) -> None:
+    """Replace this thread's message history with a model-written summary, in place."""
+    ok, message = compact_history(agent, thread_id)
+    console.print(f"[{PALETTE['blue'] if ok else PALETTE['mauve']}]{message}[/]")
 
 
 def collect_decisions(
@@ -265,89 +269,43 @@ def _stream_turn_resilient(
             attempt += 1
 
 
+_NOTICE_STYLE = {
+    "dim": "dim",
+    "ok": "dim",
+    "info": PALETTE["blue"],
+    "warn": "yellow",
+    "error": PALETTE["mauve"],
+}
+
+
+def _print_notices(console: Console, notices) -> None:
+    """Render engine notices the way the REPL always printed these lines."""
+    for notice in notices:
+        console.print(notice.text, style=_NOTICE_STYLE.get(notice.level, ""), markup=False)
+
+
 def _format_and_diagnose(console: Console, cfg: LunaConfig, before: list[str] | None = None) -> str:
-    """Format then diagnose the files this turn changed. Returns diagnose text.
-
-    ``before`` is the ``dirty_paths`` snapshot captured before the turn ran; only
-    paths that became newly dirty during the turn are passed to the format/
-    diagnose commands, so a file the user had already changed before this turn
-    started is left alone. ``None`` falls back to the old whole-repo behavior
-    (used only by direct callers/tests that don't have a "before" snapshot).
-    """
-    before_set = set(before) if before is not None else None
-    is_repo = gitinfo.is_git_repo(cfg.workdir)
-
-    def _touched_now() -> list[str]:
-        if not is_repo:
-            return []
-        current = gitinfo.dirty_paths(cfg.workdir)
-        return current if before_set is None else [p for p in current if p not in before_set]
-
-    changed = _touched_now()
-    if is_repo and before_set is not None and not changed:
-        # This IS a scoped (git) call and this turn didn't newly dirty anything —
-        # nothing to format/diagnose. Outside a git repo, `changed` is always []
-        # regardless of `before`, and the format/diagnose commands legitimately
-        # run bare there (there's no dirty-path scoping without git) — so this
-        # early return must not fire for that case, only for a genuine empty delta.
-        return ""
-    fmt_cmd = cfg.format_command
-    if fmt_cmd == "auto":
-        fmt_cmd = fmt.detect(cfg.workdir)
-    if fmt_cmd:
-        touched = fmt.run(fmt_cmd, cfg.workdir, changed)
-        if touched:
-            console.print(f"[dim]⌁ formatted {len(touched)} file(s)[/]")
-    diag_cmd = cfg.diagnose_command
-    if diag_cmd == "auto":
-        diag_cmd = diagnose.detect(cfg.workdir)
-    if not diag_cmd:
-        return ""
-    changed = _touched_now()
-    if is_repo and before_set is not None and not changed:
-        # Same guard as above: formatting can normalize a turn's edit back to
-        # exactly the committed content, making this recomputed `changed` empty
-        # even though the first check above passed — must not fall through to
-        # diagnose.run's "no paths -> whole project" convention either.
-        return ""
-    text = diagnose.run(diag_cmd, cfg.workdir, changed)
-    if text:
-        console.print(f"[dim]{text}[/]")
+    """Format then diagnose the files this turn changed (see :func:`engine.format_and_diagnose`)."""
+    notices, text = engine.format_and_diagnose(cfg, before)
+    _print_notices(console, notices)
     return text
 
 
 def _run_verification(
     agent, turn_config: dict, console: Console, cfg, input_fn, rules=None
 ) -> None:
-    """Run the verify command; on failure, take exactly one fix-up turn.
-
-    ``turn_config`` is the ``{"configurable": {"thread_id": ...}}`` dict for the
-    active thread. Does nothing when no verify command is configured.
-    """
+    """Run the verify command; on failure, take exactly one fix-up turn."""
     if not cfg.verify_command:
         return
-    ok, tail = run_verify(cfg.verify_command, cfg.workdir)
+    ok, tail, notices = engine.verify_step(cfg)
+    _print_notices(console, notices)
     if ok:
-        console.print("[dim]✓ verify ok[/]")
         return
-    console.print(f"[yellow]verify failed[/]\n{tail}")
-    payload = {
-        "messages": [
-            {
-                "role": "user",
-                "content": (
-                    f"The verify command `{cfg.verify_command}` failed. Output:\n{tail}\nFix it."
-                ),
-            }
-        ]
-    }
+    payload = {"messages": [{"role": "user", "content": engine.fixup_prompt(cfg, tail)}]}
     _stream_turn_resilient(
         agent, payload, turn_config, console, input_fn, rules=rules, workdir=cfg.workdir
     )
-    ok, tail = run_verify(cfg.verify_command, cfg.workdir)
-    console.print(
-        "[dim]✓ verify ok[/]" if ok else f"[yellow]⚠ verify still failing after 1 retry[/]\n{tail}"
-    )
+    _print_notices(console, engine.finish_fixup(cfg))
 
 
 def run_once(

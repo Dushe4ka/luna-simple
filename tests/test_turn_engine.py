@@ -1,7 +1,19 @@
 from types import SimpleNamespace
 
+from luna.config.config import LunaConfig
+from luna.config.usage import TurnUsage
 from luna.core.session_state import SessionState
-from luna.turn.engine import PreparedTurn, delegate_line, prepare_turn
+from luna.turn import engine
+from luna.turn.engine import (
+    FinishResult,
+    Notice,
+    PreparedTurn,
+    TurnOutcome,
+    delegate_line,
+    finish_fixup,
+    finish_turn,
+    prepare_turn,
+)
 
 
 class _Agent:
@@ -58,3 +70,70 @@ def test_at_file_mentions_are_expanded(tmp_path):
     (tmp_path / "notes.md").write_text("secret sauce\n")
     prepared = _prepare(SessionState("t1", str(tmp_path)), "read @notes.md", tmp_path)
     assert "secret sauce" in prepared.content
+
+
+
+class _Index:
+    def __init__(self):
+        self.recorded, self.touched = [], []
+
+    def record(self, thread_id, workdir, title):
+        self.recorded.append((thread_id, workdir, title))
+
+    def touch(self, thread_id):
+        self.touched.append(thread_id)
+
+
+def _finish(state, outcome, cfg, tmp_path, index=None):
+    prepared = PreparedTurn(content="x", title_line="fix the bug", dirty_before=[])
+    return finish_turn(
+        state, prepared, outcome, cfg=cfg, index=index, thread_id="t1", workdir=str(tmp_path)
+    )
+
+
+def test_read_only_turn_records_usage_and_index_without_verify(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "run_verify", lambda *a: (_ for _ in ()).throw(AssertionError))
+    state, index = SessionState("t1", str(tmp_path)), _Index()
+    cfg = LunaConfig(workdir=str(tmp_path), verify_command="pytest")
+    result = _finish(state, TurnOutcome(usage=TurnUsage(10, 2, 12)), cfg, tmp_path, index)
+    assert result == FinishResult(notices=[], fixup_prompt=None, reload=False)
+    assert state.usage.totals == (10, 2, 12)
+    assert index.recorded == [("t1", str(tmp_path), "fix the bug")] and index.touched == ["t1"]
+
+
+def test_mutating_turn_with_failing_verify_asks_for_one_fixup(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: (False, "1 failed"))
+    monkeypatch.setattr(engine, "format_and_diagnose", lambda cfg, before: ([], "a.py:1 E1"))
+    state = SessionState("t1", str(tmp_path))
+    cfg = LunaConfig(workdir=str(tmp_path), verify_command="pytest")
+    result = _finish(state, TurnOutcome(tool_names={"edit_file"}), cfg, tmp_path)
+    assert result.fixup_prompt == "The verify command `pytest` failed. Output:\n1 failed\nFix it."
+    assert Notice("warn", "verify failed\n1 failed") in result.notices
+    assert state.pending_diagnostics == "a.py:1 E1"
+
+
+def test_passing_verify_reports_ok(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: (True, ""))
+    monkeypatch.setattr(engine, "format_and_diagnose", lambda cfg, before: ([], ""))
+    cfg = LunaConfig(workdir=str(tmp_path), verify_command="pytest")
+    state = SessionState("t1", str(tmp_path))
+    result = _finish(state, TurnOutcome(tool_names={"execute"}), cfg, tmp_path)
+    assert result.notices == [Notice("ok", "✓ verify ok")] and result.fixup_prompt is None
+
+
+def test_reload_request_is_passed_through(tmp_path):
+    result = _finish(
+        SessionState("t1", str(tmp_path)),
+        TurnOutcome(reload_requested=True),
+        LunaConfig(workdir=str(tmp_path)),
+        tmp_path,
+    )
+    assert result.reload is True
+
+
+def test_finish_fixup_reports_the_retry_result(tmp_path, monkeypatch):
+    cfg = LunaConfig(workdir=str(tmp_path), verify_command="pytest")
+    monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: (False, "still red"))
+    assert finish_fixup(cfg) == [Notice("warn", "⚠ verify still failing after 1 retry\nstill red")]
+    monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: (True, ""))
+    assert finish_fixup(cfg) == [Notice("ok", "✓ verify ok")]

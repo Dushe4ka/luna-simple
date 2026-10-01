@@ -83,7 +83,8 @@ def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
         verify_calls.append(command)
         return real_run_verify(command, workdir)
 
-    monkeypatch.setattr(session, "run_verify", counting)
+    # the verify call lives in the shared turn engine since the REPL/server split
+    monkeypatch.setattr(session.engine, "run_verify", counting)
 
     stream_calls: list = []
     monkeypatch.setattr(
@@ -112,7 +113,7 @@ def test_verification_gated_on_mutating_tool(tmp_path, monkeypatch):
 
     verify_calls: list = []
     monkeypatch.setattr(
-        session,
+        session.engine,
         "run_verify",
         lambda *a, **k: verify_calls.append(a) or (True, ""),
     )
