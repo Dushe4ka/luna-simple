@@ -597,3 +597,44 @@ def test_answer_text_is_rendered_as_live_markdown(tmp_path, fake_model):
     assert "\x1b[1mDone.\x1b[0m" in out  # bold ANSI, not literal "**Done.**"
     assert "**Done.**" not in out
     assert "one" in out and "two" in out
+
+
+def test_repl_uses_the_shared_engine(monkeypatch, tmp_path):
+    """run_repl must build turns through luna.turn.engine.prepare_turn."""
+    import io
+
+    from rich.console import Console
+
+    from luna.core import session as session_mod
+
+    calls = []
+    real = session_mod.engine.prepare_turn
+
+    def spy(*a, **k):
+        calls.append(a[1])
+        return real(*a, **k)
+
+    monkeypatch.setattr(session_mod.engine, "prepare_turn", spy)
+
+    class _Agent:
+        def get_state(self, config):
+            from types import SimpleNamespace
+            return SimpleNamespace(values={"messages": []})
+
+    lines = iter(["hi"])
+
+    def _input(_prompt):
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr(
+        session_mod,
+        "_stream_turn_resilient",
+        lambda *a, **k: ("", False, session_mod.TurnUsage(), set()),
+    )
+    session_mod.run_repl(
+        _Agent(), console=Console(file=io.StringIO()), input_fn=_input, workdir=str(tmp_path)
+    )
+    assert calls == ["hi"]

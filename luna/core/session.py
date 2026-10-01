@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 import uuid
 from collections.abc import Callable
@@ -23,6 +22,7 @@ from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
 from luna.core import permissions
 from luna.core.permissions import load_rules
 from luna.core.persistence import SessionIndex, make_title
+from luna.core.session_state import SessionState
 from luna.core.turn_events import (
     Interrupted,
     ReloadRequested,
@@ -37,7 +37,7 @@ from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
 from luna.repl.commands import CommandContext, dispatch
 from luna.turn import engine, gitinfo, undo
-from luna.turn.context import PinnedFiles, expand_mentions, render_pinned
+from luna.turn.context import PinnedFiles
 from luna.ui.answer import AnswerRenderer
 from luna.ui.approve import prompt_decision
 from luna.ui.progress import ToolProgress
@@ -52,11 +52,6 @@ __all__ = [
     "run_repl",
 ]
 
-#: Tool names whose use marks a turn as mutating and triggers verification.
-_MUTATING = {"write_file", "edit_file", "delete", "execute"}
-
-#: Matches a non-slash line invoking a subagent by name, e.g. ``@researcher do X``.
-_AT_AGENT_RE = re.compile(r"^@([\w-]+)\s+(.+)$", re.DOTALL)
 
 
 def _new_thread_id() -> str:
@@ -344,7 +339,7 @@ def run_once(
         rules=rules,
         workdir=workdir,
     )
-    if cfg is not None and tool_names & _MUTATING:
+    if cfg is not None and tool_names & engine.MUTATING:
         _format_and_diagnose(quiet, cfg, before=dirty_before_turn)
         _run_verification(agent, config, quiet, cfg, input_fn, rules=rules)
     if index is not None:
@@ -414,6 +409,7 @@ def run_repl(
 
     session_usage = SessionUsage()
     pinned = PinnedFiles()
+    state = SessionState(thread_id, workdir, pinned=pinned, usage=session_usage)
     rules = load_rules(workdir)
     user_commands = usercmd.load(workdir)
     subagent_names = {n for n, _ in subagent_summaries(workdir)}
@@ -437,7 +433,6 @@ def run_repl(
     if index is not None:
         _print_recap(agent, {"configurable": {"thread_id": thread_id}}, console)
 
-    pending_diagnostics = ""
     while True:
         try:
             prompt_label = "luna (plan) › " if plan_state[0] else "luna › "
@@ -469,32 +464,18 @@ def run_repl(
                     thread_id = res.thread_id
                 continue
 
-        at_match = _AT_AGENT_RE.match(line)
-        if at_match and at_match.group(1) in subagent_names:
-            line = (
-                f"Delegate this to the '{at_match.group(1)}' subagent using the "
-                f"task tool: {at_match.group(2)}"
-            )
-
         turn_config = {"configurable": {"thread_id": thread_id}}
-        try:
-            current_messages = agent.get_state(turn_config).values.get("messages", [])
-        except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
-            current_messages = []
-        undo.begin_turn(workdir, session_id, len(current_messages))
-        # captured *after* begin_turn so its own journal writes don't register as
-        # "newly dirty" when .luna/ isn't gitignored
-        dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
-        diag_block = (
-            f"<diagnostics>\n{pending_diagnostics}\n</diagnostics>\n\n"
-            if pending_diagnostics
-            else ""
+        state.thread_id = thread_id
+        prepared = engine.prepare_turn(
+            state,
+            line,
+            agent=agent,
+            thread_id=thread_id,
+            workdir=workdir,
+            session_id=session_id,
+            subagent_names=subagent_names,
         )
-        pending_diagnostics = ""
-        pinned_block = render_pinned(pinned, workdir)
-        expanded = expand_mentions(line, workdir)
-        content = diag_block + (pinned_block + "\n\n" if pinned_block else "") + expanded
-        payload = {"messages": [{"role": "user", "content": content}]}
+        payload = {"messages": [{"role": "user", "content": prepared.content}]}
         try:
             _, reload_requested, turn_usage, tool_names = _stream_turn_resilient(
                 agent, payload, turn_config, console, input_fn, rules=rules, workdir=workdir
@@ -506,19 +487,28 @@ def run_repl(
             console.print(f"[{PALETTE['mauve']}]turn failed: {exc}[/]")
             continue
         before = len(session_usage.turns)
-        session_usage.add_turn(turn_usage)
+        result = engine.finish_turn(
+            state,
+            prepared,
+            engine.TurnOutcome(usage=turn_usage, tool_names=tool_names),
+            cfg=config,
+            index=index,
+            thread_id=thread_id,
+            workdir=workdir,
+        )
         if len(session_usage.turns) > before:
             indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
             console.print(f"[dim]{indicator}[/]")
-        if tool_names & _MUTATING:
-            pending_diagnostics = _format_and_diagnose(console, config, before=dirty_before_turn)
+        _print_notices(console, result.notices)
+        if result.fixup_prompt is not None:
             try:
-                _run_verification(agent, turn_config, console, config, input_fn, rules=rules)
+                fix_payload = {"messages": [{"role": "user", "content": result.fixup_prompt}]}
+                _stream_turn_resilient(
+                    agent, fix_payload, turn_config, console, input_fn, rules=rules, workdir=workdir
+                )
+                _print_notices(console, engine.finish_fixup(config))
             except KeyboardInterrupt:
                 console.print(f"\n[{PALETTE['mauve']}]verify fix-up cancelled[/]")
-        if index is not None:
-            index.record(thread_id, workdir, make_title(line))
-            index.touch(thread_id)
         if reload_requested and rebuild is not None:
             try:
                 agent = rebuild()
