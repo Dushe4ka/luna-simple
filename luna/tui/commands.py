@@ -8,6 +8,7 @@ from luna.repl.commands import HELP
 FALLBACK_COMMANDS = [{"name": n, "help": h, "kind": "mutate"} for n, h in HELP.items()]
 
 
-def filter_commands(prefix: str) -> list[tuple[str, str]]:
-    """Return (name, help_text) pairs whose name starts with ``prefix``."""
-    return [(name, text) for name, text in HELP.items() if name.startswith(prefix)]
+def filter_commands(prefix: str, commands: list[dict] | None = None) -> list[tuple[str, str]]:
+    """Return (name, help) pairs whose name starts with ``prefix``."""
+    source = commands if commands is not None else FALLBACK_COMMANDS
+    return [(c["name"], c["help"]) for c in source if c["name"].startswith(prefix)]

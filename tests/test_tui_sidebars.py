@@ -83,8 +83,8 @@ async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path, fake_mod
     app = _app(tmp_path, fake_model, thread_id="t-new")
     async with app.run_test() as pilot:
         chat = app.query_one(ChatPane)
-        inp = chat.query_one("#chat-input", Input)
-        await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+        chat.query_one("#chat-input", Input)
+        await chat.submit("hello")
         await pilot.pause()
         ids = [i.data_thread_id for i in app.query_one(SessionsSidebar).query(".session-item")]
         assert "t-new" in ids

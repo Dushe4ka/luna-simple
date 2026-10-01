@@ -15,6 +15,7 @@ def format_status_line(
     undo_depth: int,
     provider: str = "",
     usage_summary: str = "",
+    pinned: int = 0,
 ) -> str:
     """Render the one-line status bar text.
 
@@ -30,6 +31,8 @@ def format_status_line(
     if context_file:
         parts.append(f"@{context_file}")
     parts.append(f"plan: {'on' if plan_mode else 'off'}")
+    if pinned > 0:
+        parts.append(f"pinned: {pinned}")
     parts.append(f"undo: {undo_depth}")
     return " · ".join(parts)
 
@@ -44,6 +47,7 @@ class StatusBar(Widget):
     context_file: reactive[str | None] = reactive(None)
     plan_mode: reactive[bool] = reactive(False)
     undo_depth: reactive[int] = reactive(0)
+    pinned: reactive[int] = reactive(0)
 
     def render(self) -> str:
         """Return the current one-line status text."""
@@ -55,4 +59,5 @@ class StatusBar(Widget):
             context_file=self.context_file,
             plan_mode=self.plan_mode,
             undo_depth=self.undo_depth,
+            pinned=self.pinned,
         )

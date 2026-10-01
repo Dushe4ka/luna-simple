@@ -136,7 +136,7 @@ async def test_quit_exits_the_app_without_ever_asking_the_agent():
         chat = app.query_one(ChatPane)
         inp = chat.query_one("#chat-input", Input)
         inp.value = "/quit"
-        await chat.on_input_submitted(Input.Submitted(inp, "/quit"))
+        await chat.submit("/quit")
         assert app._exit is True
 
 
@@ -150,7 +150,7 @@ async def test_clear_command_empties_the_transcript_locally():
 
         inp = chat.query_one("#chat-input", Input)
         inp.value = "/clear"
-        await chat.on_input_submitted(Input.Submitted(inp, "/clear"))
+        await chat.submit("/clear")
 
         assert list(transcript.children) == []
 
@@ -161,7 +161,7 @@ async def test_help_command_lists_commands_without_asking_the_agent():
         chat = app.query_one(ChatPane)
         inp = chat.query_one("#chat-input", Input)
         inp.value = "/help"
-        await chat.on_input_submitted(Input.Submitted(inp, "/help"))
+        await chat.submit("/help")
 
         transcript = chat.query_one("#transcript", VerticalScroll)
         text = transcript_text(transcript)
@@ -191,7 +191,7 @@ async def test_markdown_stream_stopped_even_when_sse_stream_raises():
             inp = chat.query_one("#chat-input", Input)
             inp.value = "hello"
             with pytest.raises(RuntimeError, match="connection dropped mid-stream"):
-                await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+                await chat.submit("hello")
         finally:
             MarkdownStream.stop = original_stop
 
@@ -210,7 +210,7 @@ async def test_users_own_message_is_echoed_into_the_transcript_immediately():
         inp = chat.query_one("#chat-input", Input)
         inp.value = "hello there"
         with pytest.raises(RuntimeError, match="connection dropped mid-stream"):
-            await chat.on_input_submitted(Input.Submitted(inp, "hello there"))
+            await chat.submit("hello there")
 
         transcript = chat.query_one("#transcript", VerticalScroll)
         text = transcript_text(transcript)
@@ -344,7 +344,7 @@ async def test_error_event_is_rendered_visibly_not_silently_dropped():
         inp = chat.query_one("#chat-input", Input)
         inp.value = "hello"
 
-        await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+        await chat.submit("hello")
 
         transcript = chat.query_one("#transcript", VerticalScroll)
         assert "insufficient balance" in transcript_text(transcript)
@@ -397,7 +397,7 @@ async def test_approval_needed_pushes_modal_and_resumes_with_decision():
         try:
             inp = chat.query_one("#chat-input", Input)
             inp.value = "hello"
-            task = asyncio.create_task(chat.on_input_submitted(Input.Submitted(inp, "hello")))
+            task = asyncio.create_task(chat.submit("hello"))
             await pilot.pause()
             await pilot.click("#approve-button")
             await asyncio.wait_for(task, timeout=5)
@@ -480,7 +480,7 @@ async def test_two_sequential_approvals_in_one_turn_both_get_resumed():
         try:
             inp = chat.query_one("#chat-input", Input)
             inp.value = "hello"
-            task = asyncio.create_task(chat.on_input_submitted(Input.Submitted(inp, "hello")))
+            task = asyncio.create_task(chat.submit("hello"))
             await pilot.pause()
             await pilot.click("#approve-button")  # first approval
             await pilot.pause()
@@ -512,6 +512,14 @@ async def test_status_bar_shows_model_and_provider_as_soon_as_the_chat_pane_moun
 
 
 class _UsageFakeClient(_BaseFakeClient):
+    def __init__(self) -> None:
+        self.turns = 0
+
+    async def get_state(self, thread_id, workdir):
+        state = await super().get_state(thread_id, workdir)
+        state["usage_summary"] = "ctx ~220/200k" if self.turns else ""
+        return state
+
     """One turn: two usage_delta chunks, a reply, then turn_done."""
 
     async def get_history(self, thread_id, workdir):
@@ -527,14 +535,15 @@ class _UsageFakeClient(_BaseFakeClient):
             "event": "usage_delta",
             "usage_metadata": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
         }
+        self.turns += 1
         yield {"event": "turn_done"}
 
 
 async def test_usage_delta_events_update_the_status_bar_once_the_turn_completes():
-    """usage_delta chunks accumulate into the turn's totals, which land in
-    the status bar exactly once — on turn_done — mirroring the old REPL's
-    own cadence (session.py only ever printed its indicator after a turn
-    fully finished, never mid-stream).
+    """The status bar's usage comes from the server's session state and is
+    refreshed exactly once — on turn_done — mirroring the old REPL's own
+    cadence (session.py only ever printed its indicator after a turn fully
+    finished, never mid-stream).
     """
     app = _HarnessApp(_UsageFakeClient())
     async with app.run_test():
@@ -545,11 +554,10 @@ async def test_usage_delta_events_update_the_status_bar_once_the_turn_completes(
 
         inp = chat.query_one("#chat-input", Input)
         inp.value = "hello"
-        await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+        await chat.submit("hello")
 
-        assert chat._session_usage.totals == (100, 20, 220)
-        assert "ctx" in status_bar.usage_summary
-        assert "220" in status_bar.usage_summary  # session total, from indicator_line
+        # the server owns usage now: the bar shows its summary after turn_done
+        assert status_bar.usage_summary == "ctx ~220/200k"
 
 
 class _ToolThenTextClient(_BaseFakeClient):
@@ -583,8 +591,8 @@ async def test_tool_row_sits_between_the_text_before_and_after_it():
     app = _HarnessApp(_ToolThenTextClient())
     async with app.run_test():
         chat = app.query_one(ChatPane)
-        inp = chat.query_one("#chat-input", Input)
-        await chat.on_input_submitted(Input.Submitted(inp, "погода?"))
+        chat.query_one("#chat-input", Input)
+        await chat.submit("погода?")
         transcript = chat.query_one("#transcript", VerticalScroll)
         kinds = [
             type(w).__name__
@@ -617,9 +625,9 @@ async def test_a_turn_that_dies_mid_tool_stops_the_pulse():
     app = _HarnessApp(_DiesMidToolClient())
     async with app.run_test():
         chat = app.query_one(ChatPane)
-        inp = chat.query_one("#chat-input", Input)
+        chat.query_one("#chat-input", Input)
         try:
-            await chat.on_input_submitted(Input.Submitted(inp, "run it"))
+            await chat.submit("run it")
         except RuntimeError:
             pass
         row = chat.query_one(ToolRow)
@@ -673,8 +681,8 @@ async def test_approval_resumes_the_thread_the_turn_started_on():
                 return {"type": "approve"}
 
         chat._await_approval_decision = lambda _req: _Decision()
-        inp = chat.query_one("#chat-input", Input)
-        await chat.on_input_submitted(Input.Submitted(inp, "run it"))
+        chat.query_one("#chat-input", Input)
+        await chat.submit("run it")
     assert client.calls == [("send", "t1"), ("approve", "t1")]
 
 

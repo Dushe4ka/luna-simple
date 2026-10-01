@@ -233,8 +233,8 @@ async def test_server_refusal_is_shown_instead_of_crashing_the_tui(tmp_path):
 
     async with app.run_test() as pilot:
         chat = app.query_one(ChatPane)
-        inp = chat.query_one("#chat-input", Input)
-        await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+        chat.query_one("#chat-input", Input)
+        await chat.submit("hello")
         await pilot.press("ctrl+n")
         await pilot.pause()
         text = transcript_text(chat.query_one("#transcript", VerticalScroll))

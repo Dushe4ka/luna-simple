@@ -11,7 +11,6 @@ from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
-from luna.config.usage import SessionUsage, TurnUsage, indicator_line
 from luna.server.client import ServerError
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
@@ -186,11 +185,6 @@ class ChatPane(Widget):
         self._provider = provider
         self._model = model or ""
         self._pricing = pricing or {}
-        # Accumulates every completed turn's token counts (see
-        # luna.config.usage — the same accounting the old line REPL showed
-        # via its post-turn "ctx ~X/Y · ..." indicator, now surfaced in the
-        # status bar instead of being silently dropped by the TUI).
-        self._session_usage = SessionUsage()
         #: True while a turn streams; the app refuses to switch sessions then.
         self.busy = False
         #: Built-in + project commands from the server (help, autocomplete).
@@ -231,6 +225,7 @@ class ChatPane(Widget):
         await transcript.mount(LunaBanner(), before=0)
         self._refresh_status_bar()
         self._commands = await self._load_commands()
+        await self.refresh_state()
 
     async def _load_commands(self) -> list[dict]:
         try:
@@ -250,24 +245,14 @@ class ChatPane(Widget):
         bar.model = state["model"] or ""
         bar.plan_mode = bool(state["plan"])
         bar.usage_summary = state["usage_summary"]
+        bar.pinned = len(state["pinned"])
         self.set_class(bool(state["plan"]), "-plan")
 
     def _refresh_status_bar(self) -> None:
-        """Push the current model/provider/usage figures into the status bar.
-
-        Called on mount (so model/provider are visible before the first
-        message is ever sent) and again once a turn finishes accumulating
-        usage — never mid-stream, matching the old REPL's own cadence
-        (`session.py` only ever printed its usage indicator once a turn
-        had fully completed, not per streamed token).
-        """
+        """Show the CLI-provided model/provider until the server state arrives."""
         status_bar = self.query_one(StatusBar)
         status_bar.model = self._model
         status_bar.provider = self._provider
-        if self._session_usage.turns:
-            status_bar.usage_summary = indicator_line(
-                self._session_usage, self._provider, self._model, self._pricing
-            )
 
     async def load_history(self) -> None:
         """Fetch this thread's prior turns and replace the transcript with them.
@@ -297,7 +282,7 @@ class ChatPane(Widget):
         if not value.startswith("/"):
             dropdown.display = False
             return
-        matches = filter_commands(value)
+        matches = filter_commands(value, self._commands)
         dropdown.clear()
         # display/height are set BEFORE the items are appended, not after:
         # a `display: none` widget skips layout entirely, so a ListItem
@@ -459,7 +444,18 @@ class ChatPane(Widget):
         self.query_one("#autocomplete", ListView).display = False
         if not content.strip():
             return
-        await self.submit(content)
+        if self.busy and not self._allowed_while_busy(content):
+            self.notify("Дождитесь окончания ответа.", severity="warning")
+            return
+        # A worker keeps the input live while a turn streams, so read-only
+        # commands (/usage, /diff, ...) answer mid-turn.
+        self.run_worker(self.submit(content), group="chat", exit_on_error=False)
+
+    def _allowed_while_busy(self, line: str) -> bool:
+        name = line.partition(" ")[0]
+        if name in ("/help", "/clear", "/exit", "/quit"):
+            return True
+        return any(c["name"] == name and c["kind"] == "read" for c in self._commands)
 
     async def submit(self, content: str) -> None:
         """Handle one submitted line: a slash command or a chat message."""
@@ -488,10 +484,6 @@ class ChatPane(Widget):
         # thread, not whichever one the pane shows by then.
         thread_id = self.thread_id
         self.busy = True
-        # One accumulator for the whole turn (including any approval
-        # round-trips) — merged from each `usage_delta` event, then folded
-        # into the session total exactly once, on `turn_done`.
-        turn_usage = TurnUsage()
         app = self.app
         try:
             # A turn can pause for approval more than once: the server's SSE
@@ -506,7 +498,7 @@ class ChatPane(Widget):
                 while True:
                     approval_value = None
                     async for evt in event_stream:
-                        pending = await self._apply_event(evt, reply, turn_usage)
+                        pending = await self._apply_event(evt, reply)
                         if pending is not None:
                             approval_value = pending
                     if approval_value is None:
@@ -531,7 +523,7 @@ class ChatPane(Widget):
             self.post_message(self.TurnFinished())
 
     async def _apply_event(
-        self, evt: dict, reply: _LiveReply, turn_usage: TurnUsage
+        self, evt: dict, reply: _LiveReply
     ) -> dict | None:
         """Apply one SSE event to the transcript/status bar.
 
@@ -540,14 +532,11 @@ class ChatPane(Widget):
         """
         if evt["event"] == "text_delta":
             await reply.write(evt["text"])
-        elif evt["event"] == "usage_delta":
-            turn_usage.merge(evt["usage_metadata"])
         elif evt["event"] == "turn_done":
-            # Folded into the session total (and the status bar refreshed)
-            # exactly once per completed turn — never mid-stream, matching
-            # the cadence `session.py`'s own post-turn indicator line used.
-            self._session_usage.add_turn(turn_usage)
-            self._refresh_status_bar()
+            # The server accumulates usage per session (it survives session
+            # switches and restarts); refresh once per completed turn, never
+            # mid-stream — the cadence the REPL's indicator line always had.
+            await self.refresh_state()
         elif evt["event"] == "tool_started":
             await reply.tool_started(evt["call_id"], evt["name"], evt.get("args_preview", ""))
         elif evt["event"] == "tool_finished":

@@ -1,8 +1,10 @@
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
+from textual.widgets import Input
 
 from luna.tui.chat import ChatPane, NoticeRow
 from luna.tui.pickers import ChoiceModal, ConfirmModal
+from luna.tui.status_bar import format_status_line
 
 
 class _Client:
@@ -130,3 +132,59 @@ async def test_help_is_local_and_lists_server_commands():
         chat = app.query_one(ChatPane)
         await chat.submit("/help")
     assert client.lines == []
+
+
+def test_status_line_shows_pinned_count():
+    line = format_status_line(
+        model="m", cost_usd=0, context_file=None, plan_mode=True, undo_depth=0, pinned=2
+    )
+    assert "plan: on" in line and "pinned: 2" in line
+    assert "pinned" not in format_status_line(
+        model="m", cost_usd=0, context_file=None, plan_mode=False, undo_depth=0
+    )
+
+
+async def test_plan_state_colours_the_input_border():
+    client = _Client([])
+
+    async def plan_state(thread_id, workdir):
+        return {
+            "provider": "p",
+            "model": "m",
+            "plan": True,
+            "pinned": ["a"],
+            "usage_summary": "ctx 1k",
+        }
+
+    client.get_state = plan_state
+    app = _Host(client)
+    async with app.run_test():
+        chat = app.query_one(ChatPane)
+        await chat.refresh_state()
+        assert chat.has_class("-plan")
+        bar = chat.query_one("#status-bar")
+        assert bar.plan_mode is True and bar.pinned == 1 and bar.usage_summary == "ctx 1k"
+
+
+async def test_read_command_runs_mid_turn_but_a_message_is_refused():
+    client = _Client([_res(notices=[{"level": "info", "text": "no usage recorded yet"}])])
+    app = _Host(client)
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        chat.busy = True
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "/usage"))
+        await pilot.pause()
+        await chat.on_input_submitted(Input.Submitted(inp, "hello"))
+        await pilot.pause()
+    assert client.lines == ["/usage"]
+
+
+async def test_autocomplete_uses_the_server_command_list():
+    from luna.tui.commands import filter_commands
+
+    cmds = [
+        {"name": "/ship", "help": "ship it", "kind": "prompt"},
+        {"name": "/model", "help": "m", "kind": "mutate"},
+    ]
+    assert filter_commands("/sh", cmds) == [("/ship", "ship it")]

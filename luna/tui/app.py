@@ -164,6 +164,7 @@ class LunaApp(App):
         chat = self.query_one(ChatPane)
         chat.thread_id = thread_id
         await chat.load_history()
+        await chat.refresh_state()
         self.query_one(SessionsSidebar).set_current(thread_id)
         self.query_one("#chat-input").focus()
 
