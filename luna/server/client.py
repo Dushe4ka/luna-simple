@@ -19,6 +19,9 @@ _ERROR_TEXT = {
     ),
     "workdir_not_absolute": "Путь к папке проекта должен быть абсолютным.",
     "workdir_required": "Не указана папка проекта.",
+    "session_busy": "Дождитесь окончания ответа, затем повторите.",
+    "client_command": "Эту команду выполняет сам TUI.",
+    "workdir_mismatch": "Сессия принадлежит другой папке.",
 }
 
 
@@ -61,31 +64,53 @@ class ServerClient:
         # httpx.ASGITransport in-process.
         return {"Authorization": f"Bearer {self._token}"}
 
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """One non-streaming request; every failure becomes a readable ``ServerError``."""
+        try:
+            resp = await self._http.request(method, path, headers=self._auth_headers(), **kwargs)
+        except httpx.TransportError as exc:
+            raise ServerError(f"Связь с сервером Luna прервалась: {type(exc).__name__}") from exc
+        _check(resp)
+        return resp
+
     async def list_sessions(self, workdir: str) -> list[dict]:
         """Return the session list for ``workdir``, newest first."""
-        resp = await self._http.get(
-            "/sessions", params={"workdir": workdir}, headers=self._auth_headers()
-        )
-        _check(resp)
+        resp = await self._request("GET", "/sessions", params={"workdir": workdir})
         return resp.json()["sessions"]
 
     async def create_session(self, workdir: str) -> str:
         """Create a new session and return its thread_id."""
-        resp = await self._http.post(
-            "/sessions", json={"workdir": workdir}, headers=self._auth_headers()
-        )
-        _check(resp)
+        resp = await self._request("POST", "/sessions", json={"workdir": workdir})
         return resp.json()["thread_id"]
 
     async def get_history(self, thread_id: str, workdir: str) -> list[dict]:
-        """Return the thread's prior human/assistant turns, oldest first."""
-        resp = await self._http.get(
-            f"/sessions/{thread_id}/messages",
-            params={"workdir": workdir},
-            headers=self._auth_headers(),
+        """Return the thread's prior turns, oldest first."""
+        resp = await self._request(
+            "GET", f"/sessions/{thread_id}/messages", params={"workdir": workdir}
         )
-        _check(resp)
         return resp.json()["messages"]
+
+    async def run_command(self, thread_id: str, line: str, workdir: str) -> dict:
+        """Run a slash command; returns the structured CommandResult JSON."""
+        resp = await self._request(
+            "POST",
+            f"/sessions/{thread_id}/command",
+            json={"line": line, "workdir": workdir},
+            timeout=_STREAM_TIMEOUT,  # /compact and /verify can take a while
+        )
+        return resp.json()
+
+    async def list_commands(self, workdir: str) -> list[dict]:
+        """Built-in + project slash commands."""
+        resp = await self._request("GET", "/commands", params={"workdir": workdir})
+        return resp.json()["commands"]
+
+    async def get_state(self, thread_id: str, workdir: str) -> dict:
+        """Session settings for the status bar."""
+        resp = await self._request(
+            "GET", f"/sessions/{thread_id}/state", params={"workdir": workdir}
+        )
+        return resp.json()
 
     async def _stream(self, path: str, body: dict) -> AsyncIterator[dict]:
         try:

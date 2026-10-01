@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from luna.server.approvals import post_approve
+from luna.server.commands import get_commands, get_state, post_command
 from luna.server.runtime import RuntimeRegistry
 from luna.server.sessions import create_session, list_sessions
 from luna.server.turns import get_history, post_message
@@ -62,6 +63,9 @@ def create_app(
             Route("/sessions/{thread_id}/messages", get_history, methods=["GET"]),
             Route("/sessions/{thread_id}/messages", post_message, methods=["POST"]),
             Route("/sessions/{thread_id}/approve", post_approve, methods=["POST"]),
+            Route("/commands", get_commands, methods=["GET"]),
+            Route("/sessions/{thread_id}/command", post_command, methods=["POST"]),
+            Route("/sessions/{thread_id}/state", get_state, methods=["GET"]),
         ],
         middleware=[Middleware(_AuthMiddleware, token=token)],
     )

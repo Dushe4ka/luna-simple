@@ -100,3 +100,27 @@ async def test_a_dropped_stream_becomes_a_readable_server_error():
     client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
     with pytest.raises(ServerError, match="Связь с сервером Luna"):
         [e async for e in client.send_message("t1", "hi", "/repo")]
+
+
+async def test_a_dropped_plain_request_becomes_a_readable_server_error():
+    from luna.server.client import ServerError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client = ServerClient(base_url="http://test", token="t")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+    with pytest.raises(ServerError, match="Связь с сервером Luna"):
+        await client.list_sessions("/repo")
+
+
+async def test_session_busy_has_a_readable_message():
+    from luna.server.client import ServerError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"error": "session_busy"})
+
+    client = ServerClient(base_url="http://test", token="t")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+    with pytest.raises(ServerError, match="Дождитесь окончания ответа"):
+        await client.run_command("t1", "/plan", "/repo")
