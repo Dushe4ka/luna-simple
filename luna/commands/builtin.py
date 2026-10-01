@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from luna.commands.base import Choice, CommandResult
+from luna.commands.base import Choice, CommandResult, Confirm
 from luna.commands.registry import register, register_ui
 from luna.config.credentials import get_api_key
 from luna.config.providers import LunaConfigError, merge_providers
@@ -41,6 +41,55 @@ def _models_for(cfg) -> list[str]:
     spec = merge_providers(cfg.custom_providers)[cfg.provider]
     models = model_discovery.list_models(cfg.provider, spec, api_key=_api_key(cfg.provider, spec))
     return models if models is not None else model_discovery.known_models(cfg.provider)
+
+
+def _is_git(workdir: str) -> bool:
+    from luna.turn import gitinfo
+
+    return gitinfo.is_git_repo(workdir)
+
+
+def peek_last(workdir, session_id):
+    """Lazy seam over :func:`luna.turn.undo.peek_last` (patched in tests)."""
+    from luna.turn.undo import peek_last as _peek
+
+    return _peek(workdir, session_id)
+
+
+def undo_last(workdir, session_id):
+    """Lazy seam over :func:`luna.turn.undo.undo_last`."""
+    from luna.turn.undo import undo_last as _undo
+
+    return _undo(workdir, session_id)
+
+
+def forget_messages(workdir, session_id, count):
+    """Lazy seam over :func:`luna.turn.undo.forget_messages`."""
+    from luna.turn.undo import forget_messages as _forget
+
+    return _forget(workdir, session_id, count)
+
+
+def compact_history(agent, thread_id):
+    """Lazy seam over :func:`luna.core.session.compact_history` (avoids an import cycle)."""
+    from luna.core.session import compact_history as _compact
+
+    return _compact(agent, thread_id)
+
+
+def init_prompt(workdir):
+    """Lazy seam over :func:`luna.extensions.initgen.init_prompt`."""
+    from luna.extensions.initgen import init_prompt as _init
+
+    return _init(workdir)
+
+
+def _message_count(env) -> int:
+    try:
+        config = {"configurable": {"thread_id": env.thread_id}}
+        return len(env.agent.get_state(config).values.get("messages", []))
+    except Exception:  # noqa: BLE001 - best-effort ledger resync
+        return 0
 
 
 register_ui("/help", "show this help")
@@ -83,8 +132,16 @@ def _usage(env, arg):
 
 
 @register("/compact", "summarise and compact the conversation", "mutate")
-def _stub_compact(env, arg):
-    return CommandResult(notices=[Notice("error", "not implemented")])
+def _compact(env, arg):
+    try:
+        ok, message = compact_history(env.agent, env.thread_id)
+    except Exception as exc:  # noqa: BLE001 - a failed compact must not kill the session
+        return CommandResult(notices=[Notice("error", f"/compact failed: {exc}")])
+    if ok:
+        forget_messages(env.workdir, env.session_id, _message_count(env))
+    if env.index is not None:
+        env.index.touch(env.thread_id)
+    return CommandResult(notices=[Notice("info" if ok else "error", message)])
 
 
 @register("/diff", "show file changes made this session", "read")
@@ -98,13 +155,48 @@ def _diff(env, arg):
 
 
 @register("/undo", "revert the last file change", "mutate")
-def _stub_undo(env, arg):
-    return CommandResult(notices=[Notice("error", "not implemented")])
+def _undo(env, arg):
+    yes = arg.strip() == "--yes"
+    try:
+        if _is_git(env.workdir):
+            if not yes:
+                return CommandResult(
+                    confirm=Confirm(
+                        "undo the last turn (files + conversation)?",
+                        "/undo --yes",
+                        "undo cancelled",
+                    )
+                )
+            from luna.turn.undo import undo as git_undo
+
+            note = git_undo(env.workdir, env.session_id, env.agent, env.thread_id)
+        else:
+            desc = peek_last(env.workdir, env.session_id)
+            if desc is None:
+                return CommandResult(notices=[Notice("dim", "nothing to undo")])
+            if not yes:
+                return CommandResult(confirm=Confirm(f"{desc}?", "/undo --yes", "undo cancelled"))
+            note = undo_last(env.workdir, env.session_id)
+    except Exception as exc:  # noqa: BLE001 - a failed undo must not kill the session
+        return CommandResult(notices=[Notice("error", f"/undo failed: {exc}")])
+    return CommandResult(
+        notices=[Notice("info", note) if note else Notice("dim", "nothing to undo")]
+    )
 
 
 @register("/redo", "re-apply the last undone turn (git only)", "mutate")
-def _stub_redo(env, arg):
-    return CommandResult(notices=[Notice("error", "not implemented")])
+def _redo(env, arg):
+    try:
+        if not _is_git(env.workdir):
+            return CommandResult(notices=[Notice("dim", "redo needs a git repository")])
+        from luna.turn.undo import redo as git_redo
+
+        note = git_redo(env.workdir, env.session_id, env.agent, env.thread_id)
+    except Exception as exc:  # noqa: BLE001 - a failed redo must not kill the session
+        return CommandResult(notices=[Notice("error", f"/redo failed: {exc}")])
+    return CommandResult(
+        notices=[Notice("info", note) if note else Notice("dim", "nothing to redo")]
+    )
 
 
 @register("/add", "pin files into context (/add path ...)", "mutate")
@@ -160,8 +252,9 @@ def _diagnose(env, arg):
 
 
 @register("/init", "generate or update AGENTS.md", "prompt")
-def _stub_init(env, arg):
-    return CommandResult(notices=[Notice("error", "not implemented")])
+def _init(env, arg):
+    env.after_turn_reload()
+    return CommandResult(prompt=init_prompt(env.workdir))
 
 
 @register("/model", "pick a model interactively, or /model <name> to switch directly", "mutate")

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from luna.commands import REGISTRY, Choice, CommandResult, list_commands, run_line
+from luna.commands import REGISTRY, Choice, CommandResult, Confirm, list_commands, run_line
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage, TurnUsage
 from luna.turn.context import PinnedFiles
@@ -208,3 +208,61 @@ def test_provider_unknown_and_missing_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     notices = run_line("/provider openai", FakeEnv()).notices
     assert notices == [Notice("error", "no key for openai; run: luna config set-key openai")]
+
+
+def test_undo_asks_first_then_undoes(tmp_path, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_is_git", lambda wd: False)
+    monkeypatch.setattr(builtin, "peek_last", lambda wd, sid: "undo write_file a.py")
+    monkeypatch.setattr(builtin, "undo_last", lambda wd, sid: "reverted a.py")
+    env = FakeEnv(workdir=str(tmp_path))
+    assert run_line("/undo", env).confirm == Confirm(
+        "undo write_file a.py?", "/undo --yes", "undo cancelled"
+    )
+    assert run_line("/undo --yes", env).notices == [Notice("info", "reverted a.py")]
+
+
+def test_undo_with_nothing_to_undo(tmp_path, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_is_git", lambda wd: False)
+    monkeypatch.setattr(builtin, "peek_last", lambda wd, sid: None)
+    assert run_line("/undo", FakeEnv(workdir=str(tmp_path))).notices == [
+        Notice("dim", "nothing to undo")
+    ]
+
+
+def test_redo_needs_git(tmp_path, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_is_git", lambda wd: False)
+    assert run_line("/redo", FakeEnv(workdir=str(tmp_path))).notices == [
+        Notice("dim", "redo needs a git repository")
+    ]
+
+
+def test_compact_reports_and_resyncs_undo(monkeypatch):
+    from luna.commands import builtin
+
+    forgot = []
+    monkeypatch.setattr(
+        builtin,
+        "compact_history",
+        lambda agent, tid: (True, "compacted — history replaced with a summary"),
+    )
+    monkeypatch.setattr(builtin, "_message_count", lambda env: 1)
+    monkeypatch.setattr(builtin, "forget_messages", lambda wd, sid, n: forgot.append(n))
+    assert run_line("/compact", FakeEnv()).notices == [
+        Notice("info", "compacted — history replaced with a summary")
+    ]
+    assert forgot == [1]
+
+
+def test_init_becomes_a_prompt_and_reloads_after(tmp_path, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "init_prompt", lambda wd: "WRITE AGENTS.md")
+    env = FakeEnv(workdir=str(tmp_path))
+    assert run_line("/init", env).prompt == "WRITE AGENTS.md"
+    assert env.reload_after is True
