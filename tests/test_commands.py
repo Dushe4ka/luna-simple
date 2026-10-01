@@ -402,3 +402,24 @@ def test_plan_toggle_and_explicit_state():
     assert ctx.plan_state[0] is False
     dispatch("/plan on", ctx)
     assert ctx.plan_state[0] is True
+
+
+def test_dispatch_goes_through_the_shared_registry(monkeypatch):
+    import luna.repl.commands as repl
+
+    seen = []
+    real = repl.run_line
+    monkeypatch.setattr(repl, "run_line", lambda line, env: seen.append(line) or real(line, env))
+    dispatch("/tools", _ctx())
+    assert seen == ["/tools"]
+
+
+def test_confirm_without_input_fn_proceeds_like_before(tmp_path, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_is_git", lambda wd: False)
+    monkeypatch.setattr(builtin, "peek_last", lambda wd, sid: "undo x")
+    monkeypatch.setattr(builtin, "undo_last", lambda wd, sid: "reverted x")
+    ctx = _ctx(workdir=str(tmp_path))
+    dispatch("/undo", ctx)
+    assert "reverted x" in ctx.console.file.getvalue()
