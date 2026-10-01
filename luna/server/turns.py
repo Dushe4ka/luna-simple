@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 
 from langgraph.types import Command
 from sse_starlette.sse import EventSourceResponse
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from luna.config.providers import LunaConfigError
 from luna.core import permissions
 from luna.core.persistence import SessionIndex, make_title
 from luna.core.turn_events import (
@@ -24,7 +27,10 @@ from luna.core.turn_events import (
     text_of,
     tool_outcome,
 )
+from luna.extensions.subagents import subagent_summaries
+from luna.server.runtime import runtime_for
 from luna.server.trust import trust_error
+from luna.turn import engine
 
 
 def _event_dict(event) -> dict:
@@ -55,72 +61,123 @@ def _event_dict(event) -> dict:
     raise TypeError(f"unknown turn event: {event!r}")
 
 
-async def _stream_turn_events(thread_id: str, workdir: str, agent, payload):
-    """Run ``iter_turn`` and yield its events as SSE ``data`` dicts.
+def _rule_decision(interrupt_value: dict, rules) -> dict | None:
+    """Auto-answer an interrupt from project permission rules, else ``None``."""
+    requests = interrupt_value.get("action_requests") or [interrupt_value.get("action_request")]
+    request = requests[0] or {}
+    name = request.get("action") or request.get("name")
+    args = request.get("args", {}) or {}
+    verdict = rules.match(name, args)
+    if verdict == "allow":
+        return {"type": "approve"}
+    if verdict == "deny":
+        return {"type": "reject", "message": f"blocked by a Luna permission rule ({name})"}
+    return None
 
-    Shared by :func:`post_message` and :mod:`luna.server.approvals`'s
-    ``post_approve`` — both run one turn (a fresh message or a resume) and
-    stream identically-shaped events. The session is touched unconditionally
-    up front, since any message — including one that immediately pauses on
-    an approval interrupt — counts as activity on that session; ``turn_done``
-    fires only when the turn completes without pausing on another interrupt.
 
-    Each interrupt is first checked against the project's permission rules,
-    mirroring ``luna.core.session.collect_decisions``: an ``allow`` match
-    auto-approves and a ``deny`` match auto-rejects, both without ever
-    surfacing an ``approval_needed`` event to the client. Without this the
-    rule the approval modal's "Always allow" button persists would be
-    honoured by a later CLI/REPL session but never by the TUI that wrote it,
-    so the user would be re-prompted for the identical action forever.
+def _graph_events(agent, payload, config: dict, rules, outcome: engine.TurnOutcome):
+    """Run the graph (sync; called in a worker thread) and yield SSE dicts.
+
+    Yields ``("interrupt", value)`` last when the turn pauses for a human
+    decision that no permission rule answers. Usage, tool names and reload
+    requests are folded into ``outcome`` for :func:`engine.finish_turn`.
     """
-    config = {"configurable": {"thread_id": thread_id}}
-    index = SessionIndex()
-    index.touch(thread_id)
-    rules = permissions.load_rules(workdir)
-    try:
-        while True:
-            interrupt_value = None
-            for event in iter_turn(agent, payload, config):
-                if isinstance(event, Interrupted):
-                    interrupt_value = event.value
-                    break
-                yield {"data": json.dumps(_event_dict(event))}
-            if interrupt_value is None:
-                yield {"data": json.dumps({"event": "turn_done"})}
-                return
-            requests = interrupt_value.get("action_requests") or [
-                interrupt_value.get("action_request")
-            ]
-            request = requests[0]
-            name = request.get("action") or request.get("name")
-            args = request.get("args", {}) or {}
-            verdict = rules.match(name, args)
-            if verdict == "allow":
-                payload = Command(resume={"decisions": [{"type": "approve"}]})
-                continue
-            if verdict == "deny":
-                payload = Command(
-                    resume={
-                        "decisions": [
-                            {
-                                "type": "reject",
-                                "message": f"blocked by a Luna permission rule ({name})",
-                            }
-                        ]
-                    }
-                )
-                continue
-            yield {"data": json.dumps({"event": "approval_needed", "value": interrupt_value})}
+    while True:
+        interrupt_value = None
+        for event in iter_turn(agent, payload, config):
+            if isinstance(event, Interrupted):
+                interrupt_value = event.value
+                break
+            if isinstance(event, UsageDelta):
+                outcome.usage.merge(event.usage_metadata)
+            elif isinstance(event, ToolFinished) and event.name:
+                outcome.tool_names.add(event.name)
+            elif isinstance(event, ReloadRequested):
+                outcome.reload_requested = True
+            yield _event_dict(event)
+        if interrupt_value is None:
             return
-    except Exception as exc:
-        # Without this, a turn that raises anywhere inside iter_turn (a
-        # provider call failing, a tool erroring past its own guard) just
-        # ends the SSE stream with zero bytes — indistinguishable, from the
-        # client's side, from "the turn is still running". Logged too,
-        # since the background-spawned server's stdout/stderr otherwise go
-        # nowhere a person would ever see them.
-        logging.getLogger(__name__).exception("turn failed for thread %s", thread_id)
-        yield {"data": json.dumps({"event": "error", "message": f"{type(exc).__name__}: {exc}"})}
+        decision = _rule_decision(interrupt_value, rules)
+        if decision is None:
+            yield ("interrupt", interrupt_value)
+            return
+        payload = Command(resume={"decisions": [decision]})
+
+
+def _sse(obj: dict) -> dict:
+    return {"data": json.dumps(obj)}
+
+
+def _notice(notice: engine.Notice) -> dict:
+    return _sse({"event": "notice", "level": notice.level, "text": notice.text})
+
+
+async def stream_turn(runtime, payload, index):
+    """Stream a turn (or a resumed one) through the whole REPL-equivalent pipeline.
+
+    Holds the session lock while streaming, so a second turn gets 409. The
+    graph runs in a worker thread, keeping the event loop free for read-only
+    commands mid-turn. When the graph finishes without a pending approval:
+    ``finish_turn`` (usage, index, format/diagnose, verify), auto-reload, and
+    at most one fix-up turn streamed in this same response, then
+    ``finish_fixup``. ``turn_done`` is sent once, at the very end.
+    """
+    config = {"configurable": {"thread_id": runtime.thread_id}}
+    rules = permissions.load_rules(runtime.workdir)
+    async with runtime.lock:
+        try:
+            while True:
+                paused = None
+                events = _graph_events(runtime.agent, payload, config, rules, runtime.outcome)
+                async for item in iterate_in_threadpool(events):
+                    if isinstance(item, tuple):
+                        paused = item[1]
+                        break
+                    yield _sse(item)
+                if paused is not None:
+                    yield _sse({"event": "approval_needed", "value": paused})
+                    return
+                cfg = await run_in_threadpool(runtime.config)
+                if runtime.phase == "fixup":
+                    for notice in await run_in_threadpool(engine.finish_fixup, cfg):
+                        yield _notice(notice)
+                else:
+                    prepared = runtime.prepared or engine.PreparedTurn("", "", [])
+                    result = await run_in_threadpool(
+                        functools.partial(
+                            engine.finish_turn,
+                            runtime.state,
+                            prepared,
+                            runtime.outcome,
+                            cfg=cfg,
+                            index=index,
+                            thread_id=runtime.thread_id,
+                            workdir=runtime.workdir,
+                        )
+                    )
+                    for notice in result.notices:
+                        yield _notice(notice)
+                    if result.reload or runtime.reload_after_turn:
+                        runtime.reload_after_turn = False
+                        try:
+                            await run_in_threadpool(runtime.rebuild)
+                            yield _notice(
+                                engine.Notice("info", "auto-reloaded — new capabilities are live")
+                            )
+                        except Exception as exc:  # noqa: BLE001 - a bad config must not end the turn
+                            yield _notice(engine.Notice("error", f"auto-reload failed: {exc}"))
+                    if result.fixup_prompt is not None:
+                        runtime.phase = "fixup"
+                        runtime.outcome = engine.TurnOutcome()
+                        payload = {"messages": [{"role": "user", "content": result.fixup_prompt}]}
+                        continue
+                runtime.finish()
+                yield _sse({"event": "turn_done"})
+                return
+        except Exception as exc:
+            logging.getLogger(__name__).exception("turn failed for thread %s", runtime.thread_id)
+            runtime.finish()
+            yield _sse({"event": "error", "message": f"{type(exc).__name__}: {exc}"})
 
 
 def history_entries(raw_messages: list) -> list[dict]:
@@ -170,28 +227,52 @@ async def get_history(request: Request) -> JSONResponse:
     raw_workdir = request.query_params.get("workdir")
     if (error := trust_error(request, raw_workdir)) is not None:
         return error
-    workdir = raw_workdir or "."
-    agent = request.app.state.agent_factory(workdir)
+    runtime = runtime_for(request, thread_id, raw_workdir or ".")
+    if isinstance(runtime, JSONResponse):
+        return runtime
     config = {"configurable": {"thread_id": thread_id}}
+    agent = await run_in_threadpool(lambda: runtime.agent)
     raw_messages = agent.get_state(config).values.get("messages", [])
     messages = history_entries(raw_messages)
     return JSONResponse({"messages": messages})
 
 
 async def post_message(request: Request) -> EventSourceResponse | JSONResponse:
-    """Run one turn via iter_turn and stream its events as SSE."""
+    """Prepare a turn like the REPL does and stream it as SSE."""
     thread_id = request.path_params["thread_id"]
     body = await request.json()
     if (error := trust_error(request, body.get("workdir"))) is not None:
         return error
     content = body["content"]
     workdir = body.get("workdir", ".")
-    agent = request.app.state.agent_factory(workdir)
-    payload = {"messages": [{"role": "user", "content": content}]}
+    runtime = runtime_for(request, thread_id, workdir)
+    if isinstance(runtime, JSONResponse):
+        return runtime
+    if runtime.lock.locked():
+        return JSONResponse({"error": "session_busy"}, status_code=409)
 
+    def _prepare():
+        try:
+            names = {n for n, _ in subagent_summaries(runtime.workdir)}
+        except LunaConfigError:
+            names = set()
+        return engine.prepare_turn(
+            runtime.state,
+            content,
+            agent=runtime.agent,
+            thread_id=thread_id,
+            workdir=runtime.workdir,
+            session_id=thread_id,
+            subagent_names=names,
+        )
+
+    runtime.prepared = await run_in_threadpool(_prepare)
+    runtime.phase = "turn"
+    runtime.outcome = engine.TurnOutcome()
     index = SessionIndex()
-    existing = {r.thread_id for r in index.list(workdir=workdir)}
+    existing = {r.thread_id for r in index.list(workdir=runtime.workdir)}
     if thread_id not in existing:
-        index.record(thread_id, workdir, make_title(content))
-
-    return EventSourceResponse(_stream_turn_events(thread_id, workdir, agent, payload))
+        index.record(thread_id, runtime.workdir, make_title(content))
+    index.touch(thread_id)
+    payload = {"messages": [{"role": "user", "content": runtime.prepared.content}]}
+    return EventSourceResponse(stream_turn(runtime, payload, index))
