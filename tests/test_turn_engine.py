@@ -72,7 +72,6 @@ def test_at_file_mentions_are_expanded(tmp_path):
     assert "secret sauce" in prepared.content
 
 
-
 class _Index:
     def __init__(self):
         self.recorded, self.touched = [], []
