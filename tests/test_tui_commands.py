@@ -188,3 +188,25 @@ async def test_autocomplete_uses_the_server_command_list():
         {"name": "/model", "help": "m", "kind": "mutate"},
     ]
     assert filter_commands("/sh", cmds) == [("/ship", "ship it")]
+
+
+def test_status_line_names_the_provider_when_the_model_is_the_default():
+    line = format_status_line(
+        model="", provider="deepseek", cost_usd=0, context_file=None, plan_mode=False, undo_depth=0
+    )
+    assert line.startswith("deepseek (модель по умолчанию)")
+
+
+async def test_enter_on_an_exactly_typed_command_runs_it_at_once():
+    """The dropdown accepts a *partial* name; a fully typed one runs on the first Enter."""
+    client = _Client([_res(text="tools…")])
+    app = _Host(client)
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        inp = chat.query_one("#chat-input", Input)
+        inp.focus()
+        for ch in "/usage":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+    assert client.lines == ["/usage"]

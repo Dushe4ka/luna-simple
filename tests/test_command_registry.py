@@ -268,3 +268,11 @@ def test_init_becomes_a_prompt_and_reloads_after(tmp_path, monkeypatch):
     env = FakeEnv(workdir=str(tmp_path))
     assert run_line("/init", env).prompt == "WRITE AGENTS.md"
     assert env.reload_after is True
+
+
+def test_model_picker_marks_the_current_model(monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_models_for", lambda cfg: ["a", "b"])
+    env = FakeEnv(cfg=LunaConfig(model="b"))
+    assert run_line("/model", env).choice.options == [("a", "a"), ("b", "b  ✓ текущая")]

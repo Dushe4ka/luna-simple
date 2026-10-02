@@ -267,7 +267,9 @@ def _model(env, arg):
         return CommandResult(
             notices=[current],
             choice=Choice(
-                f"Модель ({env.config.provider})", [(m, m) for m in models], "/model {value}"
+                f"Модель ({env.config.provider})",
+                [(m, f"{m}  ✓ текущая" if m == env.config.model else m) for m in models],
+                "/model {value}",
             ),
         )
     try:

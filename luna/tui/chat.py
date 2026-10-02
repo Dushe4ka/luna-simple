@@ -356,6 +356,10 @@ class ChatPane(Widget):
         if name is None:
             return False
         chat_input = self.query_one("#chat-input", Input)
+        if chat_input.value.strip() == name:
+            # already typed in full: let this Enter run it instead of re-filling
+            dropdown.display = False
+            return False
         chat_input.value = f"{name} "
         chat_input.cursor_position = len(chat_input.value)
         dropdown.display = False

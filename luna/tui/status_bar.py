@@ -26,7 +26,11 @@ def format_status_line(
     "$0.00" is more misleading than informative for a session that hasn't
     sent anything yet.
     """
-    parts = [f"{model} ({provider})" if model and provider else model] if model else []
+    if model:
+        parts = [f"{model} ({provider})" if provider else model]
+    else:
+        # the session runs on the provider's default model — still say which provider
+        parts = [f"{provider} (модель по умолчанию)"] if provider else []
     parts.append(usage_summary if usage_summary else f"${cost_usd:.2f}")
     if context_file:
         parts.append(f"@{context_file}")
