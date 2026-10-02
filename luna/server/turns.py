@@ -112,7 +112,7 @@ def _notice(notice: engine.Notice) -> dict:
     return _sse({"event": "notice", "level": notice.level, "text": notice.text})
 
 
-async def stream_turn(runtime, payload, index):
+async def stream_turn(runtime, payload, index, *, prepare=None):
     """Stream a turn (or a resumed one) through the whole REPL-equivalent pipeline.
 
     Holds the session lock while streaming, so a second turn gets 409. The
@@ -120,12 +120,21 @@ async def stream_turn(runtime, payload, index):
     commands mid-turn. When the graph finishes without a pending approval:
     ``finish_turn`` (usage, index, format/diagnose, verify), auto-reload, and
     at most one fix-up turn streamed in this same response, then
-    ``finish_fixup``. ``turn_done`` is sent once, at the very end.
+    ``finish_fixup``. ``turn_done`` is sent once, at the very end. With
+    ``prepare`` (a fresh message) the turn is built under the lock and
+    ``payload`` is ignored.
     """
     config = {"configurable": {"thread_id": runtime.thread_id}}
     rules = permissions.load_rules(runtime.workdir)
     async with runtime.lock:
         try:
+            if prepare is not None:
+                # Prepared only while holding the lock: a racing second message
+                # must never overwrite this turn's PreparedTurn / outcome.
+                runtime.prepared = await run_in_threadpool(prepare)
+                runtime.phase = "turn"
+                runtime.outcome = engine.TurnOutcome()
+                payload = {"messages": [{"role": "user", "content": runtime.prepared.content}]}
             while True:
                 paused = None
                 events = _graph_events(runtime.agent, payload, config, rules, runtime.outcome)
@@ -266,13 +275,9 @@ async def post_message(request: Request) -> EventSourceResponse | JSONResponse:
             subagent_names=names,
         )
 
-    runtime.prepared = await run_in_threadpool(_prepare)
-    runtime.phase = "turn"
-    runtime.outcome = engine.TurnOutcome()
     index = SessionIndex()
     existing = {r.thread_id for r in index.list(workdir=runtime.workdir)}
     if thread_id not in existing:
         index.record(thread_id, runtime.workdir, make_title(content))
     index.touch(thread_id)
-    payload = {"messages": [{"role": "user", "content": runtime.prepared.content}]}
-    return EventSourceResponse(stream_turn(runtime, payload, index))
+    return EventSourceResponse(stream_turn(runtime, None, index, prepare=_prepare))

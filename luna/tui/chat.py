@@ -446,12 +446,29 @@ class ChatPane(Widget):
         self.query_one("#autocomplete", ListView).display = False
         if not content.strip():
             return
-        if self.busy and not self._allowed_while_busy(content):
+        light = self._allowed_while_busy(content)
+        if self.busy and not light:
             self.notify("Дождитесь окончания ответа.", severity="warning")
             return
+        if not light:
+            # Set synchronously, before the worker starts: a fast second Enter
+            # must already see the pane as busy.
+            self.busy = True
         # A worker keeps the input live while a turn streams, so read-only
         # commands (/usage, /diff, ...) answer mid-turn.
-        self.run_worker(self.submit(content), group="chat", exit_on_error=False)
+        self.run_worker(self._run_line(content, owns_busy=not light), group="chat")
+
+    async def _run_line(self, content: str, *, owns_busy: bool) -> None:
+        """Worker body: run the line, surface any unexpected error, release busy."""
+        try:
+            await self.submit(content)
+        except Exception as exc:  # noqa: BLE001 - shown to the user instead of vanishing
+            transcript = self.query_one("#transcript", VerticalScroll)
+            await transcript.mount(NoticeRow("error", f"{type(exc).__name__}: {exc}"))
+            transcript.anchor()
+        finally:
+            if owns_busy:
+                self.busy = False
 
     def _allowed_while_busy(self, line: str) -> bool:
         name = line.partition(" ")[0]

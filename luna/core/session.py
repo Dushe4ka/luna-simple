@@ -487,15 +487,20 @@ def run_repl(
             console.print(f"[{PALETTE['mauve']}]turn failed: {exc}[/]")
             continue
         before = len(session_usage.turns)
-        result = engine.finish_turn(
-            state,
-            prepared,
-            engine.TurnOutcome(usage=turn_usage, tool_names=tool_names),
-            cfg=config,
-            index=index,
-            thread_id=thread_id,
-            workdir=workdir,
-        )
+        try:
+            result = engine.finish_turn(
+                state,
+                prepared,
+                engine.TurnOutcome(usage=turn_usage, tool_names=tool_names),
+                cfg=config,
+                index=index,
+                thread_id=thread_id,
+                workdir=workdir,
+            )
+        except KeyboardInterrupt:
+            # Ctrl-C during a long format/verify cancels only that, never the REPL
+            console.print(f"\n[{PALETTE['mauve']}]verify fix-up cancelled[/]")
+            continue
         if len(session_usage.turns) > before:
             indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
             console.print(f"[dim]{indicator}[/]")

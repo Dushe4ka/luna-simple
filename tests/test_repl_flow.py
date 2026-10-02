@@ -619,6 +619,7 @@ def test_repl_uses_the_shared_engine(monkeypatch, tmp_path):
     class _Agent:
         def get_state(self, config):
             from types import SimpleNamespace
+
             return SimpleNamespace(values={"messages": []})
 
     lines = iter(["hi"])
@@ -638,3 +639,41 @@ def test_repl_uses_the_shared_engine(monkeypatch, tmp_path):
         _Agent(), console=Console(file=io.StringIO()), input_fn=_input, workdir=str(tmp_path)
     )
     assert calls == ["hi"]
+
+
+def test_ctrl_c_during_post_turn_verify_keeps_the_repl_alive(monkeypatch, tmp_path):
+    """Regression: interrupting a long verify used to cancel only the verify."""
+    import io
+
+    from rich.console import Console
+
+    from luna.core import session as session_mod
+
+    class _Agent:
+        def get_state(self, config):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(values={"messages": []})
+
+    lines = iter(["edit it", "again"])
+    turns = []
+
+    def _input(_prompt):
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError from None
+
+    def fake_stream(*a, **k):
+        turns.append(1)
+        return ("", False, session_mod.TurnUsage(), {"edit_file"})
+
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(session_mod, "_stream_turn_resilient", fake_stream)
+    monkeypatch.setattr(session_mod.engine, "finish_turn", boom)
+    console = Console(file=io.StringIO())
+    code = session_mod.run_repl(_Agent(), console=console, input_fn=_input, workdir=str(tmp_path))
+    assert code == 0 and turns == [1, 1]
+    assert "verify fix-up cancelled" in console.file.getvalue()

@@ -136,3 +136,23 @@ async def test_pinned_files_reach_the_model(client_for, tmp_path):
         await _say(c, tmp_path, "hi")
         messages = runtime.agent.get_state({"configurable": {"thread_id": "t1"}}).values["messages"]
     assert "PINNED-CONTENT" in messages[0].content
+
+
+async def test_turn_is_prepared_only_while_holding_the_session_lock(
+    client_for, tmp_path, monkeypatch
+):
+    """No TOCTOU: two racing messages must never prepare concurrently."""
+    from luna.turn import engine
+
+    c, app = client_for(AIMessage(content="ok"))
+    seen = []
+    real = engine.prepare_turn
+
+    def spy(state, *a, **k):
+        seen.append(app.state.runtimes.get("t1", str(tmp_path)).lock.locked())
+        return real(state, *a, **k)
+
+    monkeypatch.setattr(engine, "prepare_turn", spy)
+    async with c:
+        await _say(c, tmp_path, "hi")
+    assert seen == [True]

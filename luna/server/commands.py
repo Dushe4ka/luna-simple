@@ -79,12 +79,20 @@ async def post_command(request: Request) -> JSONResponse:
     if kind != "read" and runtime.lock.locked():
         return JSONResponse({"error": "session_busy"}, status_code=409)
 
+    if kind == "read":
+        # read-only: may run mid-turn, never writes state (the turn thread does)
+        result = await run_in_threadpool(run_line, line, _ServerEnv(runtime))
+        return JSONResponse(result.to_json())
+
     def _run():
         result = run_line(line, _ServerEnv(runtime))
         runtime.save()
         return result
 
-    result = await run_in_threadpool(_run)
+    # Hold the session lock: /compact, /undo, /verify... must never run
+    # alongside a turn on the same thread (they rewrite history and files).
+    async with runtime.lock:
+        result = await run_in_threadpool(_run)
     return JSONResponse(result.to_json())
 
 

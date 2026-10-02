@@ -210,3 +210,42 @@ async def test_enter_on_an_exactly_typed_command_runs_it_at_once():
         await pilot.press("enter")
         await pilot.pause()
     assert client.lines == ["/usage"]
+
+
+async def test_busy_is_set_before_the_worker_starts_so_double_enter_is_refused():
+    sent = []
+
+    class _SlowClient(_Client):
+        async def send_message(self, thread_id, content, workdir):
+            sent.append(content)
+            import asyncio
+
+            await asyncio.sleep(0.3)
+            yield {"event": "turn_done"}
+
+    app = _Host(_SlowClient([]))
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "one"))
+        assert chat.busy is True
+        await chat.on_input_submitted(Input.Submitted(inp, "two"))
+        await pilot.pause(0.6)
+        assert chat.busy is False
+    assert sent == ["one"]
+
+
+async def test_an_unexpected_error_in_a_command_is_shown_not_swallowed():
+    class _BrokenClient(_Client):
+        async def run_command(self, thread_id, line, workdir):
+            raise KeyError("text")
+
+    app = _Host(_BrokenClient([]))
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "/plan"))
+        await pilot.pause()
+        texts = [r.text for r in chat.query(NoticeRow)]
+        assert any("KeyError" in t for t in texts)
+        assert chat.busy is False

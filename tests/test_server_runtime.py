@@ -75,3 +75,11 @@ def test_same_thread_other_workdir_is_refused(tmp_path):
     reg.get("t1", str(tmp_path))
     with pytest.raises(WorkdirMismatch):
         reg.get("t1", str(tmp_path / "other"))
+
+
+def test_a_runtime_waiting_for_approval_is_never_evicted(tmp_path):
+    reg = _registry([], capacity=1)
+    waiting = reg.get("t1", str(tmp_path))
+    waiting.phase = "turn"  # paused on an approval, lock released
+    reg.get("t2", str(tmp_path))
+    assert reg.get("t1", str(tmp_path)) is waiting

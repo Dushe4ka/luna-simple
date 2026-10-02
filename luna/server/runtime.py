@@ -146,7 +146,10 @@ class RuntimeRegistry:
         for key in list(self._items):
             if len(self._items) <= self._capacity:
                 break
-            if not self._items[key].lock.locked() and key != thread_id:
+            candidate = self._items[key]
+            # never evict a streaming turn or one paused on an approval: its
+            # PreparedTurn (dirty_before, phase) lives only in memory
+            if not candidate.lock.locked() and candidate.phase == "idle" and key != thread_id:
                 del self._items[key]
         return runtime
 

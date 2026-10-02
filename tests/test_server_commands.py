@@ -114,3 +114,38 @@ async def test_commands_list_includes_user_commands(api, tmp_path):
         cmds = (await c.get("/commands", params={"workdir": wd})).json()["commands"]
     assert {"name": "/ship", "help": "ship it", "kind": "prompt"} in cmds
     assert any(x["name"] == "/model" and x["kind"] == "mutate" for x in cmds)
+
+
+async def test_mutate_command_holds_the_session_lock(api, monkeypatch):
+    """A long /verify must block a turn on the same thread (no parallel writes)."""
+    import time
+
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "run_verify", lambda cmd, wd: (time.sleep(0.8), (True, ""))[1])
+    c, app, wd = api
+    runtime = app.state.runtimes.get("t1", wd)
+    runtime.state.provider = None
+    async with c:
+        monkeypatch.setattr(type(runtime), "config", lambda self: _cfg_with_verify(self.workdir))
+        cmd = asyncio.create_task(_cmd(c, wd, "/verify"))
+        await asyncio.sleep(0.3)
+        turn = await c.post("/sessions/t1/messages", json={"workdir": wd, "content": "hi"})
+        await cmd
+    assert turn.status_code == 409
+
+
+def _cfg_with_verify(workdir):
+    from luna.config.config import LunaConfig
+
+    return LunaConfig(workdir=workdir, verify_command="make check")
+
+
+async def test_read_command_does_not_save_state(api, monkeypatch):
+    c, app, wd = api
+    runtime = app.state.runtimes.get("t1", wd)
+    saves = []
+    monkeypatch.setattr(runtime, "save", lambda: saves.append(1))
+    async with c:
+        await _cmd(c, wd, "/context")
+    assert saves == []
