@@ -45,4 +45,6 @@ TUI_VARIABLES: dict[str, str] = {
     #: saturated traffic-light green/red.
     "ok": "#8fd6a8",
     "err": "#e88b8b",
+    #: Warning notices (verify failed, ...): 11.2:1 against ``bg``.
+    "warn": "#e8c37a",
 }

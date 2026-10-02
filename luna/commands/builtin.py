@@ -285,6 +285,9 @@ def _provider(env, arg):
     if not arg:
         current = Notice("dim", f"provider: {env.config.provider}")
         usable = [k for k, spec in registry.items() if not spec.env_var or _api_key(k, spec)]
+        if not usable:
+            hint = Notice("dim", "нет провайдеров с ключом — luna config set-key <провайдер>")
+            return CommandResult(notices=[current, hint])
         return CommandResult(
             notices=[current],
             choice=Choice("Провайдер", [(k, k) for k in usable], "/provider {value}"),

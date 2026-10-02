@@ -276,3 +276,20 @@ def test_model_picker_marks_the_current_model(monkeypatch):
     monkeypatch.setattr(builtin, "_models_for", lambda cfg: ["a", "b"])
     env = FakeEnv(cfg=LunaConfig(model="b"))
     assert run_line("/model", env).choice.options == [("a", "a"), ("b", "b  ✓ текущая")]
+
+
+def test_provider_picker_is_not_shown_empty(monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_api_key", lambda provider, spec: None)
+    monkeypatch.setattr(
+        builtin,
+        "merge_providers",
+        lambda custom: {"openai": type("S", (), {"env_var": "OPENAI_API_KEY"})()},
+    )
+    result = run_line("/provider", FakeEnv())
+    assert result.choice is None
+    assert (
+        Notice("dim", "нет провайдеров с ключом — luna config set-key <провайдер>")
+        in result.notices
+    )

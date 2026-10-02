@@ -54,7 +54,7 @@ _NOTICE_COLOURS = {
     "dim": TUI_VARIABLES["moon-dim"],
     "ok": TUI_VARIABLES["moon-dim"],
     "info": TUI_VARIABLES["peri"],
-    "warn": "#e8c37a",
+    "warn": TUI_VARIABLES["warn"],
     "error": TUI_VARIABLES["err"],
 }
 
@@ -364,8 +364,6 @@ class ChatPane(Widget):
         chat_input.cursor_position = len(chat_input.value)
         dropdown.display = False
         return True
-
-    _LOCAL = ("/exit", "/quit", "/clear", "/help", "/new", "/sessions", "/resume")
 
     async def _run_command(self, line: str) -> None:
         """Run a slash command: client-side ones here, the rest on the server."""
