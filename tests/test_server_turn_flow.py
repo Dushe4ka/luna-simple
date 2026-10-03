@@ -156,3 +156,21 @@ async def test_turn_is_prepared_only_while_holding_the_session_lock(
     async with c:
         await _say(c, tmp_path, "hi")
     assert seen == [True]
+
+
+async def test_a_failing_prepare_reports_a_readable_error(client_for, tmp_path, monkeypatch):
+    from luna.turn import engine
+
+    def boom(*a, **k):
+        raise ValueError("bad .luna.toml")
+
+    monkeypatch.setattr(engine, "prepare_turn", boom)
+    c, app = client_for(AIMessage(content="ok"))
+    async with c:
+        _, events = await _say(c, tmp_path, "hi")
+        runtime = app.state.runtimes.get("t1", str(tmp_path))
+    assert events[-1] == {
+        "event": "error",
+        "message": "Не удалось подготовить ход: ValueError: bad .luna.toml",
+    }
+    assert runtime.phase == "idle" and not runtime.lock.locked()

@@ -131,7 +131,15 @@ async def stream_turn(runtime, payload, index, *, prepare=None):
             if prepare is not None:
                 # Prepared only while holding the lock: a racing second message
                 # must never overwrite this turn's PreparedTurn / outcome.
-                runtime.prepared = await run_in_threadpool(prepare)
+                try:
+                    runtime.prepared = await run_in_threadpool(prepare)
+                except Exception as exc:  # noqa: BLE001 - reported to the user, turn not started
+                    log = logging.getLogger(__name__)
+                    log.exception("prepare failed for %s", runtime.thread_id)
+                    runtime.finish()
+                    message = f"Не удалось подготовить ход: {type(exc).__name__}: {exc}"
+                    yield _sse({"event": "error", "message": message})
+                    return
                 runtime.phase = "turn"
                 runtime.outcome = engine.TurnOutcome()
                 payload = {"messages": [{"role": "user", "content": runtime.prepared.content}]}
