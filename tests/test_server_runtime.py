@@ -83,3 +83,21 @@ def test_a_runtime_waiting_for_approval_is_never_evicted(tmp_path):
     waiting.phase = "turn"  # paused on an approval, lock released
     reg.get("t2", str(tmp_path))
     assert reg.get("t1", str(tmp_path)) is waiting
+
+
+def test_session_agents_share_one_checkpointer(tmp_path, monkeypatch):
+    """Each rebuild used to open a new sqlite connection and never close the old."""
+    import luna.core.agent as agent_mod
+    import luna.core.persistence as persistence
+    from luna.server.run import make_session_agent_factory
+
+    made, used = [], []
+    monkeypatch.setattr(persistence, "checkpointer", lambda: made.append(object()) or made[-1])
+    monkeypatch.setattr(
+        agent_mod, "build_agent", lambda cfg, **k: used.append(k["checkpointer"]) or object()
+    )
+    reg = RuntimeRegistry(make_session_agent_factory())
+    one, two = reg.get("t1", str(tmp_path)), reg.get("t2", str(tmp_path))
+    one.agent, two.agent  # noqa: B018 - build both
+    one.rebuild()
+    assert len(made) == 1 and used == [made[0]] * 3

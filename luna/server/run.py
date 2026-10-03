@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -171,15 +172,26 @@ def make_session_agent_factory(*, model=None) -> Callable[[object], object]:
     state on every tool call, and the session's provider/model overrides.
     ``model`` injects a fake chat model in tests, like ``build_agent``'s.
     """
+    # One SQLite checkpointer for the whole server process: every rebuild used
+    # to open a fresh connection to sessions.db and never close the old one.
+    shared: list = []
+    shared_lock = threading.Lock()
+
+    def _saver():
+        from luna.core.persistence import checkpointer
+
+        with shared_lock:
+            if not shared:
+                shared.append(checkpointer())
+            return shared[0]
 
     def build(runtime) -> object:
         from luna.core.agent import build_agent
-        from luna.core.persistence import checkpointer
 
         return build_agent(
             runtime.config(),
             model=model,
-            checkpointer=checkpointer(),
+            checkpointer=_saver(),
             session_id=runtime.thread_id,
             plan_flag=lambda: runtime.state.plan,
         )
