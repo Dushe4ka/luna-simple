@@ -174,3 +174,18 @@ async def test_a_failing_prepare_reports_a_readable_error(client_for, tmp_path, 
         "message": "Не удалось подготовить ход: ValueError: bad .luna.toml",
     }
     assert runtime.phase == "idle" and not runtime.lock.locked()
+
+
+async def test_client_disconnect_mid_turn_returns_the_session_to_idle(client_for, tmp_path):
+    """Closing the TUI mid-stream cancels the SSE generator (BaseException)."""
+    from luna.core.persistence import SessionIndex
+    from luna.server.turns import stream_turn
+
+    _, app = client_for(AIMessage(content="a long answer"))
+    runtime = app.state.runtimes.get("t1", str(tmp_path))
+    runtime.phase = "turn"
+    payload = {"messages": [{"role": "user", "content": "hi"}]}
+    gen = stream_turn(runtime, payload, SessionIndex())
+    await gen.__anext__()  # first SSE event arrives, then the client goes away
+    await gen.aclose()
+    assert runtime.phase == "idle" and not runtime.lock.locked()

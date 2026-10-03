@@ -126,6 +126,7 @@ async def stream_turn(runtime, payload, index, *, prepare=None):
     """
     config = {"configurable": {"thread_id": runtime.thread_id}}
     rules = permissions.load_rules(runtime.workdir)
+    paused_for_approval = False
     async with runtime.lock:
         try:
             if prepare is not None:
@@ -152,6 +153,7 @@ async def stream_turn(runtime, payload, index, *, prepare=None):
                         break
                     yield _sse(item)
                 if paused is not None:
+                    paused_for_approval = True
                     yield _sse({"event": "approval_needed", "value": paused})
                     return
                 cfg = await run_in_threadpool(runtime.config)
@@ -195,6 +197,12 @@ async def stream_turn(runtime, payload, index, *, prepare=None):
             logging.getLogger(__name__).exception("turn failed for thread %s", runtime.thread_id)
             runtime.finish()
             yield _sse({"event": "error", "message": f"{type(exc).__name__}: {exc}"})
+        finally:
+            # A client that disconnects mid-stream cancels this generator with a
+            # BaseException: still return the session to idle (an approval pause
+            # is the one exit that deliberately keeps the turn open).
+            if runtime.phase != "idle" and not paused_for_approval:
+                runtime.finish()
 
 
 def history_entries(raw_messages: list) -> list[dict]:
