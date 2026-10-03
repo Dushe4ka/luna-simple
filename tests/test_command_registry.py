@@ -293,3 +293,12 @@ def test_provider_picker_is_not_shown_empty(monkeypatch):
         Notice("dim", "нет провайдеров с ключом — luna config set-key <провайдер>")
         in result.notices
     )
+
+
+def test_help_is_built_from_the_registry():
+    from luna.repl.commands import HELP
+
+    expected = {c.name: c.help for c in REGISTRY.values()}
+    expected["/exit"] = "leave Luna (also /quit, Ctrl-D)"
+    assert HELP == expected
+    assert list(HELP)[-1] == "/exit"

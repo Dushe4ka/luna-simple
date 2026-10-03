@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from rich.console import Console
 
-from luna.commands import run_line
+from luna.commands import REGISTRY, run_line
 from luna.config.config import LunaConfig
 from luna.config.credentials import get_api_key
 from luna.config.providers import merge_providers
@@ -28,30 +28,10 @@ from luna.turn.context import PinnedFiles
 from luna.ui.interact import arrow_confirm, arrow_pick
 from luna.ui.theme import PALETTE
 
+#: Built from the shared registry (one source for help text) plus /exit,
+#: which every client handles itself.
 HELP: dict[str, str] = {
-    "/help": "show this help",
-    "/tools": "list the agent's tools",
-    "/agents": "list available subagents",
-    "/sessions": "list past sessions for this directory",
-    "/resume": "resume a past session",
-    "/usage": "show token usage this session",
-    "/compact": "summarise and compact the conversation",
-    "/diff": "show file changes made this session",
-    "/undo": "revert the last file change",
-    "/redo": "re-apply the last undone turn (git only)",
-    "/add": "pin files into context (/add path ...)",
-    "/drop": "unpin files (/drop path ...)",
-    "/context": "list pinned files",
-    "/verify": "run the project's verify command now",
-    "/diagnose": "run the project's diagnostics command now",
-    "/init": "generate or update AGENTS.md",
-    "/model": "pick a model interactively, or /model <name> to switch directly",
-    "/provider": "show or switch the provider (/provider <key>)",
-    "/reload": "rebuild the agent with the current config",
-    "/new": "start a fresh conversation thread",
-    "/commands": "list custom slash commands",
-    "/plan": "toggle plan mode (blocks writes/execute)",
-    "/clear": "clear the screen",
+    **{c.name: c.help for c in REGISTRY.values()},
     "/exit": "leave Luna (also /quit, Ctrl-D)",
 }
 
