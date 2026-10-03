@@ -1,5 +1,6 @@
 import io
 
+import pytest
 from rich.console import Console
 
 from luna.config.config import LunaConfig
@@ -423,3 +424,12 @@ def test_confirm_without_input_fn_proceeds_like_before(tmp_path, monkeypatch):
     ctx = _ctx(workdir=str(tmp_path))
     dispatch("/undo", ctx)
     assert "reverted x" in ctx.console.file.getvalue()
+
+
+def test_model_without_arg_and_no_terminal_does_not_hit_the_network(monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_models_for", lambda cfg: pytest.fail("network call"))
+    ctx = _ctx()
+    dispatch("/model", ctx)
+    assert "model: (provider default)" in ctx.console.file.getvalue()

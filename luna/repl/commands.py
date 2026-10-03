@@ -273,6 +273,12 @@ def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
         return DispatchResult(exit=True)
     if name in _UI:
         return _UI[name](ctx, arg) or DispatchResult()
+    if name == "/model" and not arg and ctx.input_fn is None:
+        # nobody to pick from a list: just say which model is in use (no network)
+        ctx.console.print(
+            f"model: {ctx.config.model or '(provider default)'}", markup=False, highlight=False
+        )
+        return DispatchResult()
     if name == "/model" and not arg and ctx.input_fn is not None and ctx.rebuild is not None:
         registry = merge_providers(ctx.config.custom_providers)
         spec = registry[ctx.config.provider]
