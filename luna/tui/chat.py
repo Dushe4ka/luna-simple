@@ -365,12 +365,15 @@ class ChatPane(Widget):
         dropdown.display = False
         return True
 
-    async def _run_command(self, line: str) -> None:
+    async def _run_command(self, line: str, *, mid_turn: bool = False) -> None:
         """Run a slash command: client-side ones here, the rest on the server."""
         transcript = self.query_one("#transcript", VerticalScroll)
         name, _, arg = line.partition(" ")
         if name in ("/exit", "/quit"):
             self.app.exit()
+            return
+        if mid_turn:
+            await self._run_command_as_toast(line)
             return
         if name == "/clear":
             await transcript.remove_children()
@@ -390,6 +393,22 @@ class ChatPane(Widget):
             else:
                 await self._render_command_result(result)
         transcript.anchor()
+
+    async def _run_command_as_toast(self, line: str) -> None:
+        """Answer a read-only command mid-turn in a toast, leaving the transcript alone."""
+        if line.partition(" ")[0] == "/help":
+            body = "\n".join(f"{c['name']} — {c['help']}" for c in self._commands)
+            self.notify(body, title="/help", timeout=15, markup=False)
+            return
+        try:
+            result = await self.app.client.run_command(self.thread_id, line, self._workdir)
+        except ServerError as exc:
+            self.notify(str(exc), title=line, severity="error", markup=False)
+            return
+        parts = [n["text"] for n in result.get("notices", [])]
+        if result.get("text"):
+            parts.append(result["text"])
+        self.notify("\n".join(parts) or "—", title=line, timeout=10, markup=False)
 
     async def _render_command_result(self, result: dict) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -451,18 +470,25 @@ class ChatPane(Widget):
         if self.busy and not light:
             self.notify("Дождитесь окончания ответа.", severity="warning")
             return
+        mid_turn = self.busy and light
+        if mid_turn and content.partition(" ")[0] == "/clear":
+            # clearing would delete the live answer block mid-stream
+            self.notify("Очистка недоступна во время ответа.", severity="warning")
+            return
         if not light:
             # Set synchronously, before the worker starts: a fast second Enter
             # must already see the pane as busy.
             self.busy = True
         # A worker keeps the input live while a turn streams, so read-only
         # commands (/usage, /diff, ...) answer mid-turn.
-        self.run_worker(self._run_line(content, owns_busy=not light), group="chat")
+        self.run_worker(
+            self._run_line(content, owns_busy=not light, mid_turn=mid_turn), group="chat"
+        )
 
-    async def _run_line(self, content: str, *, owns_busy: bool) -> None:
+    async def _run_line(self, content: str, *, owns_busy: bool, mid_turn: bool = False) -> None:
         """Worker body: run the line, surface any unexpected error, release busy."""
         try:
-            await self.submit(content)
+            await self.submit(content, mid_turn=mid_turn)
         except Exception as exc:  # noqa: BLE001 - shown to the user instead of vanishing
             transcript = self.query_one("#transcript", VerticalScroll)
             await transcript.mount(NoticeRow("error", f"{type(exc).__name__}: {exc}"))
@@ -477,10 +503,14 @@ class ChatPane(Widget):
             return True
         return any(c["name"] == name and c["kind"] == "read" for c in self._commands)
 
-    async def submit(self, content: str) -> None:
-        """Handle one submitted line: a slash command or a chat message."""
+    async def submit(self, content: str, *, mid_turn: bool = False) -> None:
+        """Handle one submitted line: a slash command or a chat message.
+
+        ``mid_turn``: a read-only command typed while a turn streams; its
+        output goes to a toast so it is never wedged into the live answer.
+        """
         if content.startswith("/"):
-            await self._run_command(content)
+            await self._run_command(content, mid_turn=mid_turn)
         else:
             await self._send(content, echo=content)
 

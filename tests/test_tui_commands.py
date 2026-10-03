@@ -264,3 +264,39 @@ async def test_prompt_with_reload_effect_is_sent_with_the_flag():
     async with app.run_test():
         await app.query_one(ChatPane).submit("/init")
     assert calls == [("WRITE AGENTS.md", True)]
+
+
+async def test_read_command_mid_turn_shows_a_toast_not_transcript_rows():
+    """Mid-turn output must not be wedged into the live answer."""
+    client = _Client([_res(notices=[{"level": "info", "text": "turns: 1"}], text="cost: $0.01")])
+    app = _Host(client)
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        toasts = []
+        chat.notify = lambda message, **kw: toasts.append((message, kw))
+        transcript = chat.query_one("#transcript", VerticalScroll)
+        before = len(transcript.children)
+        chat.busy = True  # a turn is streaming
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "/usage"))
+        await pilot.pause()
+        assert len(transcript.children) == before
+    assert toasts and "turns: 1" in toasts[0][0] and "cost: $0.01" in toasts[0][0]
+    assert toasts[0][1].get("title") == "/usage"
+    assert toasts[0][1].get("markup") is False  # diffs/test output contain [brackets]
+
+
+async def test_clear_is_refused_while_a_turn_streams():
+    app = _Host(_Client([]))
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatPane)
+        toasts = []
+        chat.notify = lambda message, **kw: toasts.append(message)
+        transcript = chat.query_one("#transcript", VerticalScroll)
+        before = len(transcript.children)
+        chat.busy = True
+        inp = chat.query_one("#chat-input", Input)
+        await chat.on_input_submitted(Input.Submitted(inp, "/clear"))
+        await pilot.pause()
+        assert len(transcript.children) == before
+    assert toasts == ["Очистка недоступна во время ответа."]
