@@ -274,6 +274,7 @@ async def post_message(request: Request) -> EventSourceResponse | JSONResponse:
         return error
     content = body["content"]
     workdir = body.get("workdir", ".")
+    reload_after = bool(body.get("reload_after"))
     runtime = runtime_for(request, thread_id, workdir)
     if isinstance(runtime, JSONResponse):
         return runtime
@@ -281,6 +282,8 @@ async def post_message(request: Request) -> EventSourceResponse | JSONResponse:
         return JSONResponse({"error": "session_busy"}, status_code=409)
 
     def _prepare():
+        # runs under the session lock, as part of this very turn
+        runtime.reload_after_turn = reload_after
         try:
             names = {n for n, _ in subagent_summaries(runtime.workdir)}
         except LunaConfigError:

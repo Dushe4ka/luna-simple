@@ -126,11 +126,18 @@ class ServerClient:
         except httpx.TransportError as exc:
             raise ServerError(f"Связь с сервером Luna прервалась: {type(exc).__name__}") from exc
 
-    def send_message(self, thread_id: str, content: str, workdir: str) -> AsyncIterator[dict]:
-        """Send a user message; yields parsed SSE event dicts."""
-        return self._stream(
-            f"/sessions/{thread_id}/messages", {"content": content, "workdir": workdir}
-        )
+    def send_message(
+        self, thread_id: str, content: str, workdir: str, reload_after: bool = False
+    ) -> AsyncIterator[dict]:
+        """Send a user message; yields parsed SSE event dicts.
+
+        ``reload_after`` asks the server to rebuild the session's agent once
+        this turn finishes (``/init`` writes AGENTS.md, which is read at build).
+        """
+        body = {"content": content, "workdir": workdir}
+        if reload_after:
+            body["reload_after"] = True
+        return self._stream(f"/sessions/{thread_id}/messages", body)
 
     def approve(self, thread_id: str, decision: dict, workdir: str) -> AsyncIterator[dict]:
         """Resume a paused turn with ``decision``; yields parsed SSE event dicts."""

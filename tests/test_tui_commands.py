@@ -249,3 +249,18 @@ async def test_an_unexpected_error_in_a_command_is_shown_not_swallowed():
         texts = [r.text for r in chat.query(NoticeRow)]
         assert any("KeyError" in t for t in texts)
         assert chat.busy is False
+
+
+async def test_prompt_with_reload_effect_is_sent_with_the_flag():
+    calls = []
+
+    class _PromptClient(_Client):
+        async def send_message(self, thread_id, content, workdir, reload_after=False):
+            calls.append((content, reload_after))
+            yield {"event": "turn_done"}
+
+    result = _res(prompt="WRITE AGENTS.md", effects={"reload_after_turn": True})
+    app = _Host(_PromptClient([result]))
+    async with app.run_test():
+        await app.query_one(ChatPane).submit("/init")
+    assert calls == [("WRITE AGENTS.md", True)]

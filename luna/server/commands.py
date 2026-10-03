@@ -58,9 +58,6 @@ class _ServerEnv:
         self._rt.switch_provider(provider)
         self._config = None
 
-    def after_turn_reload(self) -> None:
-        self._rt.reload_after_turn = True
-
 
 async def post_command(request: Request) -> JSONResponse:
     """Run one slash command for a session and return its structured result."""

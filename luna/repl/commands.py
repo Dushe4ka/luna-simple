@@ -233,9 +233,6 @@ class _ReplEnv:
     def switch_provider(self, provider: str) -> None:
         self._switch(provider, None)
 
-    def after_turn_reload(self) -> None:
-        pass  # the REPL's own /init handler rebuilds right after its run_once
-
 
 def _render(result, ctx: CommandContext, env: _ReplEnv) -> DispatchResult:
     for notice in result.notices:

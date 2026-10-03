@@ -63,9 +63,6 @@ class FakeEnv:
             self.cfg.provider, self.cfg.model = previous
             raise
 
-    def after_turn_reload(self):
-        self.reload_after = True
-
 
 def test_all_24_repl_commands_are_registered():
     from luna.repl.commands import HELP
@@ -267,7 +264,9 @@ def test_init_becomes_a_prompt_and_reloads_after(tmp_path, monkeypatch):
     monkeypatch.setattr(builtin, "init_prompt", lambda wd: "WRITE AGENTS.md")
     env = FakeEnv(workdir=str(tmp_path))
     assert run_line("/init", env).prompt == "WRITE AGENTS.md"
-    assert env.reload_after is True
+    # the flag travels with the message, not set here: a failed send leaves nothing behind
+    assert run_line("/init", env).effects == {"reload_after_turn": True}
+    assert env.reload_after is False
 
 
 def test_model_picker_marks_the_current_model(monkeypatch):

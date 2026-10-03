@@ -411,7 +411,8 @@ class ChatPane(Widget):
             else:
                 await transcript.mount(NoticeRow("dim", confirm["cancelled"]))
         elif result.get("prompt"):
-            await self._send(result["prompt"], echo=None)
+            reload_after = bool(result.get("effects", {}).get("reload_after_turn"))
+            await self._send(result["prompt"], echo=None, reload_after=reload_after)
         if result.get("effects"):
             await self.refresh_state()
 
@@ -483,7 +484,7 @@ class ChatPane(Widget):
         else:
             await self._send(content, echo=content)
 
-    async def _send(self, content: str, echo: str | None) -> None:
+    async def _send(self, content: str, echo: str | None, reload_after: bool = False) -> None:
         """Stream one turn; echo is the user line to show (None = already shown)."""
         transcript = self.query_one("#transcript", VerticalScroll)
         # Echo the user's own message into the transcript immediately —
@@ -513,7 +514,12 @@ class ChatPane(Widget):
             # one round (the old nested `async for`) left the graph paused on
             # the second interrupt with nothing in the UI to resume it.
             try:
-                event_stream = app.client.send_message(thread_id, content, self._workdir)
+                # plain messages keep the plain call; only /init asks for a reload
+                event_stream = (
+                    app.client.send_message(thread_id, content, self._workdir, reload_after=True)
+                    if reload_after
+                    else app.client.send_message(thread_id, content, self._workdir)
+                )
                 while True:
                     approval_value = None
                     async for evt in event_stream:

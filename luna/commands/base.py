@@ -111,9 +111,6 @@ class CommandEnv(Protocol):
     def switch_provider(self, provider: str) -> None:
         """Switch provider for this session; restores the old one and raises on failure."""
 
-    def after_turn_reload(self) -> None:
-        """Rebuild the agent after the next turn (used by /init)."""
-
 
 @dataclass(frozen=True)
 class Command:

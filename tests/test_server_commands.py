@@ -149,3 +149,26 @@ async def test_read_command_does_not_save_state(api, monkeypatch):
     async with c:
         await _cmd(c, wd, "/context")
     assert saves == []
+
+
+async def test_init_command_does_not_arm_a_reload_by_itself(api, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "init_prompt", lambda wd: "WRITE AGENTS.md")
+    c, app, wd = api
+    async with c:
+        result = (await _cmd(c, wd, "/init")).json()
+        runtime = app.state.runtimes.get("t1", wd)
+    assert result["prompt"] == "WRITE AGENTS.md"
+    assert result["effects"] == {"reload_after_turn": True}
+    assert runtime.reload_after_turn is False
+
+
+async def test_reload_after_flag_on_a_message_rebuilds_after_the_turn(api):
+    c, app, wd = api
+    async with c:
+        resp = await c.post(
+            "/sessions/t1/messages",
+            json={"workdir": wd, "content": "WRITE AGENTS.md", "reload_after": True},
+        )
+    assert '"text": "auto-reloaded' in resp.text

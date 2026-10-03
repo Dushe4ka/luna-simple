@@ -253,8 +253,9 @@ def _diagnose(env, arg):
 
 @register("/init", "generate or update AGENTS.md", "prompt")
 def _init(env, arg):
-    env.after_turn_reload()
-    return CommandResult(prompt=init_prompt(env.workdir))
+    # The client sends the prompt with reload_after=True: the flag travels with
+    # the message, so a send that never happens leaves no stale reload behind.
+    return CommandResult(prompt=init_prompt(env.workdir), effects={"reload_after_turn": True})
 
 
 @register("/model", "pick a model interactively, or /model <name> to switch directly", "mutate")
