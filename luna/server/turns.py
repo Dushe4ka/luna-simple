@@ -240,9 +240,13 @@ async def get_history(request: Request) -> JSONResponse:
     if isinstance(runtime, JSONResponse):
         return runtime
     config = {"configurable": {"thread_id": thread_id}}
-    agent = await run_in_threadpool(lambda: runtime.agent)
-    raw_messages = agent.get_state(config).values.get("messages", [])
-    messages = history_entries(raw_messages)
+
+    def _read() -> list[dict]:
+        # agent build + checkpoint read are blocking: keep them off the event loop
+        raw_messages = runtime.agent.get_state(config).values.get("messages", [])
+        return history_entries(raw_messages)
+
+    messages = await run_in_threadpool(_read)
     return JSONResponse({"messages": messages})
 
 

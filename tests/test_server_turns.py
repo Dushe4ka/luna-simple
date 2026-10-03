@@ -373,3 +373,24 @@ async def test_no_matching_rule_still_asks_the_client(tmp_path, monkeypatch, fak
     assert any(e["event"] == "approval_needed" for e in events)
     assert not any(e["event"] == "turn_done" for e in events)
     assert (tmp_path / "a.py").read_text() == "original\n"
+
+
+async def test_history_is_read_off_the_event_loop(tmp_path):
+    import threading
+    from types import SimpleNamespace
+
+    seen = []
+
+    class _Agent:
+        def get_state(self, config):
+            seen.append(threading.current_thread() is threading.main_thread())
+            return SimpleNamespace(values={"messages": []})
+
+    app = create_app(agent_factory=lambda _w: _Agent(), token="t")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": "Bearer t"},
+    ) as c:
+        await c.get("/sessions/t1/messages", params={"workdir": str(tmp_path)})
+    assert seen == [False]
