@@ -297,7 +297,10 @@ def test_provider_picker_is_not_shown_empty(monkeypatch):
 def test_help_is_built_from_the_registry():
     from luna.repl.commands import HELP
 
-    expected = {c.name: c.help for c in REGISTRY.values()}
-    expected["/exit"] = "leave Luna (also /quit, Ctrl-D)"
-    assert HELP == expected
-    assert list(HELP)[-1] == "/exit"
+    assert HELP == {c.name: c.help for c in REGISTRY.values()}
+
+
+def test_exit_and_quit_are_listed_for_help_and_autocomplete():
+    """Regression: both worked but were never listed, so the TUI never suggested them."""
+    listed = {c["name"]: c["kind"] for c in list_commands({})}
+    assert listed["/exit"] == "ui" and listed["/quit"] == "ui"

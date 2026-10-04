@@ -28,12 +28,8 @@ from luna.turn.context import PinnedFiles
 from luna.ui.interact import arrow_confirm, arrow_pick
 from luna.ui.theme import PALETTE
 
-#: Built from the shared registry (one source for help text) plus /exit,
-#: which every client handles itself.
-HELP: dict[str, str] = {
-    **{c.name: c.help for c in REGISTRY.values()},
-    "/exit": "leave Luna (also /quit, Ctrl-D)",
-}
+#: Built from the shared registry: one source for help text.
+HELP: dict[str, str] = {c.name: c.help for c in REGISTRY.values()}
 
 
 @dataclass

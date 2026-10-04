@@ -347,3 +347,6 @@ def _plan(env, arg):
 
 
 register_ui("/clear", "clear the screen")
+# Every client exits by itself; registered so /help and autocomplete list them.
+register_ui("/exit", "leave Luna (also /quit, Ctrl-D)")
+register_ui("/quit", "leave Luna (same as /exit)")
