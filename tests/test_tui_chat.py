@@ -702,3 +702,10 @@ async def test_user_message_is_literal_text_with_a_peri_marker():
     marker = line.spans[0]
     assert (marker.start, marker.end) == (0, 2)
     assert TUI_VARIABLES["peri"] in str(marker.style) and "bold" in str(marker.style)
+
+
+async def test_quit_alias_still_exits_although_it_is_not_listed():
+    app = _HarnessApp(_NeverCallMeClient())
+    async with app.run_test():
+        await app.query_one(ChatPane).submit("/quit")
+        assert app._exit is True

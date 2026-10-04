@@ -347,6 +347,6 @@ def _plan(env, arg):
 
 
 register_ui("/clear", "clear the screen")
-# Every client exits by itself; registered so /help and autocomplete list them.
+# Every client exits by itself; registered so typing "/e" finds it. The /quit
+# alias still works everywhere but is not listed (its help says "also /quit").
 register_ui("/exit", "leave Luna (also /quit, Ctrl-D)")
-register_ui("/quit", "leave Luna (same as /exit)")

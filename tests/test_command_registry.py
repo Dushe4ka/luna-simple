@@ -300,7 +300,9 @@ def test_help_is_built_from_the_registry():
     assert HELP == {c.name: c.help for c in REGISTRY.values()}
 
 
-def test_exit_and_quit_are_listed_for_help_and_autocomplete():
-    """Regression: both worked but were never listed, so the TUI never suggested them."""
-    listed = {c["name"]: c["kind"] for c in list_commands({})}
-    assert listed["/exit"] == "ui" and listed["/quit"] == "ui"
+def test_exit_is_listed_but_its_quit_alias_is_not():
+    """/exit must be findable while typing; /quit is only an alias (noted in /exit's help)."""
+    listed = {c["name"]: c for c in list_commands({})}
+    assert listed["/exit"]["kind"] == "ui"
+    assert "/quit" in listed["/exit"]["help"]
+    assert "/quit" not in listed
