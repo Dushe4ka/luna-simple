@@ -239,7 +239,8 @@ async def test_slash_dropdown_reserves_real_visible_height_for_every_match():
         from luna.repl.commands import HELP
 
         expected_rows = min(len(HELP), 10)
-        assert dropdown.region.height == expected_rows
+        # border-box: the dropdown's 2-row round border comes on top of the rows
+        assert dropdown.region.height == expected_rows + 2
 
 
 async def test_slash_dropdown_rows_are_individually_visible_not_zero_height():

@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Input
 
+import luna.tui
 from luna.tui.chat import ChatPane, NoticeRow
 from luna.tui.pickers import ChoiceModal, ConfirmModal
 from luna.tui.status_bar import format_status_line
@@ -300,3 +303,31 @@ async def test_clear_is_refused_while_a_turn_streams():
         await pilot.pause()
         assert len(transcript.children) == before
     assert toasts == ["Очистка недоступна во время ответа."]
+
+
+class _StyledHost(_Host):
+    """Loads the real stylesheet: the bug only exists with the dropdown's border."""
+
+    CSS_PATH = str(Path(luna.tui.__file__).parent / "luna.tcss")
+
+    def get_theme_variable_defaults(self):
+        from luna.tui.theme import TUI_VARIABLES
+
+        return TUI_VARIABLES
+
+
+async def test_a_single_autocomplete_match_is_actually_visible():
+    """Regression: height = number of matches left 0 rows inside the 2-row border."""
+    from textual.widgets import ListView
+
+    app = _StyledHost(_Client([]))
+    async with app.run_test(size=(130, 36)) as pilot:
+        chat = app.query_one(ChatPane)
+        chat._commands = [{"name": "/exit", "help": "leave", "kind": "ui"}]
+        chat.query_one("#chat-input", Input).focus()
+        for ch in "/ex":
+            await pilot.press(ch)
+        await pilot.pause()
+        dropdown = chat.query_one("#autocomplete", ListView)
+        # .size is the content box (border excluded)
+        assert dropdown.size.height >= 1

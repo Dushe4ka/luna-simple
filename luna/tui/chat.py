@@ -299,8 +299,10 @@ class ChatPane(Widget):
         # ListView's own auto-height doesn't reserve real space for its
         # content (see the DEFAULT_CSS comment on #autocomplete), so the
         # visible height is set here instead — one row per match, capped at
-        # 10 so a broad prefix like "/" doesn't take over the screen.
-        dropdown.styles.height = min(len(matches), 10)
+        # 10 so a broad prefix like "/" doesn't take over the screen. `height`
+        # is border-box, so the round border's 2 rows come on top — without
+        # them a single match (e.g. "/ex") rendered as an empty frame.
+        dropdown.styles.height = min(len(matches), 10) + 2
         for name, text in matches:
             # _CommandLabel IS a ListItem (see its definition below) — it
             # must be appended directly, NOT wrapped in another `ListItem(...)`.
