@@ -414,3 +414,90 @@ async def test_closing_after_turn_done_is_not_a_cancel(env):
             break
     await gen.aclose()
     assert [r.type for r in session.records()][-1] == "turn_done" and not session.busy
+
+
+class BadJournal:
+    def begin_turn(self, turn_id):
+        pass
+
+    def before_write(self, turn_id, rel):
+        raise RuntimeError("journal broke")
+
+
+async def test_failure_around_a_tool_is_an_error_result_not_a_hang(env):
+    tmp, session = env
+    script = [
+        FakeProvider.call("write_file", {"file_path": "n.txt", "content": "x"}, "c1"),
+        FakeProvider.text("ok"),
+    ]
+    agent = agent_for(
+        tmp,
+        script,
+        policy=Policy(workspace=Workspace(tmp), yolo=True),
+        services={"undo_journal": BadJournal()},
+    )
+    events = await asyncio.wait_for(collect(agent, session), 5)
+    assert isinstance(events[-1], TurnDone)
+    result = session.messages()[2].results[0]
+    assert result.is_error and "write_file failed: RuntimeError: journal broke" in result.text
+
+
+async def test_unsaveable_overflow_is_still_clipped(env):
+    tmp, session = env
+    (tmp / ".luna" / "tool-output").write_text("not a dir")
+    (tmp / "big.txt").write_text("\n".join(f"line {i} " + "x" * 50 for i in range(3000)))
+    script = [
+        FakeProvider.call("read_file", {"file_path": "big.txt", "limit": 3000}, "c1"),
+        FakeProvider.text("ok"),
+    ]
+    events = await asyncio.wait_for(
+        collect(agent_for(tmp, script, tool_output_budget=5000), session), 5
+    )
+    assert isinstance(events[-1], TurnDone)
+    text = session.messages()[2].results[0].text
+    assert len(text) < 6000 and "could not be saved" in text
+
+
+async def test_invalid_path_argument_is_an_error_result(env):
+    tmp, session = env
+    script = [
+        FakeProvider.call("write_file", {"file_path": "a\x00b", "content": "x"}, "c1"),
+        FakeProvider.text("ok"),
+    ]
+    events = await asyncio.wait_for(collect(agent_for(tmp, script), session), 5)
+    assert isinstance(events[-1], TurnDone)
+    assert session.messages()[2].results[0].is_error
+
+
+async def test_preparation_failure_is_an_error_result(env):
+    tmp, session = env
+
+    class BrokenPolicy(Policy):
+        def check(self, tool, args):
+            raise RuntimeError("policy broke")
+
+    script = [FakeProvider.call("ls", {}, "c1"), FakeProvider.text("ok")]
+    agent = agent_for(tmp, script, policy=BrokenPolicy(workspace=Workspace(tmp)))
+    events = await asyncio.wait_for(collect(agent, session), 5)
+    assert isinstance(events[-1], TurnDone)
+    result = session.messages()[2].results[0]
+    assert result.is_error and "ls failed: RuntimeError: policy broke" in result.text
+
+
+async def test_overflow_file_is_written_off_the_event_loop(env, monkeypatch):
+    tmp, session = env
+    offloaded = []
+    real = asyncio.to_thread
+
+    async def spy(fn, /, *args, **kwargs):
+        offloaded.append(getattr(fn, "__name__", repr(fn)))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
+    (tmp / "big.txt").write_text("\n".join(f"line {i} " + "x" * 50 for i in range(3000)))
+    script = [
+        FakeProvider.call("read_file", {"file_path": "big.txt", "limit": 3000}, "c1"),
+        FakeProvider.text("ok"),
+    ]
+    await collect(agent_for(tmp, script, tool_output_budget=5000), session)
+    assert "_save_overflow" in offloaded

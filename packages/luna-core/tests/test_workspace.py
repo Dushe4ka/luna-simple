@@ -61,3 +61,10 @@ def test_ignored_dirs(ws):
         and ws.ignored(".luna/undo/a")
     )
     assert not ws.ignored("src/a.py")
+
+
+def test_nul_byte_path_is_a_tool_error(ws):
+    from luna_core.errors import ToolError
+
+    with pytest.raises(ToolError, match="invalid path"):
+        ws.resolve("a\x00b")

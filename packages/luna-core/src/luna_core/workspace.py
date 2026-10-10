@@ -38,6 +38,10 @@ class OutsideWorkspace(ToolError):
     """The agent addressed a path outside the project."""
 
 
+class InvalidPath(ToolError):
+    """The agent's path cannot exist (NUL byte or rejected by the OS)."""
+
+
 class Workspace:
     """The project root and the rules for resolving agent paths into it."""
 
@@ -45,8 +49,20 @@ class Workspace:
         self.root = Path(root).resolve()
 
     def resolve(self, path: str) -> Path:
-        """Return the absolute path for an agent path, or raise :class:`OutsideWorkspace`."""
+        """Return the absolute path for an agent path, or raise :class:`OutsideWorkspace`.
+
+        A path the OS cannot represent (e.g. one with a NUL byte) raises
+        :class:`InvalidPath`, also a :class:`ToolError`.
+        """
+        try:
+            return self._resolve(path)
+        except (ValueError, OSError) as exc:
+            raise InvalidPath(f"invalid path: {str(path)!r} ({exc})") from exc
+
+    def _resolve(self, path: str) -> Path:
         raw = str(path or "").strip()
+        if "\x00" in raw:
+            raise ValueError("embedded null byte")
         if _DRIVE_LETTER_RE.match(raw) or _UNC_RE.match(raw):
             raise OutsideWorkspace(f"outside the project: {raw} (project root is {self.root})")
         if raw in ("", ".", "/"):

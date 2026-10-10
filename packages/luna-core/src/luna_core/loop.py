@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Protocol
 
 from luna_core import catalog
-from luna_core.errors import ProviderError
+from luna_core.errors import ProviderError, ToolError
 from luna_core.events import (
     ApprovalRequest,
     Cancelled,
@@ -37,7 +37,7 @@ from luna_core.session import Session
 from luna_core.tools import builtin_tools
 from luna_core.tools.base import Tool, ToolContext, ToolOutput, args_preview
 from luna_core.usage import Usage, cost
-from luna_core.workspace import OutsideWorkspace, Workspace
+from luna_core.workspace import Workspace
 
 _DONE = object()
 _GRACE = 2.0
@@ -53,6 +53,13 @@ class Compactor(Protocol):
 
 class _Cancelled(Exception):
     pass
+
+
+@dataclasses.dataclass(frozen=True)
+class _Outcome:
+    """How preparing one tool call ended: ``("run", args)``, ``("refuse", text)``, ``("stop",)``."""
+
+    value: tuple
 
 
 class PathLocks:
@@ -425,42 +432,23 @@ class Agent:
                         f"{args['__invalid_json__'][:200]}",
                     )
                     continue
-                verdict = self.policy.check(tool, args)
-                if verdict.action == "deny":
-                    yield refuse(call, verdict.message)
+                outcome: tuple = ("stop",)
+                try:
+                    prepare = self._prepare(session, call, tool, args, cancel)
+                    async with contextlib.aclosing(prepare) as prepared:
+                        async for item in prepared:
+                            if isinstance(item, _Outcome):
+                                outcome = item.value
+                            else:
+                                yield item
+                except Exception as exc:  # noqa: BLE001 - bad args/policy/hook → error result
+                    outcome = ("refuse", f"{call.name} failed: {type(exc).__name__}: {exc}")
+                if outcome[0] == "stop":
+                    break
+                if outcome[0] == "refuse":
+                    yield refuse(call, outcome[1])
                     continue
-                if verdict.action == "ask":
-                    request = dataclasses.replace(verdict.request, call_id=call.id)
-                    future = session.expect_decision(call.id)
-                    yield NeedsApproval(request)
-                    decision = await self._await_decision(future, cancel)
-                    if decision is None:
-                        break
-                    session.append("approval", {"call_id": call.id, "decision": decision.to_dict()})
-                    if decision.always:
-                        self.policy.remember_always(decision.always)
-                    if decision.type == "reject":
-                        yield refuse(
-                            call,
-                            "rejected by the user"
-                            + (f": {decision.message}" if decision.message else ""),
-                        )
-                        continue
-                    if decision.type == "edit" and decision.args is not None:
-                        args = dict(decision.args)
-                pre = await self.hooks.run(
-                    "pre_tool",
-                    {"session_id": session.id, "tool": call.name, "args": args},
-                    tool=call.name,
-                )
-                for note in pre.notices:
-                    yield Notice("info", note)
-                if pre.block:
-                    yield refuse(call, pre.message or f"blocked by a hook ({call.name})")
-                    continue
-                if pre.args is not None:
-                    args = dict(pre.args)
-                approved.append((call, tool, args))
+                approved.append((call, tool, outcome[1]))
 
             if cancel.is_set():
                 # Esc during an approval (or a hook): nothing of this batch runs.
@@ -495,6 +483,43 @@ class Agent:
             if watchdog:
                 watchdog.cancel()
         self._fill_cancelled(calls, results, out)
+
+    async def _prepare(
+        self, session: Session, call: ToolCall, tool: Tool, args: dict, cancel: asyncio.Event
+    ) -> AsyncIterator[object]:
+        """Policy, approval and pre_tool hooks for one call; ends with an ``_Outcome``."""
+        verdict = self.policy.check(tool, args)
+        if verdict.action == "deny":
+            yield _Outcome(("refuse", verdict.message))
+            return
+        if verdict.action == "ask":
+            request = dataclasses.replace(verdict.request, call_id=call.id)
+            future = session.expect_decision(call.id)
+            yield NeedsApproval(request)
+            decision = await self._await_decision(future, cancel)
+            if decision is None:
+                yield _Outcome(("stop",))
+                return
+            session.append("approval", {"call_id": call.id, "decision": decision.to_dict()})
+            if decision.always:
+                self.policy.remember_always(decision.always)
+            if decision.type == "reject":
+                suffix = f": {decision.message}" if decision.message else ""
+                yield _Outcome(("refuse", f"rejected by the user{suffix}"))
+                return
+            if decision.type == "edit" and decision.args is not None:
+                args = dict(decision.args)
+        pre = await self.hooks.run(
+            "pre_tool",
+            {"session_id": session.id, "tool": call.name, "args": args},
+            tool=call.name,
+        )
+        for note in pre.notices:
+            yield Notice("info", note)
+        if pre.block:
+            yield _Outcome(("refuse", pre.message or f"blocked by a hook ({call.name})"))
+            return
+        yield _Outcome(("run", dict(pre.args) if pre.args is not None else args))
 
     @staticmethod
     def _fill_cancelled(
@@ -535,7 +560,7 @@ class Agent:
         raw = args.get("file_path") or args.get("path") or ""
         try:
             rel = self.workspace.rel(self.workspace.resolve(raw)) if raw else "*"
-        except OutsideWorkspace:
+        except (ToolError, OSError, ValueError):
             rel = str(raw)
         return [f"{root}:{rel}"]
 
@@ -551,7 +576,36 @@ class Agent:
         results: dict[str, ToolResult],
     ) -> None:
         started = time.monotonic()
-        queue.put_nowait(ToolStarted(call.id, call.name, args, args_preview(args)))
+        output = ToolOutput.error("cancelled by the user")
+        try:
+            queue.put_nowait(ToolStarted(call.id, call.name, args, args_preview(args)))
+            output = await self._invoke(session, turn_id, call, tool, args, queue, cancel)
+            output = await self._post_process(session, call, args, output, queue)
+        finally:
+            # Always record a result and release ``_run_tools``, whatever happened above.
+            results[call.id] = ToolResult(call.id, output.content, output.is_error, call.name)
+            detail = output.detail or (
+                output.content[0].text.splitlines()[0][:120]
+                if output.content and isinstance(output.content[0], Text) and output.content[0].text
+                else ""
+            )
+            queue.put_nowait(
+                ToolFinished(
+                    call.id, call.name, not output.is_error, detail, time.monotonic() - started
+                )
+            )
+            queue.put_nowait(_DONE)
+
+    async def _invoke(
+        self,
+        session: Session,
+        turn_id: str,
+        call: ToolCall,
+        tool: Tool,
+        args: dict,
+        queue: asyncio.Queue,
+        cancel: asyncio.Event,
+    ) -> ToolOutput:
         ctx = ToolContext(
             workspace=self.workspace,
             sandbox=self.sandbox,
@@ -570,12 +624,21 @@ class Agent:
                 journal_turn = self.services.get("undo_turn_id") or turn_id
                 if tool.name in MUTATING_FILE_TOOLS and journal is not None:
                     raw = args.get("file_path") or args.get("path") or ""
-                    with contextlib.suppress(OutsideWorkspace, OSError, ValueError):
+                    rel = None
+                    with contextlib.suppress(ToolError, OSError, ValueError):
                         rel = self.workspace.rel(self.workspace.resolve(raw))
+                    if rel is not None:
                         await asyncio.to_thread(journal.before_write, journal_turn, rel)
-                output = await tool.invoke(ctx, args)
+                return await tool.invoke(ctx, args)
         except asyncio.CancelledError:
-            output = ToolOutput.error("cancelled by the user")
+            return ToolOutput.error("cancelled by the user")
+        except Exception as exc:  # noqa: BLE001 - a broken journal/lock must not hang the turn
+            return ToolOutput.error(f"{tool.name} failed: {type(exc).__name__}: {exc}")
+
+    async def _post_process(
+        self, session: Session, call: ToolCall, args: dict, output: ToolOutput, queue: asyncio.Queue
+    ) -> ToolOutput:
+        """Run post_tool hooks, clip, update anchors; a failure here becomes a notice."""
         try:
             post = await self.hooks.run(
                 "post_tool",
@@ -597,38 +660,35 @@ class Agent:
                 output = ToolOutput(
                     (*output.content, extra), output.is_error or post.block, output.detail
                 )
-            output = self._clip(output, call.id)
+        except Exception as exc:  # noqa: BLE001 - the tool already ran; keep its output
+            queue.put_nowait(Notice("warn", f"post_tool hooks for {call.name} failed: {exc}"))
+        output = await self._clip(output, call.id)
+        try:
             self.policy.after(call.name, args, not output.is_error)
             if call.name == "write_todos" and not output.is_error:
                 session.append("todos", {"todos": session.state.get("todos", [])})
-        finally:
-            results[call.id] = ToolResult(call.id, output.content, output.is_error, call.name)
-            detail = output.detail or (
-                output.content[0].text.splitlines()[0][:120]
-                if output.content and isinstance(output.content[0], Text) and output.content[0].text
-                else ""
-            )
-            queue.put_nowait(
-                ToolFinished(
-                    call.id, call.name, not output.is_error, detail, time.monotonic() - started
-                )
-            )
-            queue.put_nowait(_DONE)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not lose the result
+            queue.put_nowait(Notice("warn", f"bookkeeping after {call.name} failed: {exc}"))
+        return output
 
-    def _clip(self, output: ToolOutput, call_id: str) -> ToolOutput:
+    @staticmethod
+    def _save_overflow(target: Path, text: str) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    async def _clip(self, output: ToolOutput, call_id: str) -> ToolOutput:
         text = "".join(p.text for p in output.content if isinstance(p, Text))
         if len(text) <= self.tool_output_budget:
             return output
-        target = self.workspace.root / ".luna" / "tool-output" / f"{call_id}.txt"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        half = self.tool_output_budget // 2 - 200
         rel = Path(".luna", "tool-output", f"{call_id}.txt").as_posix()
+        try:
+            await asyncio.to_thread(self._save_overflow, self.workspace.root / rel, text)
+            where = f"full output saved to {rel} — read it with read_file"
+        except OSError as exc:
+            where = f"the full output could not be saved ({exc})"
+        half = self.tool_output_budget // 2 - 200
         omitted = len(text) - 2 * half
-        clipped = (
-            f"{text[:half]}\n\n… [{omitted} characters omitted; full output saved to {rel} "
-            f"— read it with read_file] …\n\n{text[-half:]}"
-        )
+        clipped = f"{text[:half]}\n\n… [{omitted} characters omitted; {where}] …\n\n{text[-half:]}"
         images = tuple(p for p in output.content if isinstance(p, Image))
         return ToolOutput((Text(clipped), *images), output.is_error, output.detail)
 
