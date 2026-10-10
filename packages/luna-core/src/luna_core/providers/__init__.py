@@ -34,24 +34,24 @@ def _p(
 PRESETS: dict[str, Preset] = {
     p.key: p
     for p in (
-        _p("anthropic", "anthropic", "claude-sonnet-4-5", "ANTHROPIC_API_KEY"),
-        _p("openai", "openai_responses", "gpt-5", "OPENAI_API_KEY"),
+        _p("anthropic", "anthropic", "claude-sonnet-5", "ANTHROPIC_API_KEY"),
+        _p("openai", "openai_responses", "gpt-6-astra", "OPENAI_API_KEY"),
         _p(
             "openai_chat",
             "openai_chat",
-            "gpt-4.1",
+            "gpt-6.1-sol",
             "OPENAI_API_KEY",
             max_tokens_field="max_completion_tokens",
         ),
         _p(
             "deepseek",
             "openai_chat",
-            "deepseek-chat",
+            "deepseek-flash",
             "DEEPSEEK_API_KEY",
             "https://api.deepseek.com",
             send_reasoning=True,
         ),
-        _p("google", "google", "gemini-2.5-pro", "GOOGLE_API_KEY"),
+        _p("google", "google", "gemini-3.1-pro-preview", "GOOGLE_API_KEY"),
         _p("gigachat", "gigachat", "GigaChat-2-Max", "GIGACHAT_CREDENTIALS"),
         _p(
             "yandex",
@@ -60,7 +60,7 @@ PRESETS: dict[str, Preset] = {
             "YANDEX_API_KEY",
             "https://llm.api.cloud.yandex.net/v1",
         ),
-        _p("ollama", "openai_chat", "qwen2.5-coder", None, "http://localhost:11434/v1"),
+        _p("ollama", "openai_chat", "qwen3-coder", None, "http://localhost:11434/v1"),
         _p(
             "mistral",
             "openai_chat",
@@ -68,7 +68,7 @@ PRESETS: dict[str, Preset] = {
             "MISTRAL_API_KEY",
             "https://api.mistral.ai/v1",
         ),
-        _p("xai", "openai_chat", "grok-4", "XAI_API_KEY", "https://api.x.ai/v1"),
+        _p("xai", "openai_chat", "grok-4.7", "XAI_API_KEY", "https://api.x.ai/v1"),
         _p(
             "groq",
             "openai_chat",
@@ -86,14 +86,14 @@ PRESETS: dict[str, Preset] = {
         _p(
             "together",
             "openai_chat",
-            "Qwen/Qwen2.5-Coder-32B-Instruct",
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
             "TOGETHER_API_KEY",
             "https://api.together.xyz/v1",
         ),
         _p(
             "openrouter",
             "openai_chat",
-            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-sonnet-5",
             "OPENROUTER_API_KEY",
             "https://openrouter.ai/api/v1",
         ),
