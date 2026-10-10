@@ -7,7 +7,7 @@ import base64
 import fnmatch
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from luna_core.messages import Image
@@ -209,8 +209,13 @@ async def glob(ctx: ToolContext, pattern: str, path: str = ".") -> ToolOutput:
     def run() -> list[str]:
         hits = []
         for p in base.glob(pattern):
-            rel = ctx.workspace.rel(p)
-            if p.is_file() and not ctx.workspace.ignored(rel):
+            if not p.is_file():
+                continue
+            try:
+                rel = ctx.workspace.rel(p)
+            except ValueError:
+                continue  # outside the workspace (e.g. a ".." pattern) — silently skip
+            if not ctx.workspace.ignored(rel):
                 hits.append((p.stat().st_mtime, rel))
         hits.sort(key=lambda t: (-t[0], t[1]))
         return [rel for _, rel in hits]
@@ -294,11 +299,17 @@ def _py_grep(
     mode: str,
     max_count: int | None,
 ) -> list[str]:
+    # An explicitly named path (file or directory) is always searched; IGNORED_DIRS only
+    # filters entries discovered while walking *below* it, so a directory named e.g.
+    # "node_modules" is still searched when it is the path the caller asked for.
+    base_parts = PurePosixPath(ctx.workspace.rel(base)).parts
     files = [base] if base.is_file() else sorted(p for p in base.rglob("*") if p.is_file())
     rows: list[str] = []
     for p in files:
         rel = ctx.workspace.rel(p)
-        if ctx.workspace.ignored(rel) or (glob_ and not fnmatch.fnmatch(p.name, glob_)):
+        below = PurePosixPath(rel).parts[len(base_parts) :]
+        ignored = any(part in IGNORED_DIRS for part in below)
+        if ignored or (glob_ and not fnmatch.fnmatch(p.name, glob_)):
             continue
         try:
             data = p.read_bytes()

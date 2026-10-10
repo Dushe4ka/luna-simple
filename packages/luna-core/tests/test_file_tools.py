@@ -103,6 +103,43 @@ async def test_glob_newest_first_and_ignores_vendor_dirs(ctx):
     assert not any(line.startswith("node_modules") for line in out)
 
 
+async def test_glob_skips_matches_outside_the_workspace(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.py").write_text("x = 1\n")
+    (tmp_path / "secret.txt").write_text("outside\n")
+    ctx = ToolContext(workspace=Workspace(root))
+
+    out = await call(glob, ctx, pattern="../*")
+    assert not out.is_error
+    text = out.content[0].text
+    assert "secret.txt" not in text
+    assert str(tmp_path) not in text
+
+    combined = (await call(glob, ctx, pattern="../**/*.py")).content[0].text
+    assert combined.splitlines() == ["a.py"]
+
+
+@pytest.mark.parametrize("use_rg", [False, True])
+async def test_grep_searches_an_explicitly_named_ignored_path(ctx, use_rg, monkeypatch):
+    if use_rg and shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+    import luna_core.tools.files as files
+
+    monkeypatch.setattr(files, "_RG", shutil.which("rg") if use_rg else None)
+
+    explicit_file = (
+        (await call(grep, ctx, pattern="def foo", path="node_modules/x.py")).content[0].text
+    )
+    assert explicit_file.splitlines() == ["node_modules/x.py"]
+
+    explicit_dir = (await call(grep, ctx, pattern="def foo", path="node_modules")).content[0].text
+    assert explicit_dir.splitlines() == ["node_modules/x.py"]
+
+    whole_project = (await call(grep, ctx, pattern="def foo")).content[0].text.splitlines()
+    assert whole_project == ["src/b.py"]
+
+
 @pytest.mark.parametrize("use_rg", [False, True])
 async def test_grep_modes(ctx, use_rg, monkeypatch):
     if use_rg and shutil.which("rg") is None:
