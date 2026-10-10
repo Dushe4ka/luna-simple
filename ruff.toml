@@ -8,3 +8,4 @@ ignore = ["D100", "D104", "D107", "D203", "D213"]
 
 [lint.per-file-ignores]
 "tests/*" = ["D"]
+"packages/luna-core/tests/*" = ["D"]

@@ -17,7 +17,28 @@ conflicts = [[
 ], [
     { package = "luna-simple", extra = "all" },
     { package = "luna-simple", extra = "together" },
+], [
+    { package = "luna-core", extra = "lsp" },
+    { package = "luna-simple", extra = "together" },
 ]]
+
+[manifest]
+members = [
+    "luna-core",
+    "luna-simple",
+]
+
+[[package]]
+name = "agent-client-protocol"
+version = "0.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/95/2c28ca34e545ce0282e88272aa3a8abdf8f3f926a0492f567ea11acd071b/agent_client_protocol-0.12.1.tar.gz", hash = "sha256:9963ccb590ed96d7dc542c9c023e90676fc76b1c6562e21a9ee112f4fbcb0095", size = 130605, upload-time = "2026-08-16T14:08:22.545Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/61/0a2186c8ca53cf464767d4c4fb7fd9e23f48ce4547c2fa0d1c83a4d52410/agent_client_protocol-0.12.1-py3-none-any.whl", hash = "sha256:aaf3cc301ed87d9e2c4ccb91adfe1cd58784355f6ce7e513f50e7ca2391862ef", size = 85929, upload-time = "2026-08-16T14:08:21.307Z" },
+]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -39,7 +60,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/d9/22ce5786ac0c1653ae8b6c23bded02c1686d11f0dbb45b31ce128e0df985/aiohttp-3.14.3.tar.gz", hash = "sha256:9491196535a88924a60afd5b5f434b5b203b6cc616250878dbdb223a8f7844bc", size = 7971213, upload-time = "2026-07-23T01:57:27.037Z" }
@@ -152,7 +173,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -201,7 +222,7 @@ version = "4.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
@@ -253,7 +274,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -516,7 +537,7 @@ name = "cryptography"
 version = "50.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bb/ad/5d6702db60b1e40b41ef513b6967ff5848f307d50f8449baf1634f5908f1/cryptography-50.0.1.tar.gz", hash = "sha256:5dd9bda1c12b4162f6ff568eeb5e0ff956c28d14406e875cfe8a63a2d414ff20", size = 880381, upload-time = "2026-08-25T19:45:45.499Z" }
 wheels = [
@@ -796,7 +817,7 @@ wheels = [
 
 [package.optional-dependencies]
 requests = [
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
 ]
 
@@ -810,7 +831,7 @@ dependencies = [
     { name = "google-auth", extra = ["requests"] },
     { name = "httpx" },
     { name = "pydantic" },
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
     { name = "sniffio" },
     { name = "tenacity" },
@@ -890,8 +911,8 @@ name = "httpcore2"
 version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
-    { name = "truststore", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "truststore", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/be/ad/f4f0e57345f1870f3e8cb624e058d7eca6e5a27d33bcc3311d9b618734cd/httpcore2-2.12.0.tar.gz", hash = "sha256:9293522bba0aa7c4c8e9e3f040c16575bd8868e155a77fa30c7a9085a5eae648", size = 67548, upload-time = "2026-08-18T13:22:08.211Z" }
 wheels = [
@@ -940,12 +961,12 @@ name = "httpx2"
 version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
-    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
-    { name = "httpx2-jsfetch", marker = "(python_full_version >= '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "httpx2-jsfetch", marker = "(python_full_version >= '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (python_full_version < '3.12' and extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (sys_platform != 'emscripten' and extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "idna" },
-    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7f/f8/579a8b51e42e38ee32647df9f08aa25643ae788e275cc625b199829c4671/httpx2-2.12.0.tar.gz", hash = "sha256:7631fe9887a8a2275f4a2540e053aa670fcc50742864a9ae7c66e609fdcf12cf", size = 100040, upload-time = "2026-08-18T13:22:09.086Z" }
 wheels = [
@@ -969,7 +990,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "httpx" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -1253,7 +1274,7 @@ dependencies = [
     { name = "fireworks-ai" },
     { name = "langchain-core" },
     { name = "openai" },
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/37/62/ad8cc57ad2741cac1c0d460961709cbe430edb99a7595db63fa30526567d/langchain_fireworks-1.6.1.tar.gz", hash = "sha256:fb89ef4c0289b23462ebbcc4442be8fdad60034ce9a9159914792edeed74eebf", size = 228378, upload-time = "2026-08-27T21:56:12.145Z" }
@@ -1411,7 +1432,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/69/d6dda0484482b74cfc7c6e3812587c7a57face6b74f519bc01aa12a1cd07/langchain_xai-1.3.0.tar.gz", hash = "sha256:81924cdf5061108d424bd7a4a52ad72a96e3a2d20da47b16ef2531da667ba866", size = 211202, upload-time = "2026-07-21T16:15:29.522Z" }
@@ -1500,10 +1521,10 @@ dependencies = [
     { name = "anyio" },
     { name = "distro" },
     { name = "httpx2" },
-    { name = "orjson", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "orjson", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "packaging" },
     { name = "pydantic" },
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
     { name = "requests-toolbelt" },
     { name = "sniffio" },
@@ -1541,6 +1562,42 @@ wheels = [
 ]
 
 [[package]]
+name = "luna-core"
+version = "0.1.0"
+source = { editable = "packages/luna-core" }
+dependencies = [
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+]
+lsp = [
+    { name = "multilspy" },
+]
+mcp = [
+    { name = "mcp" },
+]
+websearch = [
+    { name = "ddgs" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.4" },
+    { name = "ddgs", marker = "extra == 'websearch'", specifier = ">=8.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "httpx-sse", specifier = ">=0.4" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.12" },
+    { name = "multilspy", marker = "extra == 'lsp'", specifier = ">=0.0.15" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+provides-extras = ["mcp", "acp", "lsp", "websearch"]
+
+[[package]]
 name = "luna-simple"
 version = "0.3.0"
 source = { editable = "." }
@@ -1552,6 +1609,7 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "luna-core" },
     { name = "questionary" },
     { name = "rich" },
     { name = "sse-starlette" },
@@ -1658,6 +1716,7 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.0" },
     { name = "langgraph", specifier = "~=1.2" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
+    { name = "luna-core", editable = "packages/luna-core" },
     { name = "multilspy", marker = "extra == 'all'", specifier = ">=0.0.15" },
     { name = "multilspy", marker = "extra == 'lsp'", specifier = ">=0.0.15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -1834,12 +1893,12 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-multipart" },
-    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "sse-starlette" },
     { name = "starlette" },
     { name = "typing-extensions" },
     { name = "typing-inspection" },
-    { name = "uvicorn", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "uvicorn", marker = "sys_platform != 'emscripten' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b5/48/0bb26fdfe7ac16875f534a101ce2405eae192bdef37e7451f2f4507c13ec/mcp-1.29.1.tar.gz", hash = "sha256:1967ba4c315f7a375146209949f45950d18b0efd2f913d7cf3400bc723ee5f04", size = 646823, upload-time = "2026-08-24T18:30:41.161Z" }
 wheels = [
@@ -2634,7 +2693,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2651,7 +2710,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pytest" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/7c/d36d04db312ecf4298932ef77e6e4a9e8ad017906e24e34f0b0c361a2473/pytest_asyncio-1.4.0.tar.gz", hash = "sha256:c6c0d2259945122819f171a32ecea2c349ead889ee28176caaf492143424be42", size = 58514, upload-time = "2026-05-26T09:56:04.083Z" }
 wheels = [
@@ -2772,7 +2831,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -2911,10 +2970,10 @@ resolution-markers = [
     "(python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32')",
 ]
 dependencies = [
-    { name = "certifi", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
-    { name = "charset-normalizer", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
-    { name = "idna", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
-    { name = "urllib3", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "certifi", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "charset-normalizer", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "idna", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
+    { name = "urllib3", marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/63/70/2bf7780ad2d390a8d301ad0b550f1581eadbd9a20f896afe06353c2a2913/requests-2.32.3.tar.gz", hash = "sha256:55365417734eb18255590a9ff9eb97e9e1da868d4ccd6402399eaf68af20a760", size = 131218, upload-time = "2024-05-29T15:37:49.536Z" }
 wheels = [
@@ -2948,7 +3007,7 @@ name = "requests-toolbelt"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/61/d7545dafb7ac2230c70d38d31cbfe4cc64f7144dc41f6e4e4b78ecd9f5bb/requests-toolbelt-1.0.0.tar.gz", hash = "sha256:7681a0a3d047012b5bdc0ee37d7f8f07ebe76ab08caeccfc3921ce23c88d5bc6", size = 206888, upload-time = "2023-05-01T04:11:33.229Z" }
@@ -3157,7 +3216,7 @@ version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b5/b4/205b0d5241d934e8add0c38aa924c4f9fb7330834ff11e5444db964ec3f9/starlette-1.6.0.tar.gz", hash = "sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b", size = 2716969, upload-time = "2026-08-08T18:27:57.512Z" }
 wheels = [
@@ -3196,7 +3255,7 @@ version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "regex" },
-    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together'" },
+    { name = "requests", version = "2.32.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-all' or extra == 'extra-11-luna-simple-lsp' or extra == 'extra-11-luna-simple-openai' or extra != 'extra-11-luna-simple-together' or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
     { name = "requests", version = "2.34.2", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-luna-simple-together'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/62/167a842aa0429d45f5e797354fd4343a96f6043d67d0513c675c7b8d36e6/tiktoken-0.14.0.tar.gz", hash = "sha256:231dec90efcdccf1b565a1416107736f1e09b1a08fe736ef9d6363e626d03874", size = 38898, upload-time = "2026-08-17T19:49:49.514Z" }
@@ -3284,7 +3343,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-11-luna-simple-all' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-lsp' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-openai' and extra == 'extra-11-luna-simple-together') or (extra == 'extra-11-luna-simple-together' and extra == 'extra-9-luna-core-lsp')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [

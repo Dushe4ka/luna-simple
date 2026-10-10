@@ -22,6 +22,7 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
 ]
 dependencies = [
+    "luna-core",
     "deepagents~=0.7.13",
     "langchain~=1.4",
     "langgraph~=1.2",
@@ -81,6 +82,12 @@ luna-simple = "luna.cli:main"
 Homepage = "https://github.com/Dushe4ka/luna-simple"
 Repository = "https://github.com/Dushe4ka/luna-simple"
 
+[tool.uv.workspace]
+members = ["packages/luna-core"]
+
+[tool.uv.sources]
+luna-core = { workspace = true }
+
 [tool.uv]
 conflicts = [
     [
@@ -95,12 +102,16 @@ conflicts = [
       { extra = "together" },
       { extra = "all" },
     ],
+    [
+      { package = "luna-simple", extra = "together" },
+      { package = "luna-core", extra = "lsp" },
+    ],
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["luna"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/luna-core/tests"]
 addopts = "-q"
 asyncio_mode = "auto"
