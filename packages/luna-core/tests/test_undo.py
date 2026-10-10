@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 
 import pytest
@@ -87,3 +88,47 @@ def test_gc_keeps_the_named_session(tmp_path):
     gc(tmp_path, keep_max=1, keep="a")
     left = sorted(p.name for p in (tmp_path / ".luna" / "undo").iterdir())
     assert "a" in left and len(left) == 2
+
+
+# -- review finding 3: undo must not claim success when it could not restore --
+
+
+def test_undo_reports_failure_when_snapshot_is_missing(repo, monkeypatch):
+    import luna_core.undo as undo_mod
+
+    j = UndoJournal(repo, "s1")
+    j.begin_turn("t1")
+    (repo / "a.txt").write_text("two\n")
+    monkeypatch.setattr(undo_mod, "_snapshot_tree", lambda root: None)
+    res = j.undo()
+    assert res.note == "files could not be restored (no snapshot of the turn)"
+    # the turn record is still rewound even though nothing could be restored
+    assert j.depth == 0 and j.redo_depth == 1
+
+
+def test_undo_notes_files_that_could_not_be_restored(tmp_path):
+    (tmp_path / "d").mkdir()
+    j = UndoJournal(tmp_path, "s1")
+    j.begin_turn("t1")
+    j.before_write("t1", "d")
+    shutil.rmtree(tmp_path / "d")
+    (tmp_path / "d").write_text("now a file\n")
+    res = j.undo()
+    assert "could not restore" in res.note and "d" in res.note
+
+
+# -- review finding 4: non-git pre-images must round-trip bytes exactly --
+
+
+def test_journal_restores_crlf_and_binary_bytes_exact(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"one\r\ntwo\r\n")
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01\xff\xfe")
+    j = UndoJournal(tmp_path, "s1")
+    j.begin_turn("t1")
+    j.before_write("t1", "a.txt")
+    j.before_write("t1", "b.bin")
+    (tmp_path / "a.txt").write_bytes(b"changed\n")
+    (tmp_path / "b.bin").write_bytes(b"also changed")
+    j.undo()
+    assert (tmp_path / "a.txt").read_bytes() == b"one\r\ntwo\r\n"
+    assert (tmp_path / "b.bin").read_bytes() == b"\x00\x01\xff\xfe"

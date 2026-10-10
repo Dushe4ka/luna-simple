@@ -1,3 +1,6 @@
+import tomllib
+
+import pytest
 from luna_core.policy import AnchorTracker, Decision, Policy, Rules, append_rule, suggest_rule
 from luna_core.tools.files import edit_file, read_file, write_file
 from luna_core.tools.shell import execute
@@ -109,3 +112,48 @@ def test_anchor_forget_under(tmp_path):
     assert not t.check("d/x")
     t.forget_under("d")
     assert t.check("d/x")
+
+
+# -- review finding 1: deny rules must match the normalised/resolved path/command --
+
+
+def test_deny_rule_matches_normalised_path(tmp_path):
+    p = Policy(Rules(deny=["write_file:.env"]), workspace=Workspace(tmp_path), yolo=True)
+    for raw in ("src/../.env", "./.env", "/.env", ".env"):
+        assert p.check(write_file, {"file_path": raw, "content": ""}).action == "deny", raw
+
+
+def test_deny_rule_matches_command_with_leading_space(tmp_path):
+    p = Policy(Rules(deny=["execute:rm *"]), workspace=Workspace(tmp_path), yolo=True)
+    assert p.check(execute, {"command": " rm -rf x"}).action == "deny"
+
+
+# -- review finding 2: append_rule must not lose data --
+
+
+def test_append_rule_preserves_other_tables(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[model]\nname = "x"\n\n[permissions]\nallow = ["read_file:*"]\n')
+    append_rule(cfg, "write_file:*")
+    text = cfg.read_text()
+    assert "[model]" in text
+    data = tomllib.loads(text)
+    assert data["model"]["name"] == "x"
+    assert data["permissions"]["allow"] == ["read_file:*", "write_file:*"]
+
+
+def test_append_rule_escapes_control_characters(tmp_path):
+    proj = tmp_path / "permissions.toml"
+    rule = 'execute:printf "a\nb\tc" *'
+    append_rule(proj, rule)
+    again = Rules.load([proj])
+    assert again.allow == [rule]
+
+
+def test_append_rule_raises_on_unparsable_file(tmp_path):
+    bad = tmp_path / "broken.toml"
+    bad.write_text("foo = [1, 2\n")
+    before = bad.read_text()
+    with pytest.raises(ValueError):
+        append_rule(bad, "execute:ls *")
+    assert bad.read_text() == before

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import posixpath
+import re
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -23,12 +24,23 @@ _GROUPS = {
 
 
 def _relpath(raw: str) -> str:
-    return PurePosixPath(str(raw)).as_posix().lstrip("/") if raw else ""
+    """Project-relative POSIX form of ``raw``, with ``..``/``.``/``/`` collapsed.
+
+    ``PurePosixPath.as_posix()`` alone does not collapse ``..`` segments (so
+    ``src/../.env`` would stay distinct from ``.env``), which let a deny rule
+    on ``.env`` be bypassed by a non-normalised path. ``posixpath.normpath``
+    closes that gap for the no-workspace case; ``Policy.check`` additionally
+    resolves file-tool paths through the real :class:`Workspace` first.
+    """
+    if not raw:
+        return ""
+    posix = PurePosixPath(str(raw)).as_posix()
+    return posixpath.normpath(posix).lstrip("/")
 
 
 def _subject(tool: str, args: dict) -> str:
     if tool == "execute":
-        return str(args.get("command", ""))
+        return str(args.get("command", "")).strip()
     return _relpath(args.get("file_path", args.get("path", "")))
 
 
@@ -88,25 +100,81 @@ def _read(path: Path) -> dict:
         return {}
 
 
+_PERM_HEADER = re.compile(r"^\[permissions\][ \t]*$", re.MULTILINE)
+_NEXT_HEADER = re.compile(r"^\[", re.MULTILINE)
+
+
 def append_rule(path: Path, rule: str, kind: str = "allow") -> Path:
-    """Add ``rule`` to ``kind`` in a ``[permissions]`` TOML file, keeping the rest."""
+    """Add ``rule`` to ``kind`` in a ``[permissions]`` TOML file.
+
+    A missing file is created with a bare ``[permissions]`` table. An
+    existing file must already parse as TOML — a broken file is left
+    untouched and raises :class:`ValueError` rather than being silently
+    overwritten (which would otherwise drop every rule already in it).
+
+    When the file holds nothing but the permissions table (or the project's
+    bare ``permissions.toml`` form, with ``allow``/``deny``/``ask`` at the
+    top level and no other keys), the whole file is rewritten, same as
+    before. When it also holds unrelated tables (e.g. a shared
+    ``config.toml`` with a ``[model]`` section), only the ``[permissions]``
+    section is replaced — every other line is kept byte-for-byte.
+    """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = _read(path)
-    table = data.get("permissions", data) if data else {}
+    raw = ""
+    data: dict = {}
+    if path.exists():
+        raw = path.read_text(encoding="utf-8")
+        try:
+            data = tomllib.loads(raw) if raw.strip() else {}
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"{path} is not valid TOML: {exc}") from exc
+    has_header = "permissions" in data
+    table = data["permissions"] if has_header else data
+    foreign = set(data) - ({"permissions"} if has_header else {"allow", "deny", "ask"})
     lists = {k: list(table.get(k, [])) for k in ("allow", "deny", "ask")}
     if rule not in lists[kind]:
         lists[kind].append(rule)
-    lines = ["[permissions]"]
-    for k, values in lists.items():
-        if values:
-            lines += [f"{k} = [", *(f"    {_toml_str(r)}," for r in values), "]"]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    block = _permissions_block(lists)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(block if not foreign else _splice_permissions(raw, block), encoding="utf-8")
     return path
 
 
+def _permissions_block(lists: dict[str, list[str]]) -> str:
+    lines = ["[permissions]"]
+    for k in ("allow", "deny", "ask"):
+        values = lists[k]
+        if values:
+            lines += [f"{k} = [", *(f"    {_toml_str(r)}," for r in values), "]"]
+    return "\n".join(lines) + "\n"
+
+
+def _splice_permissions(raw: str, block: str) -> str:
+    """Replace the ``[permissions]`` table in ``raw`` with ``block``, or append it."""
+    match = _PERM_HEADER.search(raw)
+    if not match:
+        sep = "" if not raw else ("\n" if raw.endswith("\n") else "\n\n")
+        return raw + sep + block
+    rest = raw[match.end() :]
+    nxt = _NEXT_HEADER.search(rest)
+    end = match.end() + (nxt.start() if nxt else len(rest))
+    return raw[: match.start()] + block + raw[end:]
+
+
+_CONTROL_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+
+
 def _toml_str(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Build a TOML basic string literal, escaping backslashes, quotes and control characters."""
+    out = []
+    for ch in value:
+        if ch in _CONTROL_ESCAPES:
+            out.append(_CONTROL_ESCAPES[ch])
+        elif ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def suggest_rule(tool: str, args: dict) -> str:
@@ -254,15 +322,19 @@ class Policy:
     def check(self, tool: Tool, args: dict) -> Verdict:
         """Verdict for calling ``tool`` with ``args``."""
         name = tool.name
-        match = self.rules.match(name, args)
+        rel = self._rel(args)
+        # Rule subjects use the workspace-resolved relative path, not the raw
+        # argument, so a deny rule cannot be bypassed by an unnormalised path
+        # (e.g. ``src/../.env`` must match the same rule as ``.env``).
+        match_args = {**args, "file_path": rel} if rel and name != "execute" else args
+        match = self.rules.match(name, match_args)
         if match == "deny":
             return Verdict("deny", f"blocked by a Luna permission rule ({name})")
         mutating = tool.mutating or name in self.approval_tools
-        if mutating and self._planning():
+        if mutating and self.planning:
             return Verdict(
                 "deny", f"plan mode is on — refusing to {name}. Run /plan off to make changes."
             )
-        rel = self._rel(args)
         if rel and name in MUTATING_FILE_TOOLS and self.anchors and not self.anchors.check(rel):
             return Verdict(
                 "deny",

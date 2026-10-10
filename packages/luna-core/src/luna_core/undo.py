@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import difflib
 import json
@@ -37,6 +38,13 @@ def _git(root: Path, args: list[str], env: dict | None = None) -> str | None:
 
 def _is_git(root: Path) -> bool:
     return _git(root, ["rev-parse", "--is-inside-work-tree"]) == "true"
+
+
+def _decode(image: dict) -> str:
+    """Best-effort text view of a ``"bytes"`` pre/post-image, for ``diff()`` display."""
+    if image.get("kind") != "bytes":
+        return ""
+    return base64.b64decode(image["data"]).decode("utf-8", errors="replace")
 
 
 def _snapshot_tree(root: Path) -> str | None:
@@ -129,22 +137,29 @@ class UndoJournal:
         self._save(data)
 
     def _read(self, rel: str) -> dict:
+        """Capture ``rel``'s current content as raw bytes (base64 in the journal).
+
+        Storing bytes rather than decoded text means a pre-image round-trips
+        exactly — CRLF line endings and non-UTF-8 files are restored
+        byte-for-byte instead of being normalised or dropped.
+        """
         target = self.root / rel
         if target.is_dir():
             return {"kind": "dir"}
         if not target.is_file():
             return {"kind": "absent"}
         try:
-            return {"kind": "text", "text": target.read_text(encoding="utf-8")}
-        except (OSError, ValueError):
-            return {"kind": "binary"}
+            data = target.read_bytes()
+        except OSError:
+            return {"kind": "absent"}
+        return {"kind": "bytes", "data": base64.b64encode(data).decode("ascii")}
 
     def _write(self, rel: str, image: dict) -> bool:
         target = self.root / rel
         kind = image.get("kind")
-        if kind == "text":
+        if kind == "bytes":
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(image["text"], encoding="utf-8")
+            target.write_bytes(base64.b64decode(image["data"]))
             return True
         if kind == "absent":
             if target.is_dir():
@@ -152,11 +167,17 @@ class UndoJournal:
             elif target.exists():
                 target.unlink()
             return True
-        return False  # binary or directory pre-images cannot be restored
+        return False  # a directory pre-image cannot be restored (no captured contents)
 
     # -- undo / redo -----------------------------------------------------
     def undo(self) -> UndoResult | None:
-        """Revert the newest turn's files."""
+        """Revert the newest turn's files.
+
+        The turn record is popped (and a redo record pushed) even when the
+        files could not actually be restored — the note says so instead of
+        claiming "no file changes" (which would be indistinguishable from a
+        turn that genuinely made none).
+        """
         data = self._load()
         if not data["turns"]:
             return None
@@ -164,15 +185,18 @@ class UndoJournal:
         if self.is_git:
             post = _snapshot_tree(self.root)
             pre = turn.get("pre_tree")
-            changed = bool(pre and post and pre != post)
-            if changed:
+            if not pre or not post:
+                note = "files could not be restored (no snapshot of the turn)"
+            elif pre == post:
+                note = "no file changes in this turn"
+            else:
                 self._restore_tree(pre, post)
+                note = "files restored"
             data["redo"].append({"turn_id": turn["turn_id"], "pre_tree": pre, "post_tree": post})
         else:
             files = turn.get("files", {})
             post_images = {rel: self._read(rel) for rel in files}
             skipped = [rel for rel, image in files.items() if not self._write(rel, image)]
-            changed = bool(files)
             data["redo"].append(
                 {
                     "turn_id": turn["turn_id"],
@@ -181,10 +205,15 @@ class UndoJournal:
                     "skipped": skipped,
                 }
             )
+            restored = len(files) - len(skipped)
+            if not files:
+                note = "no file changes in this turn"
+            elif skipped:
+                note = f"restored {restored} files; could not restore: {', '.join(sorted(skipped))}"
+            else:
+                note = "files restored"
         self._save(data)
-        return UndoResult(
-            turn["turn_id"], "files restored" if changed else "no file changes in this turn"
-        )
+        return UndoResult(turn["turn_id"], note)
 
     def redo(self) -> UndoResult | None:
         """Re-apply the most recently undone turn's files."""
@@ -246,12 +275,12 @@ class UndoJournal:
                 earliest.setdefault(rel, image)
         chunks = []
         for rel, image in earliest.items():
-            if image.get("kind") not in ("text", "absent"):
-                chunks.append(f"# {rel}: binary or unreadable — changed, no diff")
+            if image.get("kind") not in ("bytes", "absent"):
+                chunks.append(f"# {rel}: a directory — changed, no diff")
                 continue
             now = self._read(rel)
-            before = image.get("text", "").splitlines()
-            after = now.get("text", "").splitlines()
+            before = _decode(image).splitlines()
+            after = _decode(now).splitlines()
             text = "\n".join(
                 difflib.unified_diff(before, after, f"a/{rel}", f"b/{rel}", lineterm="")
             )
