@@ -20,6 +20,3 @@ websearch = ["ddgs>=8.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/luna_core"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/luna_core/data" = "luna_core/data"
