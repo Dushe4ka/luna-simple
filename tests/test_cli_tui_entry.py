@@ -137,9 +137,7 @@ def test_one_shot_prompt_never_asks_for_trust(monkeypatch, tmp_path):
     assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path), "-p", "hi"]) == 0
 
 
-def test_tui_gets_an_absolute_workdir_even_when_launched_with_the_default(
-    monkeypatch, tmp_path
-):
+def test_tui_gets_an_absolute_workdir_even_when_launched_with_the_default(monkeypatch, tmp_path):
     """Regression: `config.workdir` defaults to "." and was passed to the
     shared server as-is, which resolved it against its *own* cwd."""
     import luna.cli as cli_mod

@@ -153,6 +153,7 @@ class _LiveReply:
         if self._thinking_shown():
             await self._thinking.remove()
 
+
 class ChatPane(Widget):
     """Chat transcript + input row, streamed via the server's SSE endpoint.
 
@@ -579,9 +580,7 @@ class ChatPane(Widget):
             await reply.stop()
             self.post_message(self.TurnFinished())
 
-    async def _apply_event(
-        self, evt: dict, reply: _LiveReply
-    ) -> dict | None:
+    async def _apply_event(self, evt: dict, reply: _LiveReply) -> dict | None:
         """Apply one SSE event to the transcript/status bar.
 
         Returns the interrupt's action-request payload if ``evt`` is an

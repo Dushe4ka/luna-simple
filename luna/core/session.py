@@ -53,7 +53,6 @@ __all__ = [
 ]
 
 
-
 def _new_thread_id() -> str:
     return uuid.uuid4().hex
 

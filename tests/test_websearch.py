@@ -36,9 +36,7 @@ def test_uses_tavily_when_its_key_is_set(monkeypatch):
         return _response(url, "POST", {"results": [hit]})
 
     monkeypatch.setattr(websearch.httpx, "post", fake_post)
-    result = websearch.web_search.invoke(
-        {"query": "langchain 1.4 release notes", "max_results": 5}
-    )
+    result = websearch.web_search.invoke({"query": "langchain 1.4 release notes", "max_results": 5})
     assert "via tavily" in result
     assert "LangChain 1.4" in result
     assert "https://x.test/a" in result
