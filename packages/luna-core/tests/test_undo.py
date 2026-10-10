@@ -132,3 +132,34 @@ def test_journal_restores_crlf_and_binary_bytes_exact(tmp_path):
     j.undo()
     assert (tmp_path / "a.txt").read_bytes() == b"one\r\ntwo\r\n"
     assert (tmp_path / "b.bin").read_bytes() == b"\x00\x01\xff\xfe"
+
+
+# -- review finding (task 17): top_turn/discard_top/top_redo let a caller
+# -- skip a journal record that has no matching visible conversation turn --
+
+
+def test_top_turn_and_discard_top(repo):
+    j = UndoJournal(repo, "s1")
+    assert j.top_turn() is None
+    j.begin_turn("t1")
+    assert j.top_turn() == "t1"
+    j.begin_turn("t2")
+    assert j.top_turn() == "t2" and j.depth == 2
+    j.discard_top()
+    assert j.top_turn() == "t1" and j.depth == 1
+    (repo / "a.txt").write_text("still there\n")
+    assert (repo / "a.txt").read_text() == "still there\n"  # discard_top never touches files
+    j.discard_top()
+    assert j.top_turn() is None and j.depth == 0
+    j.discard_top()  # discarding an empty journal is a no-op
+    assert j.depth == 0
+
+
+def test_top_redo(repo):
+    j = UndoJournal(repo, "s1")
+    assert j.top_redo() is None
+    j.begin_turn("t1")
+    j.undo()
+    assert j.top_redo() == "t1"
+    j.redo()
+    assert j.top_redo() is None

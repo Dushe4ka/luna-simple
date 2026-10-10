@@ -480,16 +480,32 @@ class Session:
         return len(self.turn_ids())
 
     def undo(self) -> UndoResult | None:
-        """Revert the last turn: files (when journaled) and conversation."""
+        """Revert the last turn: files (when journaled) and conversation.
+
+        The journal's newest record and the conversation's last visible
+        turn can diverge — a turn that was cancelled after ``begin_turn``
+        but before any message was logged leaves a journal record with no
+        visible turn. Such ghost records are discarded (no files are
+        touched for them) until the journal's top either matches the last
+        visible turn or runs out; a turn with no journal record at all
+        rewinds the conversation without touching any files.
+        """
         turns = self.turn_ids()
         if not turns:
             return None
         last = turns[-1]
         note = "conversation rewound"
         if self.undo_journal is not None:
-            res = self.undo_journal.undo()
-            if res is not None:
-                note = f"{res.note}; conversation rewound"
+            top = self.undo_journal.top_turn()
+            while top is not None and top not in turns:
+                self.undo_journal.discard_top()
+                top = self.undo_journal.top_turn()
+            if top == last:
+                res = self.undo_journal.undo()
+                if res is not None:
+                    note = f"{res.note}; conversation rewound"
+            else:
+                note = "files not journaled for this turn; conversation rewound"
         self.append("rewound", {"turn_id": last})
         return UndoResult(last, note)
 
@@ -499,10 +515,16 @@ class Session:
         if not redo:
             return None
         turn_id = redo[-1]
+        note = "turn restored"
         if self.undo_journal is not None:
-            self.undo_journal.redo()
+            if self.undo_journal.top_redo() == turn_id:
+                res = self.undo_journal.redo()
+                if res is not None:
+                    note = f"{res.note}; turn restored"
+            else:
+                note = "files not journaled for this turn; turn restored"
         self.append("restored", {"turn_id": turn_id})
-        return UndoResult(turn_id, "turn restored")
+        return UndoResult(turn_id, note)
 
     def rewind(self, to_seq: int) -> int:
         """Undo every visible turn that started after ``to_seq``; returns how many."""

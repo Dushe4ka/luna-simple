@@ -109,6 +109,104 @@ def test_undo_also_reverts_files(log, tmp_path):
     assert res.turn_id == "t1" and (tmp_path / "f.txt").read_text() == "one" and s.messages() == []
 
 
+def _init_git(root):
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+
+
+# -- review finding (task 17): undo/redo must not assume the journal's newest
+# -- record is the conversation's last visible turn (they can diverge when a
+# -- turn is cancelled after begin_turn but before any message is logged) --
+
+
+def test_undo_skips_a_ghost_journal_record_between_two_real_turns(log, tmp_path):
+    _init_git(tmp_path)
+    (tmp_path / "f.txt").write_text("zero")
+    s = Session.create(log, str(tmp_path))
+
+    s.append("turn_started", {"turn_id": "t1"})
+    s.undo_journal.begin_turn("t1")
+    s.append("user", {"message": message_to_dict(Message.user("a"))})
+    s.append(
+        "assistant",
+        {
+            "message": message_to_dict(Message.assistant([Text("b")])),
+            "usage": Usage(1, 1).to_dict(),
+        },
+    )
+    (tmp_path / "f.txt").write_text("one")
+
+    # a turn cancelled before any message was logged: a journal record with
+    # no visible turn in the conversation.
+    s.append("turn_started", {"turn_id": "ghost"})
+    s.undo_journal.begin_turn("ghost")
+    (tmp_path / "f.txt").write_text("ghost")
+
+    s.append("turn_started", {"turn_id": "t2"})
+    s.undo_journal.begin_turn("t2")
+    s.append("user", {"message": message_to_dict(Message.user("c"))})
+    s.append(
+        "assistant",
+        {
+            "message": message_to_dict(Message.assistant([Text("d")])),
+            "usage": Usage(1, 1).to_dict(),
+        },
+    )
+    (tmp_path / "f.txt").write_text("two")
+
+    res2 = s.undo()
+    assert res2.turn_id == "t2"
+    assert (tmp_path / "f.txt").read_text() == "ghost"
+    assert [m.text for m in s.messages()] == ["a", "b"]
+
+    res1 = s.undo()
+    assert res1.turn_id == "t1"
+    assert (tmp_path / "f.txt").read_text() == "zero"
+    assert s.messages() == []
+
+
+def test_redo_reports_the_journals_note(log, tmp_path):
+    _init_git(tmp_path)
+    (tmp_path / "f.txt").write_text("one")
+    s = Session.create(log, str(tmp_path))
+    s.append("turn_started", {"turn_id": "t1"})
+    s.undo_journal.begin_turn("t1")
+    s.append("user", {"message": message_to_dict(Message.user("a"))})
+    s.append(
+        "assistant",
+        {
+            "message": message_to_dict(Message.assistant([Text("b")])),
+            "usage": Usage(1, 1).to_dict(),
+        },
+    )
+    (tmp_path / "f.txt").write_text("two")
+    s.undo()
+    res = s.redo()
+    assert res.turn_id == "t1" and "files re-applied" in res.note
+
+
+def test_undo_without_a_journal_record_leaves_files_untouched(log, tmp_path):
+    _init_git(tmp_path)
+    (tmp_path / "f.txt").write_text("one")
+    s = Session.create(log, str(tmp_path))
+    s.append("turn_started", {"turn_id": "t1"})
+    # no undo_journal.begin_turn("t1") -- the turn has no journal record at all.
+    s.append("user", {"message": message_to_dict(Message.user("a"))})
+    s.append(
+        "assistant",
+        {
+            "message": message_to_dict(Message.assistant([Text("b")])),
+            "usage": Usage(1, 1).to_dict(),
+        },
+    )
+    (tmp_path / "f.txt").write_text("two")
+    res = s.undo()
+    assert res.turn_id == "t1"
+    assert (tmp_path / "f.txt").read_text() == "two"
+    assert "not journaled" in res.note
+
+
 def test_rewind_to_seq(log, tmp_path):
     s = Session.create(log, str(tmp_path), undo=False)
     turn(s, "t1", "a", "b")

@@ -107,6 +107,29 @@ class UndoJournal:
         """Number of undone turns that can be redone."""
         return len(self._load()["redo"])
 
+    def top_turn(self) -> str | None:
+        """Turn id of the newest undoable record, or ``None``."""
+        turns = self._load()["turns"]
+        return turns[-1]["turn_id"] if turns else None
+
+    def discard_top(self) -> None:
+        """Drop the newest undoable record without touching any files.
+
+        Used when a record has no matching visible conversation turn (a
+        turn whose ``begin_turn`` ran but was cancelled before any message
+        was logged) — there is nothing for the user to see restored, so the
+        record is dropped in place rather than undone.
+        """
+        data = self._load()
+        if data["turns"]:
+            data["turns"].pop()
+            self._save(data)
+
+    def top_redo(self) -> str | None:
+        """Turn id of the newest redoable record, or ``None``."""
+        redo = self._load()["redo"]
+        return redo[-1]["turn_id"] if redo else None
+
     # -- recording -------------------------------------------------------
     def begin_turn(self, turn_id: str) -> None:
         """Record the state before a turn; clears the redo stack."""
