@@ -7,8 +7,11 @@ from luna_core.tools.files import FILE_TOOLS
 
 
 def builtin_tools() -> list[Tool]:
-    """Fresh list of the built-in tools (files now; shell, todos and tasks join later)."""
-    return [*FILE_TOOLS]
+    """Fresh list of the built-in tools (``task`` tools are added by the agent)."""
+    from luna_core.tools.shell import execute
+    from luna_core.tools.todos import write_todos
+
+    return [*FILE_TOOLS, execute, write_todos]
 
 
 __all__ = ["Tool", "ToolContext", "ToolOutput", "ToolSpec", "args_preview", "builtin_tools", "tool"]
