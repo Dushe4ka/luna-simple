@@ -46,6 +46,14 @@ def test_symlink_escape_is_an_error(ws, tmp_path_factory):
         ws.resolve("link/secret.txt")
 
 
+@pytest.mark.parametrize("raw", ["C:\\Users\\me\\x.txt", "c:/tmp/x", "\\\\server\\share\\x"])
+def test_windows_style_path_is_an_error_not_remapped(ws, raw):
+    before = set(ws.root.iterdir())
+    with pytest.raises(OutsideWorkspace, match="outside the project"):
+        ws.resolve(raw)
+    assert set(ws.root.iterdir()) == before
+
+
 def test_ignored_dirs(ws):
     assert (
         ws.ignored(".git/config")

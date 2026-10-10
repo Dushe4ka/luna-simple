@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path, PurePosixPath
 
 from luna_core.errors import ToolError
+
+# Windows drive-letter (``C:\...``, ``c:/...``) and UNC (``\\server\share``) paths are
+# never absolute on POSIX, so they must be rejected before the absolute/relative
+# branching below — otherwise they fall through as a single relative path segment.
+_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_UNC_RE = re.compile(r"^\\\\")
 
 IGNORED_DIRS = frozenset(
     {
@@ -40,6 +47,8 @@ class Workspace:
     def resolve(self, path: str) -> Path:
         """Return the absolute path for an agent path, or raise :class:`OutsideWorkspace`."""
         raw = str(path or "").strip()
+        if _DRIVE_LETTER_RE.match(raw) or _UNC_RE.match(raw):
+            raise OutsideWorkspace(f"outside the project: {raw} (project root is {self.root})")
         if raw in ("", ".", "/"):
             return self.root
         candidate = Path(raw).expanduser()
@@ -49,7 +58,7 @@ class Workspace:
                 first = parts[1] if len(parts) > 1 else ""
                 on_host = bool(first) and Path("/", first).exists()
                 in_project = bool(first) and (self.root / first).exists()
-                if (on_host and not in_project) or (len(raw) > 1 and raw[1] == ":"):
+                if on_host and not in_project:
                     raise OutsideWorkspace(
                         f"outside the project: {raw} (project root is {self.root})"
                     )
