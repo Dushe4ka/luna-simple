@@ -60,6 +60,12 @@ def test_build_model_reads_stored_key(monkeypatch):
     set_api_key("anthropic", "sk-ant-fromfile")
     build_model("anthropic")  # must not raise about a missing key
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-fromfile"
+    # build_model() writes straight to os.environ (apply_stored_key), bypassing
+    # monkeypatch's own save/restore tracking, so it would otherwise leak this
+    # fake key into the real process environment for every later test in the
+    # run. A raw pop scrubs it without going through monkeypatch, which would
+    # instead snapshot this leaked value and restore it at teardown.
+    os.environ.pop("ANTHROPIC_API_KEY", None)
 
 
 def test_env_var_still_wins(monkeypatch):
