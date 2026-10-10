@@ -1,0 +1,636 @@
+"""The agent loop: model ↔ tools, approvals, hooks, cancellation."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import dataclasses
+import os
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable
+from pathlib import Path
+from typing import Protocol
+
+from luna_core import catalog
+from luna_core.errors import ProviderError
+from luna_core.events import (
+    ApprovalRequest,
+    Cancelled,
+    NeedsApproval,
+    Notice,
+    TextDelta,
+    ThinkingDelta,
+    ToolFinished,
+    ToolStarted,
+    TurnDone,
+    TurnError,
+    TurnStarted,
+    UsageUpdate,
+)
+from luna_core.hooks import Hooks
+from luna_core.messages import Image, Message, Text, ToolCall, ToolResult, message_to_dict
+from luna_core.policy import MUTATING_FILE_TOOLS, Decision, Policy
+from luna_core.providers.base import ModelRequest, Provider, StreamAccumulator
+from luna_core.sandbox import LocalSandbox, Sandbox
+from luna_core.session import Session
+from luna_core.tools import builtin_tools
+from luna_core.tools.base import Tool, ToolContext, ToolOutput, args_preview
+from luna_core.usage import Usage, cost
+from luna_core.workspace import OutsideWorkspace, Workspace
+
+_DONE = object()
+_GRACE = 2.0
+
+
+class Compactor(Protocol):
+    """Shrinks the context when it gets too large (see ``luna_core.compaction``)."""
+
+    def maybe_compact(self, agent: Agent, session: Session) -> AsyncIterator[object]:
+        """Yield turn events (``Compacted``, notices) if it compacted."""
+        ...
+
+
+class _Cancelled(Exception):
+    pass
+
+
+class PathLocks:
+    """Named asyncio locks; mutating tools hold one per path."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def locked(self, key: str) -> bool:
+        """Return True while ``key`` is held."""
+        lock = self._locks.get(key)
+        return bool(lock and lock.locked())
+
+    @contextlib.asynccontextmanager
+    async def hold(self, keys: list[str]):
+        """Hold every key (sorted, so two holders never deadlock)."""
+        acquired: list[asyncio.Lock] = []
+        try:
+            for key in sorted(set(keys)):
+                lock = self._locks.setdefault(key, asyncio.Lock())
+                await lock.acquire()
+                acquired.append(lock)
+            yield
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
+
+
+def readable_error(exc: ProviderError, provider_name: str) -> str:
+    """Describe ``exc`` for the user, with the fix where there is one."""
+    if exc.kind == "auth":
+        return (
+            f"{provider_name} rejected the API key ({exc}). Set it with "
+            f"`luna config set-key {provider_name}` or the provider's env var."
+        )
+    if exc.kind == "context_length":
+        return (
+            f"the conversation no longer fits the model's context window ({exc}). "
+            "Run /compact or start a new session."
+        )
+    if exc.kind == "rate_limit":
+        return f"{provider_name} is rate limiting requests ({exc}). Wait a moment and retry."
+    if exc.kind == "network":
+        return f"network problem talking to {provider_name}: {exc}"
+    return f"{provider_name}: {exc}"
+
+
+async def _cancellable(stream: AsyncIterator, cancel: asyncio.Event) -> AsyncIterator:
+    iterator = stream.__aiter__()
+    waiter = asyncio.ensure_future(cancel.wait())
+    step: asyncio.Future | None = None
+    try:
+        while True:
+            step = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({step, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if step not in done:
+                step.cancel()
+                with contextlib.suppress(BaseException):
+                    await step
+                raise _Cancelled
+            exc = step.exception()
+            if isinstance(exc, StopAsyncIteration):
+                return
+            if exc is not None:
+                raise exc
+            yield step.result()
+    finally:
+        waiter.cancel()
+        if step is not None and not step.done():
+            # The consumer was cancelled mid-read: do not leave the read running.
+            step.cancel()
+            with contextlib.suppress(BaseException):
+                await step
+        with contextlib.suppress(Exception):
+            await iterator.aclose()
+
+
+class Agent:
+    """A configured agent; ``run`` executes one turn in a session."""
+
+    def __init__(
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        tools: list[Tool] | None = None,
+        system: str | Callable[[Session], str] = "",
+        policy: Policy | None = None,
+        workspace: Workspace | None = None,
+        sandbox: Sandbox | None = None,
+        hooks: Hooks | None = None,
+        max_steps: int = 50,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        reasoning: str | None = None,
+        max_cost: float | None = None,
+        compactor: Compactor | None = None,
+        services: dict | None = None,
+        tool_output_budget: int = 30_000,
+        locks: PathLocks | None = None,
+        model_overrides: dict | None = None,
+        name: str = "luna",
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self.workspace = workspace or Workspace(os.getcwd())
+        self.tools: dict[str, Tool] = {
+            t.name: t for t in (tools if tools is not None else builtin_tools())
+        }
+        self.system = system
+        self.policy = policy or Policy(workspace=self.workspace)
+        self.sandbox = sandbox or LocalSandbox()
+        self.hooks = hooks or Hooks()
+        self.max_steps = max_steps
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.reasoning = reasoning
+        self.max_cost = max_cost
+        self.compactor = compactor
+        self.services = dict(services or {})
+        self.tool_output_budget = tool_output_budget
+        self.locks = locks or PathLocks()
+        self.model_overrides = model_overrides
+        self.name = name
+
+    # -- configuration -----------------------------------------------------
+    def add_tool(self, tool: Tool) -> None:
+        """Add or replace a tool."""
+        self.tools[tool.name] = tool
+
+    def remove_tool(self, name: str) -> None:
+        """Remove a tool if present."""
+        self.tools.pop(name, None)
+
+    @property
+    def model_info(self) -> catalog.ModelInfo:
+        """Catalogue entry for the model."""
+        return catalog.lookup(self.model, self.model_overrides)
+
+    def system_prompt(self, session: Session) -> str:
+        """Return the system prompt for ``session``."""
+        return self.system(session) if callable(self.system) else self.system
+
+    def request(self, session: Session, messages: list[Message] | None = None) -> ModelRequest:
+        """Build the model request for the session's current context."""
+        return ModelRequest(
+            model=self.model,
+            system=self.system_prompt(session),
+            messages=session.messages() if messages is None else messages,
+            tools=[t.spec for t in self.tools.values()],
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            reasoning=self.reasoning,
+        )
+
+    # -- running -----------------------------------------------------------
+    async def run(
+        self, session: Session, text: str = "", *, images: tuple[Image, ...] | list[Image] = ()
+    ) -> AsyncIterator[object]:
+        """Run one turn; yields turn events."""
+        cancel = session._begin_turn()
+        turn_id = uuid.uuid4().hex[:12]
+        ended = False
+        try:
+            # ``aclosing`` so that closing this generator (consumer ``break`` or
+            # ``aclose()``) also closes the inner ones and stops running tools.
+            turn = self._turn(session, turn_id, text, list(images), cancel)
+            async with contextlib.aclosing(turn) as events:
+                async for event in events:
+                    ended = isinstance(event, (TurnDone, TurnError, Cancelled))
+                    yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            # A consumer closing us right after the final event is not a cancel.
+            if not ended and not any(
+                r.type == "cancelled" and r.payload.get("turn_id") == turn_id
+                for r in session.records()[-3:]
+            ):
+                session.append("cancelled", {"turn_id": turn_id})
+            raise
+        finally:
+            session._end_turn()
+
+    def run_sync(
+        self,
+        session: Session,
+        text: str = "",
+        *,
+        images: tuple[Image, ...] = (),
+        approve: Callable[[ApprovalRequest], Decision] | None = None,
+    ) -> list[object]:
+        """Blocking wrapper around :meth:`run` for non-async callers."""
+
+        async def main() -> list[object]:
+            events = []
+            async for event in self.run(session, text, images=images):
+                events.append(event)
+                if isinstance(event, NeedsApproval):
+                    decision = (
+                        approve(event.request)
+                        if approve
+                        else Decision.reject("no approval handler")
+                    )
+                    session.decide(event.request.call_id, decision)
+            return events
+
+        return asyncio.run(main())
+
+    async def _turn(
+        self, session: Session, turn_id: str, text: str, images: list[Image], cancel: asyncio.Event
+    ) -> AsyncIterator[object]:
+        first = not session.has_user_messages
+        session.append("turn_started", {"turn_id": turn_id})
+        yield TurnStarted(turn_id)
+        if session.undo_journal is not None:
+            await asyncio.to_thread(session.undo_journal.begin_turn, turn_id)
+        blocks: list = [Text(text)] if text else []
+        blocks += images
+        if first:
+            outcome = await self.hooks.run(
+                "session_start", {"session_id": session.id, "workdir": session.workdir}
+            )
+            for note in outcome.notices:
+                yield Notice("info", note)
+            if outcome.context:
+                blocks.append(Text(f"\n\n{outcome.context}"))
+        session.append("user", {"message": message_to_dict(Message("user", blocks))})
+        total = Usage()
+        steps = 0
+        stop_reason = "end"
+        while True:
+            if cancel.is_set():
+                yield self._record_cancel(session, turn_id)
+                return
+            for queued in session.drain_queue():
+                session.append("user", {"message": message_to_dict(Message.user(queued))})
+            if self.compactor is not None:
+                async for event in self.compactor.maybe_compact(self, session):
+                    yield event
+            if steps >= self.max_steps:
+                yield Notice("warn", f"stopped after max_steps={self.max_steps} model calls")
+                stop_reason = "max_steps"
+                break
+            if (
+                self.max_cost is not None
+                and session.cost() + (cost(total, self.model_info) or 0) >= self.max_cost
+            ):
+                message = f"budget reached: max_cost=${self.max_cost:g}"
+                session.append(
+                    "turn_error", {"turn_id": turn_id, "message": message, "kind": "budget"}
+                )
+                yield TurnError(message, "budget")
+                return
+            steps += 1
+            acc = StreamAccumulator(self.provider.name)
+            try:
+                stream = _cancellable(self.provider.stream(self.request(session)), cancel)
+                async with contextlib.aclosing(stream) as model_events:
+                    async for event in model_events:
+                        acc.feed(event)
+                        if isinstance(event, TextDelta):
+                            yield event
+                        elif isinstance(event, ThinkingDelta) and event.text:
+                            yield ThinkingDelta(event.text)
+            except _Cancelled:
+                self._record_partial(session, acc)
+                yield self._record_cancel(session, turn_id)
+                return
+            except ProviderError as exc:
+                self._record_partial(session, acc)
+                message = readable_error(exc, self.provider.name)
+                session.append(
+                    "turn_error", {"turn_id": turn_id, "message": message, "kind": exc.kind}
+                )
+                yield TurnError(message, exc.kind)
+                return
+            except (asyncio.CancelledError, GeneratorExit):
+                self._record_partial(session, acc)
+                raise
+            message = acc.message()
+            session.append(
+                "assistant", {"message": message_to_dict(message), "usage": acc.usage.to_dict()}
+            )
+            total = total + acc.usage
+            yield UsageUpdate(acc.usage)
+            if not message.tool_calls:
+                stop_reason = acc.stop_reason
+                if stop_reason == "max_tokens":
+                    yield Notice("warn", "the answer was cut off at max_tokens")
+                outcome = await self.hooks.run(
+                    "turn_end", {"session_id": session.id, "turn_id": turn_id, "text": message.text}
+                )
+                for note in outcome.notices:
+                    yield Notice("info", note)
+                if outcome.block and outcome.message and steps < self.max_steps:
+                    session.append(
+                        "user", {"message": message_to_dict(Message.user(outcome.message))}
+                    )
+                    continue
+                break
+            results: list[ToolResult] = []
+            tools_run = self._run_tools(session, turn_id, message.tool_calls, cancel, results)
+            async with contextlib.aclosing(tools_run) as tool_events:
+                async for event in tool_events:
+                    yield event
+            session.append(
+                "tool_results", {"message": message_to_dict(Message.tool_results(results))}
+            )
+            if cancel.is_set():
+                yield self._record_cancel(session, turn_id)
+                return
+        price = cost(total, self.model_info)
+        session.append(
+            "turn_done",
+            {
+                "turn_id": turn_id,
+                "usage": total.to_dict(),
+                "cost": price,
+                "stop_reason": stop_reason,
+            },
+        )
+        yield TurnDone(total, price, stop_reason)
+
+    def _record_partial(self, session: Session, acc: StreamAccumulator) -> None:
+        partial = acc.message()
+        kept = [b for b in partial.content if not isinstance(b, ToolCall)]
+        if any(isinstance(b, Text) and b.text for b in kept):
+            session.append(
+                "assistant",
+                {"message": message_to_dict(Message.assistant(kept)), "usage": acc.usage.to_dict()},
+            )
+
+    def _record_cancel(self, session: Session, turn_id: str) -> Cancelled:
+        session.append("cancelled", {"turn_id": turn_id})
+        return Cancelled()
+
+    # -- tools -------------------------------------------------------------
+    async def _run_tools(
+        self,
+        session: Session,
+        turn_id: str,
+        calls: list[ToolCall],
+        cancel: asyncio.Event,
+        out: list[ToolResult],
+    ) -> AsyncIterator[object]:
+        results: dict[str, ToolResult] = {}
+        approved: list[tuple[ToolCall, Tool, dict]] = []
+
+        def refuse(call: ToolCall, text: str) -> ToolFinished:
+            results[call.id] = ToolResult(call.id, (Text(text),), True, call.name)
+            return ToolFinished(call.id, call.name, False, text.splitlines()[0][:120], 0.0)
+
+        tasks: list[asyncio.Task] = []
+        watchdog: asyncio.Task | None = None
+        try:
+            for call in calls:
+                if cancel.is_set():
+                    break
+                tool = self.tools.get(call.name)
+                if tool is None:
+                    yield refuse(
+                        call,
+                        f"unknown tool {call.name!r}; available: {', '.join(sorted(self.tools))}",
+                    )
+                    continue
+                args = dict(call.args)
+                if "__invalid_json__" in args:
+                    yield refuse(
+                        call,
+                        f"the arguments for {call.name} were not valid JSON: "
+                        f"{args['__invalid_json__'][:200]}",
+                    )
+                    continue
+                verdict = self.policy.check(tool, args)
+                if verdict.action == "deny":
+                    yield refuse(call, verdict.message)
+                    continue
+                if verdict.action == "ask":
+                    request = dataclasses.replace(verdict.request, call_id=call.id)
+                    future = session.expect_decision(call.id)
+                    yield NeedsApproval(request)
+                    decision = await self._await_decision(future, cancel)
+                    if decision is None:
+                        break
+                    session.append("approval", {"call_id": call.id, "decision": decision.to_dict()})
+                    if decision.always:
+                        self.policy.remember_always(decision.always)
+                    if decision.type == "reject":
+                        yield refuse(
+                            call,
+                            "rejected by the user"
+                            + (f": {decision.message}" if decision.message else ""),
+                        )
+                        continue
+                    if decision.type == "edit" and decision.args is not None:
+                        args = dict(decision.args)
+                pre = await self.hooks.run(
+                    "pre_tool",
+                    {"session_id": session.id, "tool": call.name, "args": args},
+                    tool=call.name,
+                )
+                for note in pre.notices:
+                    yield Notice("info", note)
+                if pre.block:
+                    yield refuse(call, pre.message or f"blocked by a hook ({call.name})")
+                    continue
+                if pre.args is not None:
+                    args = dict(pre.args)
+                approved.append((call, tool, args))
+
+            if cancel.is_set():
+                # Esc during an approval (or a hook): nothing of this batch runs.
+                approved.clear()
+            queue: asyncio.Queue = asyncio.Queue()
+            tasks = [
+                asyncio.create_task(
+                    self._execute(session, turn_id, call, tool, args, queue, cancel, results)
+                )
+                for call, tool, args in approved
+            ]
+            watchdog = asyncio.create_task(self._watchdog(cancel, tasks)) if tasks else None
+            finished = 0
+            while finished < len(tasks):
+                event = await queue.get()
+                if event is _DONE:
+                    finished += 1
+                else:
+                    yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            # The consumer task was cancelled or the generator closed: stop the
+            # tools, then record a result for every call so the log stays valid.
+            cancel.set()
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._fill_cancelled(calls, results, out)
+            session.append("tool_results", {"message": message_to_dict(Message.tool_results(out))})
+            raise
+        finally:
+            if watchdog:
+                watchdog.cancel()
+        self._fill_cancelled(calls, results, out)
+
+    @staticmethod
+    def _fill_cancelled(
+        calls: list[ToolCall], results: dict[str, ToolResult], out: list[ToolResult]
+    ) -> None:
+        out.clear()
+        for call in calls:
+            out.append(
+                results.get(call.id)
+                or ToolResult(call.id, (Text("cancelled by the user"),), True, call.name)
+            )
+
+    @staticmethod
+    async def _await_decision(future: asyncio.Future, cancel: asyncio.Event) -> Decision | None:
+        waiter = asyncio.ensure_future(cancel.wait())
+        try:
+            done, _ = await asyncio.wait({future, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        if future in done and not future.cancelled():
+            return future.result()
+        future.cancel()
+        return None
+
+    @staticmethod
+    async def _watchdog(cancel: asyncio.Event, tasks: list[asyncio.Task]) -> None:
+        await cancel.wait()
+        await asyncio.sleep(_GRACE)
+        for task in tasks:
+            task.cancel()
+
+    def _lock_keys(self, tool: Tool, args: dict) -> list[str]:
+        root = str(self.workspace.root)
+        if tool.name == "execute":
+            return [f"{root}:shell"]
+        if not tool.mutating:
+            return []
+        raw = args.get("file_path") or args.get("path") or ""
+        try:
+            rel = self.workspace.rel(self.workspace.resolve(raw)) if raw else "*"
+        except OutsideWorkspace:
+            rel = str(raw)
+        return [f"{root}:{rel}"]
+
+    async def _execute(
+        self,
+        session: Session,
+        turn_id: str,
+        call: ToolCall,
+        tool: Tool,
+        args: dict,
+        queue: asyncio.Queue,
+        cancel: asyncio.Event,
+        results: dict[str, ToolResult],
+    ) -> None:
+        started = time.monotonic()
+        queue.put_nowait(ToolStarted(call.id, call.name, args, args_preview(args)))
+        ctx = ToolContext(
+            workspace=self.workspace,
+            sandbox=self.sandbox,
+            session_id=session.id,
+            call_id=call.id,
+            emit=queue.put_nowait,
+            state=session.state,
+            cancel=cancel,
+            services={**self.services, "agent": self, "session": session, "turn_id": turn_id},
+        )
+        try:
+            async with self.locks.hold(self._lock_keys(tool, args)):
+                # A subagent working in its parent's workspace records into the
+                # parent's journal and turn (services set by the subagent runner).
+                journal = self.services.get("undo_journal") or session.undo_journal
+                journal_turn = self.services.get("undo_turn_id") or turn_id
+                if tool.name in MUTATING_FILE_TOOLS and journal is not None:
+                    raw = args.get("file_path") or args.get("path") or ""
+                    with contextlib.suppress(OutsideWorkspace, OSError, ValueError):
+                        rel = self.workspace.rel(self.workspace.resolve(raw))
+                        await asyncio.to_thread(journal.before_write, journal_turn, rel)
+                output = await tool.invoke(ctx, args)
+        except asyncio.CancelledError:
+            output = ToolOutput.error("cancelled by the user")
+        try:
+            post = await self.hooks.run(
+                "post_tool",
+                {
+                    "session_id": session.id,
+                    "tool": call.name,
+                    "args": args,
+                    "ok": not output.is_error,
+                    "output": "".join(p.text for p in output.content if isinstance(p, Text))[
+                        :20_000
+                    ],
+                },
+                tool=call.name,
+            )
+            for note in post.notices:
+                queue.put_nowait(Notice("info", note))
+            if post.context or post.block:
+                extra = Text(f"\n\n{post.message or post.context}")
+                output = ToolOutput(
+                    (*output.content, extra), output.is_error or post.block, output.detail
+                )
+            output = self._clip(output, call.id)
+            self.policy.after(call.name, args, not output.is_error)
+            if call.name == "write_todos" and not output.is_error:
+                session.append("todos", {"todos": session.state.get("todos", [])})
+        finally:
+            results[call.id] = ToolResult(call.id, output.content, output.is_error, call.name)
+            detail = output.detail or (
+                output.content[0].text.splitlines()[0][:120]
+                if output.content and isinstance(output.content[0], Text) and output.content[0].text
+                else ""
+            )
+            queue.put_nowait(
+                ToolFinished(
+                    call.id, call.name, not output.is_error, detail, time.monotonic() - started
+                )
+            )
+            queue.put_nowait(_DONE)
+
+    def _clip(self, output: ToolOutput, call_id: str) -> ToolOutput:
+        text = "".join(p.text for p in output.content if isinstance(p, Text))
+        if len(text) <= self.tool_output_budget:
+            return output
+        target = self.workspace.root / ".luna" / "tool-output" / f"{call_id}.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        half = self.tool_output_budget // 2 - 200
+        rel = Path(".luna", "tool-output", f"{call_id}.txt").as_posix()
+        omitted = len(text) - 2 * half
+        clipped = (
+            f"{text[:half]}\n\n… [{omitted} characters omitted; full output saved to {rel} "
+            f"— read it with read_file] …\n\n{text[-half:]}"
+        )
+        images = tuple(p for p in output.content if isinstance(p, Image))
+        return ToolOutput((Text(clipped), *images), output.is_error, output.detail)
+
+
+__all__ = ["Agent", "Compactor", "PathLocks", "readable_error"]
