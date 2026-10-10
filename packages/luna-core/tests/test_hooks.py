@@ -78,6 +78,24 @@ async def test_command_hook_exit_codes(tmp_path):
     assert not warned.block and "meh" in warned.notices[0]
 
 
+async def test_command_hook_timeout_kills_whole_process_group(tmp_path):
+    marker = tmp_path / "marker"
+    # The shell backgrounds a grandchild that would touch `marker` after ~2s, then the
+    # shell itself sleeps for much longer. A timeout of 0.5s must kill the whole process
+    # group (the backgrounded grandchild included), not just the shell, so the marker
+    # must never appear.
+    hook = CommandHook(f"sh -c '(sleep 2; touch {marker}) & sleep 30'", cwd=tmp_path, timeout=0.5)
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    result = await hook({"tool": "execute", "args": {}})
+    elapsed = loop.time() - start
+    assert not result.block
+    assert result.notices and "timed out" in result.notices[0]
+    assert elapsed < 2.5, f"hook took {elapsed:g}s to return, should return near the 0.5s timeout"
+    await asyncio.sleep(2.5)
+    assert not marker.exists(), "grandchild survived the timeout and created the marker"
+
+
 async def test_load_command_hooks_from_config(tmp_path):
     hooks = load_command_hooks(
         [
