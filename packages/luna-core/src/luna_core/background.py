@@ -115,8 +115,14 @@ class BackgroundTasks:
         return True
 
     async def wait(self, handle: str) -> TaskInfo:
-        """Wait until the task has finished."""
-        info = self._infos[handle]
+        """Wait until the task has finished.
+
+        Raises ``LunaCoreError`` for an unknown handle, or one evicted after
+        ``KEEP_FINISHED`` newer tasks finished.
+        """
+        info = self._infos.get(handle)
+        if info is None:
+            raise LunaCoreError(f"no task {handle}")
         task = self._tasks.get(handle)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
@@ -291,8 +297,14 @@ class AgentManager:
         return True
 
     async def wait(self, session_id: str) -> RunInfo:
-        """Wait for a run to finish."""
-        info = self._runs[session_id]
+        """Wait for a run to finish.
+
+        Raises ``LunaCoreError`` for a session that never ran here, or whose run
+        was evicted after ``KEEP_FINISHED`` newer runs finished.
+        """
+        info = self._runs.get(session_id)
+        if info is None:
+            raise LunaCoreError(f"no run for session {session_id}")
         task = self._tasks.get(session_id)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)

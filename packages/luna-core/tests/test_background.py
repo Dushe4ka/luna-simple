@@ -221,6 +221,10 @@ async def test_background_tasks_retain_at_most_200_finished(tmp_path, log):
     infos = tasks.list()
     assert len(infos) <= 200 + 1
     assert tasks.get(handles[0]) is None and tasks.get(handles[-1]) is not None
+    with pytest.raises(LunaCoreError, match=f"no task {handles[0]}"):
+        await tasks.wait(handles[0])  # evicted: a clear error, not a KeyError
+    with pytest.raises(LunaCoreError, match="no task bg-unknown"):
+        await tasks.wait("bg-unknown")
     assert tasks.get(live).status in ("queued", "running")
     assert set(tasks._tasks) == {live}  # finished tasks drop their asyncio.Task
     gate.set()
@@ -255,6 +259,10 @@ async def test_agent_manager_retains_at_most_200_finished(tmp_path, log):
         ids.append(s.id)
     assert len(manager.list()) <= 200 + 1
     assert manager.get(ids[0]) is None and manager.events(ids[0]) == []
+    with pytest.raises(LunaCoreError, match=f"no run for session {ids[0]}"):
+        await manager.wait(ids[0])  # evicted: a clear error, not a KeyError
+    with pytest.raises(LunaCoreError, match="no run for session nope"):
+        await manager.wait("nope")
     assert manager.get(ids[-1]).status == "done"
     assert manager.get(live_session.id).status in ("running", "waiting")
     assert set(manager._tasks) == {live_session.id} and set(manager._sessions) == {live_session.id}
