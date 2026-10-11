@@ -47,7 +47,9 @@ _GRACE = 2.0
 class Compactor(Protocol):
     """Shrinks the context when it gets too large (see ``luna_core.compaction``)."""
 
-    def maybe_compact(self, agent: Agent, session: Session) -> AsyncIterator[object]:
+    def maybe_compact(
+        self, agent: Agent, session: Session, *, window: int | None = None
+    ) -> AsyncIterator[object]:
         """Yield turn events (``Compacted``, notices) if it compacted."""
         ...
 
@@ -115,6 +117,8 @@ class SideAnswer:
     text: str
     usage: Usage
     cost: float | None
+    #: Set when images went to a model with no vision and no vision role rescued it.
+    notice: str = ""
 
 
 async def _cancellable(stream: AsyncIterator, cancel: asyncio.Event) -> AsyncIterator:
@@ -233,12 +237,27 @@ class Agent:
         self, session: Session, text: str, *, images: tuple[Image, ...] | list[Image] = ()
     ) -> SideAnswer:
         """Answer a question over the current context without tools and without logging it."""
+        provider, model, role = self.provider, self.model, None
+        if self.roles is not None:
+            provider, model, role = self.roles.for_turn(
+                self.provider,
+                self.model,
+                images=bool(images),
+                plan=self.policy.planning,
+                overrides=self.model_overrides,
+            )
+        info = catalog.lookup(model, self.model_overrides)
+        notice = (
+            f"{model} may not accept images; set a vision model in [roles] if it fails"
+            if images and role != "vision" and not info.vision
+            else ""
+        )
         messages = [*session.messages(), Message("user", [Text(text), *images])]
-        request = dataclasses.replace(self.request(session, messages), tools=[])
-        acc = StreamAccumulator(self.provider.name)
-        async for event in self.provider.stream(request):
+        request = dataclasses.replace(self.request(session, messages, model=model), tools=[])
+        acc = StreamAccumulator(provider.name)
+        async for event in provider.stream(request):
             acc.feed(event)
-        return SideAnswer(acc.message().text, acc.usage, cost(acc.usage, self.model_info))
+        return SideAnswer(acc.message().text, acc.usage, cost(acc.usage, info), notice)
 
     # -- running -----------------------------------------------------------
     async def run(
@@ -321,11 +340,11 @@ class Agent:
             )
             if role:
                 yield Notice("dim", f"{role} model for this turn: {model}")
-        if images and role != "vision" and not catalog.lookup(model, self.model_overrides).vision:
+        info = catalog.lookup(model, self.model_overrides)
+        if images and role != "vision" and not info.vision:
             yield Notice(
                 "warn", f"{model} may not accept images; set a vision model in [roles] if it fails"
             )
-        info = catalog.lookup(model, self.model_overrides)
         session.append("user", {"message": message_to_dict(Message("user", blocks))})
         total = Usage()
         steps = 0
@@ -337,7 +356,9 @@ class Agent:
             for queued in session.drain_queue():
                 session.append("user", {"message": message_to_dict(Message.user(queued))})
             if self.compactor is not None:
-                compaction = _cancellable(self.compactor.maybe_compact(self, session), cancel)
+                compaction = _cancellable(
+                    self.compactor.maybe_compact(self, session, window=info.context_window), cancel
+                )
                 try:
                     async with contextlib.aclosing(compaction) as compaction_events:
                         async for event in compaction_events:

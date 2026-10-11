@@ -102,14 +102,20 @@ class Compactor:
     model: str | None = None
     max_summary_tokens: int = 4000
 
-    async def maybe_compact(self, agent, session) -> AsyncIterator[object]:
+    async def maybe_compact(
+        self, agent, session, *, window: int | None = None
+    ) -> AsyncIterator[object]:
         """Compact when the next request would exceed the threshold.
+
+        ``window`` overrides the context window to check against (the
+        turn's resolved model, when roles switched it); without it, the
+        agent's default model window is used.
 
         An automatic attempt that just failed, or found nothing to compact,
         is not retried until the session has grown by ``_BACKOFF_ENTRIES``
         entries (recorded in ``session.state["compaction_backoff"]``).
         """
-        window = agent.model_info.context_window
+        window = window if window is not None else agent.model_info.context_window
         if estimate_tokens(agent.request(session)) < self.threshold * window:
             return
         backoff_at = session.state.get("compaction_backoff")

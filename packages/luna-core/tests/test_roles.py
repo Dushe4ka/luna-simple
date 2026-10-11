@@ -1,11 +1,13 @@
 import pytest
-from luna_core.events import NeedsApproval, Notice, TurnDone
+from luna_core.compaction import Compactor
+from luna_core.events import Compacted, NeedsApproval, Notice, TurnDone
 from luna_core.loop import Agent
-from luna_core.messages import Image, Message, ToolCall
+from luna_core.messages import Image, Message, Text, ToolCall, message_to_dict
 from luna_core.policy import Decision, Policy
 from luna_core.providers.fake import FakeProvider
 from luna_core.roles import ModelRoles
 from luna_core.session import EventLog, Session
+from luna_core.usage import Usage
 from luna_core.workspace import Workspace
 
 OVERRIDES = {
@@ -112,3 +114,65 @@ async def test_steer_while_waiting_for_approval_arrives_after_the_tool_batch(tmp
     second = main.requests[1].messages
     assert second[-2].role == "tool" and second[-1] == Message.user("use -n instead")
     assert isinstance(second[-3].content[0], ToolCall)
+
+
+async def test_compaction_uses_the_turns_resolved_model_window(tmp_path, session):
+    for i in range(6):
+        session.append("turn_started", {"turn_id": f"t{i}"})
+        session.append(
+            "user", {"message": message_to_dict(Message.user(f"question {i} " + "x" * 400))}
+        )
+        session.append(
+            "assistant",
+            {
+                "message": message_to_dict(Message.assistant([Text(f"answer {i} " + "y" * 400)])),
+                "usage": Usage().to_dict(),
+            },
+        )
+    main = FakeProvider([FakeProvider.text("ok")])
+    summarizer = FakeProvider([FakeProvider.text("SUMMARY")])
+    overrides = {"big": {"window": 100000}, "thinker": {"window": 1000}}
+    compactor = Compactor(threshold=0.8, keep_turns=1, provider=summarizer)
+    agent = Agent(
+        main,
+        "big",
+        tools=[],
+        workspace=Workspace(tmp_path),
+        roles=ModelRoles(plan="thinker"),
+        policy=Policy(workspace=Workspace(tmp_path), plan_mode=True),
+        model_overrides=overrides,
+        compactor=compactor,
+    )
+    events = [e async for e in agent.run(session, "next")]
+    assert any(isinstance(e, Compacted) for e in events)
+
+
+async def test_side_question_with_image_uses_the_vision_role(tmp_path, session):
+    main = FakeProvider([FakeProvider.text("main answer")])
+    vision = FakeProvider([FakeProvider.text("a dog")])
+    agent = Agent(
+        main,
+        "text-only",
+        tools=[],
+        workspace=Workspace(tmp_path),
+        roles=ModelRoles(vision=(vision, "seeing")),
+        model_overrides=OVERRIDES,
+    )
+    [e async for e in agent.run(session, "main question")]
+    answer = await agent.side_question(
+        session, "btw what is this?", images=[Image("image/png", "AAA")]
+    )
+    assert answer.text == "a dog" and answer.notice == ""
+    sent = vision.requests[0]
+    assert sent.model == "seeing" and isinstance(sent.messages[-1].content[1], Image)
+    assert not main.requests[1:]
+
+
+async def test_side_question_images_without_vision_set_a_notice(tmp_path, session):
+    main = FakeProvider([FakeProvider.text("main answer"), FakeProvider.text("sure, text only")])
+    agent = Agent(
+        main, "text-only", tools=[], workspace=Workspace(tmp_path), model_overrides=OVERRIDES
+    )
+    [e async for e in agent.run(session, "main question")]
+    answer = await agent.side_question(session, "what is this?", images=[Image("image/png", "AAA")])
+    assert answer.text == "sure, text only" and "images" in answer.notice
