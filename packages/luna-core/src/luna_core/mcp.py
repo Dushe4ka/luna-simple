@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -107,8 +108,17 @@ class FileTokenStorage:
 
     def _save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data), encoding="utf-8")
-        self.path.chmod(0o600)
+        payload = json.dumps(data).encode("utf-8")
+        # Create (or truncate) the file with 0600 atomically via the ``open(2)`` mode
+        # argument, and ``fchmod`` it regardless (the mode argument is ignored by the
+        # OS when the file already exists) — tokens must never sit, even briefly, in
+        # a file whose permissions are looser than 0600.
+        fd = os.open(self.path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
 
     async def get_tokens(self):
         """Return the stored tokens, or ``None``."""
@@ -157,8 +167,13 @@ async def _callback_listener() -> tuple[str, asyncio.Future]:
         )
         await writer.drain()
         writer.close()
-        if "code" in query and not result.done():
+        if result.done():
+            return
+        if "code" in query:
             result.set_result((query["code"][0], query.get("state", [None])[0]))
+        elif "error" in query:
+            detail = query.get("error_description", query["error"])[0]
+            result.set_exception(MCPConfigError(f"authorisation denied: {detail}"))
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -212,9 +227,14 @@ class MCPManager:
 
     async def _connect(self, name: str, spec: dict) -> list[Tool]:
         ready: asyncio.Future = asyncio.get_running_loop().create_future()
+        # A timed-out ``ready`` may still get an exception set on it later (by
+        # ``_serve``'s cleanup, once cancelled) that nothing then awaits; retrieve it
+        # quietly so asyncio never logs "exception was never retrieved".
+        ready.add_done_callback(lambda f: None if f.cancelled() else f.exception())
         stop = asyncio.Event()
         self._stops[name] = stop
-        self._tasks[name] = asyncio.create_task(self._serve(name, spec, ready, stop))
+        task = asyncio.create_task(self._serve(name, spec, ready, stop))
+        self._tasks[name] = task
         try:
             session, tools = await asyncio.wait_for(ready, self.connect_timeout)
         except Exception as exc:  # noqa: BLE001 - one bad server must not break the agent
@@ -222,6 +242,13 @@ class MCPManager:
             self._status[name] = f"failed: {message}"
             self.on_warn(f"MCP server {name!r} did not start: {message}")
             stop.set()
+            # A server stuck mid-connect (hung subprocess, stalled OAuth flow) is
+            # still running at this point; cancel it and wait for the transport's
+            # context managers to unwind so it never keeps running after "failed".
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await task
             return []
         self._status[name] = "connected"
         return [self._tool(name, session, t) for t in tools]
@@ -237,11 +264,14 @@ class MCPManager:
                 if kind == "stdio":
                     from mcp.client.stdio import stdio_client
 
-                    env = {**os.environ, **spec["env"]} if spec.get("env") else None
+                    # Pass ``spec["env"]`` through unchanged: the SDK itself merges it
+                    # with a safe default environment (PATH, HOME, ...). Merging the
+                    # *parent* process's full ``os.environ`` here would leak secrets
+                    # (API keys, tokens) to any server that declares even one env var.
                     params = StdioServerParameters(
                         command=spec["command"],
                         args=list(spec.get("args", [])),
-                        env=env,
+                        env=spec.get("env"),
                         cwd=spec.get("cwd"),
                     )
                     read, write = await stack.enter_async_context(stdio_client(params))

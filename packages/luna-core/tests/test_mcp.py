@@ -1,3 +1,4 @@
+import asyncio
 import json
 import stat
 import sys
@@ -77,6 +78,50 @@ async def test_broken_server_is_skipped_with_a_warning(tmp_path):
     await manager.close()
 
 
+async def test_stdio_env_does_not_leak_parent_environment(monkeypatch):
+    monkeypatch.setenv("LUNA_TEST_SECRET", "s3cr3t")
+    manager = MCPManager(
+        {"echo": {"command": sys.executable, "args": [SERVER], "env": {"FOO": "bar"}}},
+        on_warn=pytest.fail,
+    )
+    tools = {t.name: t for t in await manager.start()}
+    try:
+        secret = await tools["echo_env_var"].invoke(ToolContext(), {"name": "LUNA_TEST_SECRET"})
+        foo = await tools["echo_env_var"].invoke(ToolContext(), {"name": "FOO"})
+        assert secret.content[0].text == ""
+        assert foo.content[0].text == "bar"
+    finally:
+        await manager.close()
+
+
+async def test_connect_failure_cancels_and_cleans_up_the_server_task():
+    manager = MCPManager(
+        {"slow": {"command": sys.executable, "args": ["-c", "import time; time.sleep(30)"]}},
+        on_warn=lambda _msg: None,
+        connect_timeout=1,
+    )
+    assert await asyncio.wait_for(manager.start(), timeout=10) == []
+    assert manager.status()["slow"].startswith("failed")
+    assert manager._tasks["slow"].done()
+    await asyncio.wait_for(manager.close(), timeout=10)
+
+
+async def test_oauth_callback_listener_rejects_error_redirect():
+    from luna_core.mcp import MCPConfigError, _callback_listener
+
+    redirect_uri, result = await _callback_listener()
+    port = int(redirect_uri.rsplit(":", 1)[1].split("/")[0])
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b"GET /callback?error=access_denied HTTP/1.1\r\n\r\n")
+    await writer.drain()
+    await reader.read(200)
+    writer.close()
+    with pytest.raises(MCPConfigError):
+        await asyncio.wait_for(result, timeout=5)
+    with pytest.raises(OSError):
+        await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=1)
+
+
 async def test_token_storage_round_trip(tmp_path):
     from mcp.shared.auth import OAuthToken
 
@@ -86,3 +131,26 @@ async def test_token_storage_round_trip(tmp_path):
     again = FileTokenStorage(tmp_path / "tok" / "srv.json")
     assert (await again.get_tokens()).access_token == "a"
     assert stat.S_IMODE((tmp_path / "tok" / "srv.json").stat().st_mode) == 0o600
+
+
+async def test_token_file_tightens_existing_loose_permissions(tmp_path):
+    from mcp.shared.auth import OAuthToken
+
+    path = tmp_path / "srv.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o644)
+    storage = FileTokenStorage(path)
+    await storage.set_tokens(OAuthToken(access_token="a", token_type="Bearer"))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+async def test_token_storage_never_uses_write_text(tmp_path, monkeypatch):
+    from mcp.shared.auth import OAuthToken
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("token files must not go through Path.write_text")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    storage = FileTokenStorage(tmp_path / "srv.json")
+    await storage.set_tokens(OAuthToken(access_token="a", token_type="Bearer"))
+    assert stat.S_IMODE((tmp_path / "srv.json").stat().st_mode) == 0o600

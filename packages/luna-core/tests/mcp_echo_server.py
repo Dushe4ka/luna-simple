@@ -19,6 +19,14 @@ def fail(reason: str) -> str:
 
 
 @server.tool()
+def env_var(name: str) -> str:
+    """Return the value of an environment variable, or an empty string."""
+    import os
+
+    return os.environ.get(name, "")
+
+
+@server.tool()
 def pixel() -> Image:
     """Return a 1x1 PNG."""
     import base64
