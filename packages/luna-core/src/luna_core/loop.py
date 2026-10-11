@@ -32,6 +32,7 @@ from luna_core.hooks import Hooks
 from luna_core.messages import Image, Message, Text, ToolCall, ToolResult, message_to_dict
 from luna_core.policy import MUTATING_FILE_TOOLS, Decision, Policy
 from luna_core.providers.base import ModelRequest, Provider, StreamAccumulator
+from luna_core.roles import ModelRoles
 from luna_core.sandbox import LocalSandbox, Sandbox
 from luna_core.session import Session
 from luna_core.tools import builtin_tools
@@ -107,6 +108,15 @@ def readable_error(exc: ProviderError, provider_name: str) -> str:
     return f"{provider_name}: {exc}"
 
 
+@dataclasses.dataclass(frozen=True)
+class SideAnswer:
+    """The answer to a ``/btw`` side question."""
+
+    text: str
+    usage: Usage
+    cost: float | None
+
+
 async def _cancellable(stream: AsyncIterator, cancel: asyncio.Event) -> AsyncIterator:
     iterator = stream.__aiter__()
     waiter = asyncio.ensure_future(cancel.wait())
@@ -161,6 +171,7 @@ class Agent:
         tool_output_budget: int = 30_000,
         locks: PathLocks | None = None,
         model_overrides: dict | None = None,
+        roles: ModelRoles | None = None,
         name: str = "luna",
     ) -> None:
         self.provider = provider
@@ -183,6 +194,7 @@ class Agent:
         self.tool_output_budget = tool_output_budget
         self.locks = locks or PathLocks()
         self.model_overrides = model_overrides
+        self.roles = roles
         self.name = name
 
     # -- configuration -----------------------------------------------------
@@ -203,10 +215,12 @@ class Agent:
         """Return the system prompt for ``session``."""
         return self.system(session) if callable(self.system) else self.system
 
-    def request(self, session: Session, messages: list[Message] | None = None) -> ModelRequest:
+    def request(
+        self, session: Session, messages: list[Message] | None = None, *, model: str | None = None
+    ) -> ModelRequest:
         """Build the model request for the session's current context."""
         return ModelRequest(
-            model=self.model,
+            model=model or self.model,
             system=self.system_prompt(session),
             messages=session.messages() if messages is None else messages,
             tools=[t.spec for t in self.tools.values()],
@@ -214,6 +228,17 @@ class Agent:
             temperature=self.temperature,
             reasoning=self.reasoning,
         )
+
+    async def side_question(
+        self, session: Session, text: str, *, images: tuple[Image, ...] | list[Image] = ()
+    ) -> SideAnswer:
+        """Answer a question over the current context without tools and without logging it."""
+        messages = [*session.messages(), Message("user", [Text(text), *images])]
+        request = dataclasses.replace(self.request(session, messages), tools=[])
+        acc = StreamAccumulator(self.provider.name)
+        async for event in self.provider.stream(request):
+            acc.feed(event)
+        return SideAnswer(acc.message().text, acc.usage, cost(acc.usage, self.model_info))
 
     # -- running -----------------------------------------------------------
     async def run(
@@ -285,6 +310,22 @@ class Agent:
                 yield Notice("info", note)
             if outcome.context:
                 blocks.append(Text(f"\n\n{outcome.context}"))
+        provider, model, role = self.provider, self.model, None
+        if self.roles is not None:
+            provider, model, role = self.roles.for_turn(
+                self.provider,
+                self.model,
+                images=bool(images),
+                plan=self.policy.planning,
+                overrides=self.model_overrides,
+            )
+            if role:
+                yield Notice("dim", f"{role} model for this turn: {model}")
+        if images and role != "vision" and not catalog.lookup(model, self.model_overrides).vision:
+            yield Notice(
+                "warn", f"{model} may not accept images; set a vision model in [roles] if it fails"
+            )
+        info = catalog.lookup(model, self.model_overrides)
         session.append("user", {"message": message_to_dict(Message("user", blocks))})
         total = Usage()
         steps = 0
@@ -310,7 +351,7 @@ class Agent:
                 break
             if (
                 self.max_cost is not None
-                and session.cost() + (cost(total, self.model_info) or 0) >= self.max_cost
+                and session.cost() + (cost(total, info) or 0) >= self.max_cost
             ):
                 message = f"budget reached: max_cost=${self.max_cost:g}"
                 session.append(
@@ -319,9 +360,9 @@ class Agent:
                 yield TurnError(message, "budget")
                 return
             steps += 1
-            acc = StreamAccumulator(self.provider.name)
+            acc = StreamAccumulator(provider.name)
             try:
-                stream = _cancellable(self.provider.stream(self.request(session)), cancel)
+                stream = _cancellable(provider.stream(self.request(session, model=model)), cancel)
                 async with contextlib.aclosing(stream) as model_events:
                     async for event in model_events:
                         acc.feed(event)
@@ -335,7 +376,7 @@ class Agent:
                 return
             except ProviderError as exc:
                 self._record_partial(session, acc)
-                message = readable_error(exc, self.provider.name)
+                message = readable_error(exc, provider.name)
                 session.append(
                     "turn_error", {"turn_id": turn_id, "message": message, "kind": exc.kind}
                 )
@@ -376,7 +417,7 @@ class Agent:
             if cancel.is_set():
                 yield self._record_cancel(session, turn_id)
                 return
-        price = cost(total, self.model_info)
+        price = cost(total, info)
         session.append(
             "turn_done",
             {
@@ -699,4 +740,4 @@ class Agent:
         return ToolOutput((Text(clipped), *images), output.is_error, output.detail)
 
 
-__all__ = ["Agent", "Compactor", "PathLocks", "readable_error"]
+__all__ = ["Agent", "Compactor", "PathLocks", "SideAnswer", "readable_error"]
