@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import os
+import shutil
 import subprocess
 import threading
 import tomllib
@@ -147,18 +149,46 @@ def _git(root: Path, *args: str, env: dict | None = None) -> subprocess.Complete
     )
 
 
-def _is_git(root: Path) -> bool:
-    proc = _git(root, "rev-parse", "--is-inside-work-tree")
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
+def _git_toplevel(root: Path) -> Path | None:
+    """Return the repository's top-level directory, or None outside git."""
+    try:
+        proc = _git(root, "rev-parse", "--show-toplevel")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip()).resolve()
 
 
 def create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
-    """Create a worktree on a new branch from the current working tree (uncommitted edits too)."""
+    """Create a worktree on a new branch from the current working tree (uncommitted edits too).
+
+    The base snapshot includes untracked, non-ignored files (``.luna/undo`` and
+    ``.luna/worktrees`` excluded). ``root`` must be the git top level.
+    """
     with _GIT_LOCK:
         return _create_worktree(root, sub_id)
 
 
+def _prune_worktrees(root: Path) -> None:
+    """Forget stale worktrees and delete unregistered leftovers under ``.luna/worktrees``."""
+    _git(root, "worktree", "prune")
+    holder = root / ".luna" / "worktrees"
+    if not holder.is_dir():
+        return
+    listing = _git(root, "worktree", "list", "--porcelain").stdout
+    registered = {
+        Path(line[len("worktree ") :]).resolve()
+        for line in listing.splitlines()
+        if line.startswith("worktree ")
+    }
+    for entry in holder.iterdir():
+        if entry.is_dir() and not entry.is_symlink() and entry.resolve() not in registered:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def _create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
+    _prune_worktrees(root)
     tree = _snapshot_tree(root)
     if tree is None:
         raise LunaCoreError("could not snapshot the working tree for the subagent")
@@ -187,7 +217,10 @@ def _create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
 def finish_worktree(
     root: Path, path: Path, branch: str, base: str, message: str
 ) -> tuple[str, str]:
-    """Commit the child's changes on its branch, remove the worktree, return (diffstat, diff)."""
+    """Commit the child's changes on its branch, remove the worktree, return (diffstat, diff).
+
+    When the child changed nothing the branch is deleted and the diffstat is empty.
+    """
     with _GIT_LOCK:
         return _finish_worktree(root, path, branch, base, message)
 
@@ -201,6 +234,11 @@ def _finish_worktree(
     stat = _git(root, "diff", "--stat", base, branch).stdout.strip()
     diff = _git(root, "diff", base, branch).stdout
     _git(root, "worktree", "remove", "--force", str(path))
+    tip = _git(root, "rev-parse", "--verify", "-q", branch).stdout.strip()
+    if not stat and tip == base:
+        # Nothing to hand back: do not leave an empty luna/sub/* branch behind.
+        _git(root, "branch", "-D", branch)
+        return "", ""
     return stat, diff[:_DIFF_LIMIT]
 
 
@@ -276,46 +314,68 @@ class SubagentRunner:
             return SubagentResult(name, False, "", f"isolation must be one of {ISOLATION}")
         emit = emit or (lambda event: None)
         if parent.max_cost is not None and session.cost() >= parent.max_cost:
+            return self._over_budget(name, parent.max_cost)
+        root = parent.workspace.root
+        top = await asyncio.to_thread(_git_toplevel, root)
+        mode = isolation if isolation != "auto" else spec.isolation
+        if mode == "worktree" and top is None:
+            return SubagentResult(name, False, "", "worktree isolation needs a git repository")
+        at_top = top is not None and top == Path(root).resolve()
+        if mode == "worktree" and not at_top:
             return SubagentResult(
                 name,
                 False,
                 "",
-                f"budget reached (max_cost=${parent.max_cost:g}); no new subagent was started",
+                "worktree isolation needs the project root to be the git repository root",
             )
-        root = parent.workspace.root
-        git = await asyncio.to_thread(_is_git, root)
-        mode = isolation if isolation != "auto" else spec.isolation
-        if mode == "worktree" and not git:
-            return SubagentResult(name, False, "", "worktree isolation needs a git repository")
-        use_worktree = mode == "worktree" or (mode == "auto" and spec.writes and git)
+        use_worktree = mode == "worktree" or (mode == "auto" and spec.writes and at_top)
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.max_parallel)
         async with self._semaphore:
+            # Siblings that ran while this one waited for a slot may have spent the budget.
+            if parent.max_cost is not None and session.cost() >= parent.max_cost:
+                return self._over_budget(name, parent.max_cost)
             sub_id = uuid.uuid4().hex[:8]
-            branch = base = None
-            if use_worktree:
-                path, branch, base = await asyncio.to_thread(create_worktree, root, sub_id)
-                workspace = Workspace(path)
-            else:
-                workspace = parent.workspace
             message = f"luna subagent {name}: {task[:60]}"
+            created: asyncio.Future | None = None
+            worktree: tuple[Path, str, str] | None = None
             try:
+                if use_worktree:
+                    created = asyncio.ensure_future(
+                        asyncio.to_thread(create_worktree, root, sub_id)
+                    )
+                    worktree = await asyncio.shield(created)
+                    workspace = Workspace(worktree[0])
+                else:
+                    workspace = parent.workspace
                 ok, error, text, child_id = await self._drive(
                     parent, session, spec, task, workspace, use_worktree, emit, cancel, turn_id
                 )
             except BaseException:
-                # Cancelled or crashed: still commit what the child did and drop the worktree.
-                if use_worktree:
-                    await asyncio.to_thread(
-                        finish_worktree, root, workspace.root, branch, base, message
-                    )
+                # Cancelled or crashed (even mid-creation): still commit what the child did
+                # and drop the worktree; cleanup errors must not hide the original one.
+                with contextlib.suppress(BaseException):
+                    if worktree is None and created is not None:
+                        worktree = await created
+                    if worktree is not None:
+                        await asyncio.to_thread(finish_worktree, root, *worktree, message)
                 raise
+            branch = base = None
             diffstat = ""
-            if use_worktree:
-                diffstat, _diff = await asyncio.to_thread(
-                    finish_worktree, root, workspace.root, branch, base, message
-                )
+            if worktree is not None:
+                diffstat, _diff = await asyncio.to_thread(finish_worktree, root, *worktree, message)
+                if diffstat:
+                    branch, base = worktree[1], worktree[2]
             return SubagentResult(name, ok, text, error, branch, base, diffstat, child_id)
+
+    @staticmethod
+    def _over_budget(name: str, max_cost: float) -> SubagentResult:
+        return SubagentResult(
+            name,
+            False,
+            "",
+            f"budget reached (max_cost=${max_cost:g}); no new subagent was started",
+        )
 
     async def _drive(
         self,
@@ -366,7 +426,13 @@ class SubagentRunner:
             async with contextlib.aclosing(child.run(child_session, task)) as events:
                 async for event in events:
                     if isinstance(event, NeedsApproval):
-                        emit(event)
+                        # Prefix the id: the parent and its children number calls alike.
+                        request = dataclasses.replace(
+                            event.request,
+                            call_id=f"{child_session.id}:{event.request.call_id}",
+                            description=f"{name} › {event.request.description}".rstrip(),
+                        )
+                        emit(NeedsApproval(request))
                     elif isinstance(event, ToolStarted):
                         emit(Notice("dim", f"{name} › {event.name} {event.preview}".rstrip()))
                     elif isinstance(event, TurnError):

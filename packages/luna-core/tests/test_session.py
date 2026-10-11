@@ -286,3 +286,16 @@ def test_prune(log, tmp_path):
     log._conn.execute("UPDATE sessions SET updated = 0 WHERE id = ?", (old,))
     log.create(str(tmp_path))
     assert log.prune(older_than_days=30) == 1 and log.info(old) is None
+
+
+async def test_prefixed_approval_ids_reach_only_the_child(log, tmp_path):
+    parent = Session.create(log, str(tmp_path), undo=False)
+    child = Session(
+        log, log.create(str(tmp_path), parent_id=parent.id), workdir=str(tmp_path), undo=False
+    )
+    parent.adopt(child)
+    mine = parent.expect_decision("call_0")
+    theirs = child.expect_decision("call_0")
+    parent.decide(f"{child.id}:call_0", Decision.approve())
+    assert (await theirs) == Decision.approve()
+    assert not mine.done() and parent.pending_approvals == ["call_0"]

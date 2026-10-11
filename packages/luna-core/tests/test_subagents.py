@@ -14,6 +14,8 @@ from luna_core.subagents import (
     SubagentConfigError,
     SubagentRunner,
     SubagentSpec,
+    create_worktree,
+    finish_worktree,
     load_subagents,
     task_tool,
 )
@@ -262,9 +264,11 @@ async def test_child_approval_is_answered_through_the_parent(tmp_path, log):
     asked = []
     async for ev in agent.run(session, "go"):
         if isinstance(ev, NeedsApproval):
-            asked.append(ev.request.call_id)
+            asked.append(ev.request)
             session.decide(ev.request.call_id, Decision.approve())
-    assert asked == ["k1"]
+    (child_id,) = (info.id for info in log.children(session.id))
+    assert [r.call_id for r in asked] == [f"{child_id}:k1"]
+    assert asked[0].description.startswith("x › ")
     assert "ran it" in session.messages()[2].results[0].text
 
 
@@ -311,3 +315,117 @@ async def test_worktree_isolation_without_git_is_an_error(tmp_path, log):
     [e async for e in agent.run(session, "go")]
     result = session.messages()[2].results[0]
     assert result.is_error and "git repository" in result.text
+
+
+def luna_branches(repo):
+    out = subprocess.run(
+        ["git", "branch", "--list", "luna/sub/*"], cwd=repo, capture_output=True, text=True
+    )
+    return out.stdout.split()
+
+
+def init_repo(repo):
+    repo.mkdir(parents=True, exist_ok=True)
+    git(repo, "init", "-q")
+    (repo / "README.md").write_text("hi\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-qm", "init")
+
+
+async def test_root_below_the_git_toplevel_does_not_use_a_worktree(tmp_path, log):
+    init_repo(tmp_path / "mono")
+    root = tmp_path / "mono" / "app"
+    root.mkdir()
+    child = Routing(
+        {
+            "write": [
+                FakeProvider.call("write_file", {"file_path": "notes.md", "content": "x\n"}),
+                FakeProvider.text("wrote"),
+            ]
+        }
+    )
+    agent = parent_agent(
+        root,
+        [FakeProvider.call("task", {"description": "write notes"}, "t1"), FakeProvider.text("ok")],
+        child,
+    )
+    session = Session.create(log, str(root), undo=False)
+    [e async for e in agent.run(session, "go")]
+    result = session.messages()[2].results[0]
+    assert not result.is_error and "luna/sub/" not in result.text
+    assert (root / "notes.md").read_text() == "x\n"
+    assert luna_branches(tmp_path / "mono") == []
+
+    agent = parent_agent(
+        root,
+        [
+            FakeProvider.call(
+                "task", {"description": "write notes", "isolation": "worktree"}, "t1"
+            ),
+            FakeProvider.text("ok"),
+        ],
+        child,
+    )
+    session = Session.create(log, str(root), undo=False)
+    [e async for e in agent.run(session, "go")]
+    result = session.messages()[2].results[0]
+    assert (
+        result.is_error
+        and "worktree isolation needs the project root to be the git repository root" in result.text
+    )
+
+
+async def test_a_child_without_changes_leaves_no_branch(tmp_path, log):
+    init_repo(tmp_path)
+    child = Routing({"nothing": [FakeProvider.text("nothing to do")]})
+    agent = parent_agent(
+        tmp_path,
+        [FakeProvider.call("task", {"description": "nothing"}, "t1"), FakeProvider.text("ok")],
+        child,
+    )
+    session = Session.create(log, str(tmp_path), undo=False)
+    [e async for e in agent.run(session, "go")]
+    result = session.messages()[2].results[0]
+    assert not result.is_error and "git apply" not in result.text
+    assert luna_branches(tmp_path) == []
+
+
+def test_orphan_worktree_dirs_are_removed_on_the_next_create(tmp_path):
+    init_repo(tmp_path)
+    orphan = tmp_path / ".luna" / "worktrees" / "stale"
+    orphan.mkdir(parents=True)
+    (orphan / "junk.txt").write_text("left over\n")
+    path, branch, base = create_worktree(tmp_path, "fresh")
+    assert not orphan.exists() and path.is_dir()
+    finish_worktree(tmp_path, path, branch, base, "m")
+    assert luna_branches(tmp_path) == []
+
+
+async def test_budget_is_rechecked_after_waiting_for_a_slot(tmp_path, log):
+    child = Routing({"A": [FakeProvider.text("A done")], "B": [FakeProvider.text("B done")]})
+    specs = {"r": SubagentSpec("r", "reader", "p")}
+    runner = SubagentRunner(specs, max_parallel=1, model_for=lambda spec: (child, "child-model"))
+    ws = Workspace(tmp_path)
+    two = Message.assistant(
+        [
+            ToolCall("t1", "task", {"description": "A", "subagent_type": "r"}),
+            ToolCall("t2", "task", {"description": "B", "subagent_type": "r"}),
+        ]
+    )
+    agent = Agent(
+        FakeProvider([two, FakeProvider.text("ok")]),
+        "parent-model",
+        workspace=ws,
+        tools=[*builtin_tools(), task_tool(runner)],
+        policy=Policy(workspace=ws, yolo=True),
+        max_cost=0.01,
+        model_overrides={"child-model": {"input": 1000.0, "output": 1000.0}},
+    )
+    session = Session.create(log, str(tmp_path), undo=False)
+    [e async for e in agent.run(session, "go")]
+    # Whichever sibling gets the slot first runs; the other is refused after waiting.
+    results = session.messages()[2].results
+    done = [r for r in results if not r.is_error]
+    refused = [r for r in results if r.is_error]
+    assert len(done) == 1 and " done" in done[0].text
+    assert len(refused) == 1 and "budget reached" in refused[0].text

@@ -423,6 +423,11 @@ class Session:
         fut = self._decisions.pop(call_id, None)
         if fut is None:
             for child in self._children:
+                prefix = f"{child.id}:"
+                if call_id.startswith(prefix):
+                    child.decide(call_id[len(prefix) :], decision)
+                    return
+            for child in self._children:
                 if call_id in child.pending_approvals:
                     child.decide(call_id, decision)
                     return
