@@ -72,7 +72,7 @@ all = [
     "multilspy>=0.0.15",
     "ddgs>=8.0",
 ]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mcp>=1.12,<2", "agent-client-protocol>=0.4"]
 
 [project.scripts]
 luna = "luna.cli:main"

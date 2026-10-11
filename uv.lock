@@ -1638,6 +1638,8 @@ deepseek = [
     { name = "langchain-deepseek" },
 ]
 dev = [
+    { name = "agent-client-protocol" },
+    { name = "mcp" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -1684,6 +1686,7 @@ xai = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "ddgs", marker = "extra == 'all'", specifier = ">=8.0" },
     { name = "ddgs", marker = "extra == 'websearch'", specifier = ">=8.0" },
     { name = "deepagents", specifier = "~=0.7.13" },
@@ -1717,6 +1720,7 @@ requires-dist = [
     { name = "langgraph", specifier = "~=1.2" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
     { name = "luna-core", editable = "packages/luna-core" },
+    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.12,<2" },
     { name = "multilspy", marker = "extra == 'all'", specifier = ">=0.0.15" },
     { name = "multilspy", marker = "extra == 'lsp'", specifier = ">=0.0.15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
