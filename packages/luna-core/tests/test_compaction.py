@@ -121,3 +121,87 @@ async def test_loop_compacts_automatically_at_the_threshold(tmp_path, session):
     events = [e async for e in agent.run(session, "next")]
     assert any(isinstance(e, Compacted) for e in events) and isinstance(events[-1], TurnDone)
     assert "SUMMARY" in agent.provider.requests[1].messages[0].text
+
+
+async def test_compact_counts_distinct_turns_not_user_role_entries(tmp_path):
+    """Steering/turn_end-continuation messages share a turn_id; they must not count as turns."""
+    log = EventLog(tmp_path / "steer.db")
+    s = Session.create(log, str(tmp_path), undo=False)
+    for i in range(6):
+        s.append("turn_started", {"turn_id": f"t{i}"})
+        s.append("user", {"message": message_to_dict(Message.user(f"question {i} " + "x" * 400))})
+        if i in (4, 5):  # extra user-role entry mid-turn, same turn_id (steer / turn_end hook)
+            s.append("user", {"message": message_to_dict(Message.user(f"steer {i}"))})
+        s.append(
+            "assistant",
+            {
+                "message": message_to_dict(Message.assistant([Text(f"answer {i} " + "y" * 400)])),
+                "usage": Usage().to_dict(),
+            },
+        )
+    summarizer = FakeProvider([FakeProvider.text("SUMMARY of turns 0-1")])
+    agent = make_agent(tmp_path, [])
+    events = [e async for e in Compactor(keep_turns=4, provider=summarizer).compact(agent, s)]
+    assert events == [Compacted("SUMMARY of turns 0-1", 4)]
+    msgs = s.messages()
+    assert "SUMMARY of turns 0-1" in msgs[0].text
+    assert msgs[1].text.startswith("question 2")
+    texts = [m.text for m in msgs]
+    assert "steer 4" in texts and "steer 5" in texts
+    log.close()
+
+
+async def test_automatic_compaction_backs_off_after_failure(tmp_path, session):
+    bad = FakeProvider([[ProviderError("boom", "server")]])
+    agent = make_agent(tmp_path, [], window=1000)
+    compactor = Compactor(threshold=0.8, keep_turns=2, provider=bad)
+
+    events1 = [e async for e in compactor.maybe_compact(agent, session)]
+    assert any(isinstance(e, Notice) and e.level == "warn" for e in events1)
+    assert len(bad.requests) == 1
+
+    events2 = [e async for e in compactor.maybe_compact(agent, session)]
+    events3 = [e async for e in compactor.maybe_compact(agent, session)]
+    assert events2 == [] and events3 == []
+    assert len(bad.requests) == 1
+
+    for i in range(6, 8):
+        session.append("turn_started", {"turn_id": f"t{i}"})
+        session.append(
+            "user", {"message": message_to_dict(Message.user(f"question {i} " + "x" * 400))}
+        )
+        session.append(
+            "assistant",
+            {
+                "message": message_to_dict(Message.assistant([Text(f"answer {i} " + "y" * 400)])),
+                "usage": Usage().to_dict(),
+            },
+        )
+    bad.script.append([ProviderError("boom again", "server")])
+    events4 = [e async for e in compactor.maybe_compact(agent, session)]
+    assert any(isinstance(e, Notice) and e.level == "warn" for e in events4)
+    assert len(bad.requests) == 2
+
+
+async def test_automatic_nothing_to_compact_is_silent(tmp_path, session):
+    agent = make_agent(tmp_path, [], window=1000)
+    compactor = Compactor(threshold=0.8, keep_turns=10, provider=FakeProvider([]))
+    for _ in range(3):
+        events = [e async for e in compactor.maybe_compact(agent, session)]
+        assert events == []
+
+
+async def test_oversized_transcript_is_trimmed(tmp_path, session):
+    summarizer = FakeProvider([FakeProvider.text("SUMMARY")])
+    agent = make_agent(tmp_path, [])
+    agent.model_overrides["tiny-sum"] = {"window": 200}
+    events = [
+        e
+        async for e in Compactor(keep_turns=0, provider=summarizer, model="tiny-sum").compact(
+            agent, session
+        )
+    ]
+    assert isinstance(events[0], Compacted)
+    sent_text = summarizer.requests[0].messages[0].text
+    assert sent_text.startswith("[earlier part omitted]")
+    assert len(sent_text) <= 560

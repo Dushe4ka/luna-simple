@@ -296,8 +296,14 @@ class Agent:
             for queued in session.drain_queue():
                 session.append("user", {"message": message_to_dict(Message.user(queued))})
             if self.compactor is not None:
-                async for event in self.compactor.maybe_compact(self, session):
-                    yield event
+                compaction = _cancellable(self.compactor.maybe_compact(self, session), cancel)
+                try:
+                    async with contextlib.aclosing(compaction) as compaction_events:
+                        async for event in compaction_events:
+                            yield event
+                except _Cancelled:
+                    yield self._record_cancel(session, turn_id)
+                    return
             if steps >= self.max_steps:
                 yield Notice("warn", f"stopped after max_steps={self.max_steps} model calls")
                 stop_reason = "max_steps"

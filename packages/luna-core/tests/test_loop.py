@@ -2,6 +2,7 @@ import asyncio
 import time
 
 import pytest
+from luna_core.compaction import Compactor
 from luna_core.errors import LunaCoreError, ProviderError
 from luna_core.events import (
     Cancelled,
@@ -482,6 +483,39 @@ async def test_preparation_failure_is_an_error_result(env):
     assert isinstance(events[-1], TurnDone)
     result = session.messages()[2].results[0]
     assert result.is_error and "ls failed: RuntimeError: policy broke" in result.text
+
+
+class _BlockingProvider:
+    """A provider whose ``stream`` never produces an event until told to."""
+
+    name = "blocking"
+
+    def __init__(self):
+        self.requests = []
+
+    async def stream(self, request):
+        self.requests.append(request)
+        await asyncio.Event().wait()
+        yield  # pragma: no cover - never reached; makes this an async generator
+
+
+async def test_cancel_during_compaction_is_observed(env):
+    tmp, session = env
+    blocking = _BlockingProvider()
+    compactor = Compactor(threshold=0.0, keep_turns=0, provider=blocking)
+    agent = agent_for(tmp, [FakeProvider.text("hi")], compactor=compactor)
+
+    async def consume():
+        return [e async for e in agent.run(session, "go")]
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.2)
+    session.cancel_turn()
+    events = await asyncio.wait_for(task, 2)
+    assert isinstance(events[-1], Cancelled)
+    assert blocking.requests
+    assert not any(r.type == "compacted" for r in session.records())
+    assert not session.busy
 
 
 async def test_overflow_file_is_written_off_the_event_loop(env, monkeypatch):

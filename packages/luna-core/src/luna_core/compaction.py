@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from luna_core import catalog
 from luna_core.errors import ProviderError
 from luna_core.events import Compacted, Notice
 from luna_core.messages import Image, Message, Text, ToolCall, ToolResult
@@ -18,6 +19,12 @@ Goal; Decisions and constraints; Files touched (paths and what changed); Command
 and their results; Open problems and next steps. Keep exact names, paths, error
 messages and numbers. Do not invent anything."""
 _IMAGE_TOKENS = 1500
+#: An automatic attempt that failed or found nothing to compact waits for this many
+#: new entries before trying again (avoids retrying every single step).
+_BACKOFF_ENTRIES = 4
+#: The summariser input is trimmed to this fraction of the summary model's window.
+_TRIM_RATIO = 0.7
+_OMITTED_MARKER = "[earlier part omitted]\n\n"
 
 
 def estimate_tokens(request: ModelRequest) -> int:
@@ -59,6 +66,32 @@ def _render(messages: list[Message], previous: str | None) -> str:
     return "\n\n".join(lines)
 
 
+def _trim_transcript(transcript: str, max_tokens: int) -> str:
+    """Keep the most recent part of ``transcript`` within ``max_tokens`` (chars ÷ 4)."""
+    limit_chars = max_tokens * 4
+    if len(transcript) <= limit_chars:
+        return transcript
+    budget = max(limit_chars - len(_OMITTED_MARKER), 0)
+    return _OMITTED_MARKER + transcript[-budget:]
+
+
+def _distinct_turn_keys(entries: list) -> tuple[list, list]:
+    """Per-entry turn identity and the distinct identities, oldest first.
+
+    Entries sharing a ``turn_id`` (steering messages drained mid-turn, a
+    ``turn_end`` hook continuation) are one turn. An entry whose ``turn_id``
+    is ``None`` counts as its own, singleton turn.
+    """
+    keys = [e.turn_id if e.turn_id is not None else object() for e in entries]
+    seen: set = set()
+    order: list = []
+    for key in keys:
+        if key not in seen:
+            seen.add(key)
+            order.append(key)
+    return keys, order
+
+
 @dataclass
 class Compactor:
     """Compaction policy; plug into ``Agent(compactor=...)``."""
@@ -70,24 +103,48 @@ class Compactor:
     max_summary_tokens: int = 4000
 
     async def maybe_compact(self, agent, session) -> AsyncIterator[object]:
-        """Compact when the next request would exceed the threshold."""
+        """Compact when the next request would exceed the threshold.
+
+        An automatic attempt that just failed, or found nothing to compact,
+        is not retried until the session has grown by ``_BACKOFF_ENTRIES``
+        entries (recorded in ``session.state["compaction_backoff"]``).
+        """
         window = agent.model_info.context_window
         if estimate_tokens(agent.request(session)) < self.threshold * window:
             return
-        async for event in self.compact(agent, session):
+        backoff_at = session.state.get("compaction_backoff")
+        if backoff_at is not None and len(session.entries()) - backoff_at < _BACKOFF_ENTRIES:
+            return
+        async for event in self._run(agent, session, instructions="", automatic=True):
             yield event
 
     async def compact(self, agent, session, *, instructions: str = "") -> AsyncIterator[object]:
-        """Summarise everything before the last ``keep_turns`` user messages."""
+        """Summarise everything before the last ``keep_turns`` turns (manual; ignores backoff)."""
+        async for event in self._run(agent, session, instructions=instructions, automatic=False):
+            yield event
+
+    async def _run(
+        self, agent, session, *, instructions: str, automatic: bool
+    ) -> AsyncIterator[object]:
         entries = session.entries()
-        user_positions = [i for i, e in enumerate(entries) if e.message.role == "user"]
-        if len(user_positions) <= self.keep_turns:
-            yield Notice("info", "nothing to compact yet")
+        keys, distinct_turns = _distinct_turn_keys(entries)
+        if len(distinct_turns) <= self.keep_turns:
+            if automatic:
+                session.state["compaction_backoff"] = len(entries)
+            else:
+                yield Notice("info", "nothing to compact yet")
             return
-        first_kept = user_positions[-self.keep_turns] if self.keep_turns > 0 else len(entries)
+        if self.keep_turns > 0:
+            oldest_kept = distinct_turns[-self.keep_turns]
+            first_kept = next(i for i, key in enumerate(keys) if key == oldest_kept)
+        else:
+            first_kept = len(entries)
         old = entries[:first_kept]
         if not old:
-            yield Notice("info", "nothing to compact yet")
+            if automatic:
+                session.state["compaction_backoff"] = len(entries)
+            else:
+                yield Notice("info", "nothing to compact yet")
             return
         outcome = await agent.hooks.run(
             "pre_compact", {"session_id": session.id, "messages": len(old)}
@@ -102,11 +159,14 @@ class Compactor:
             None,
         )
         transcript = _render([e.message for e in old], previous)
+        summarize_model = self.model or agent.model
+        window = catalog.lookup(summarize_model, agent.model_overrides).context_window
+        transcript = _trim_transcript(transcript, int(window * _TRIM_RATIO))
         if instructions:
             transcript += f"\n\nFocus of the summary: {instructions}"
         provider = self.provider or agent.provider
         request = ModelRequest(
-            model=self.model or agent.model,
+            model=summarize_model,
             system=SUMMARY_PROMPT,
             messages=[Message.user(transcript)],
             max_tokens=self.max_summary_tokens,
@@ -116,12 +176,17 @@ class Compactor:
             async for event in provider.stream(request):
                 acc.feed(event)
         except ProviderError as exc:
+            if automatic:
+                session.state["compaction_backoff"] = len(session.entries())
             yield Notice("warn", f"compaction failed: {exc}")
             return
         summary = acc.message().text.strip()
         if not summary:
+            if automatic:
+                session.state["compaction_backoff"] = len(session.entries())
             yield Notice("warn", "compaction failed: the model returned an empty summary")
             return
+        session.state.pop("compaction_backoff", None)
         session.append(
             "compacted", {"summary": summary, "upto_seq": old[-1].seq, "removed": len(old)}
         )
