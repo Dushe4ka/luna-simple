@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dushe4ka/luna-simple/schema/events.schema.json",
+  "title": "Luna turn event (protocol 1)",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "turn_started"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "turn_id"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "text_delta"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "thinking_delta"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "tool_started"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        },
+        "args_preview": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "call_id",
+        "name",
+        "args",
+        "args_preview"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "tool_finished"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "event",
+        "call_id",
+        "name",
+        "ok",
+        "detail",
+        "duration"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "approval_needed"
+        },
+        "value": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "event",
+        "value"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "todos"
+        },
+        "todos": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "event",
+        "todos"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "notice"
+        },
+        "level": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "level",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "usage_delta"
+        },
+        "usage": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "event",
+        "usage"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "compacted"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "removed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event",
+        "summary",
+        "removed"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "background_done"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "handle",
+        "ok",
+        "summary"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "reload_requested"
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "turn_done"
+        },
+        "usage": {
+          "type": "object"
+        },
+        "cost": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "stop_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "usage",
+        "cost",
+        "stop_reason"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "error"
+        },
+        "message": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "message",
+        "kind"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "cancelled"
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "additionalProperties": true
+    }
+  ]
+}
