@@ -81,3 +81,50 @@ def task_tool(runner: SubagentRunner) -> Tool:
         f"Subagents:\n{runner.describe()}"
     )
     return Tool("task", description, schema, run, raw=True)
+
+
+def task_status_tool() -> Tool:
+    """``task_status``: list or inspect background tasks of this session."""
+
+    async def run(ctx: ToolContext, args: dict) -> ToolOutput:
+        background = ctx.services.get("background")
+        if background is None:
+            return ToolOutput.error("background tasks are not enabled in this host")
+        handle = str(args.get("handle") or "")
+        infos = [background.get(handle)] if handle else background.list(ctx.session_id)
+        infos = [i for i in infos if i is not None]
+        if not infos:
+            return ToolOutput.text("no background tasks" if not handle else f"no task {handle}")
+        lines = [
+            f"{i.handle} · {i.label} · {i.status}" + (f"\n{i.summary[:1500]}" if i.summary else "")
+            for i in infos
+        ]
+        return ToolOutput.text("\n\n".join(lines), f"{len(infos)} tasks")
+
+    schema = {
+        "type": "object",
+        "properties": {"handle": {"type": "string", "description": "Empty for all tasks."}},
+        "additionalProperties": False,
+    }
+    return Tool("task_status", "Show background tasks and their results.", schema, run, raw=True)
+
+
+def task_cancel_tool() -> Tool:
+    """``task_cancel``: stop a background task."""
+
+    async def run(ctx: ToolContext, args: dict) -> ToolOutput:
+        background = ctx.services.get("background")
+        if background is None:
+            return ToolOutput.error("background tasks are not enabled in this host")
+        handle = str(args.get("handle", ""))
+        if background.cancel(handle):
+            return ToolOutput.text(f"cancelled {handle}")
+        return ToolOutput.error(f"{handle} is not running")
+
+    schema = {
+        "type": "object",
+        "properties": {"handle": {"type": "string"}},
+        "required": ["handle"],
+        "additionalProperties": False,
+    }
+    return Tool("task_cancel", "Cancel a running background task.", schema, run, raw=True)
