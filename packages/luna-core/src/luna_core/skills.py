@@ -74,9 +74,14 @@ def load_body(name: str, dirs: list[tuple[str, Path]]) -> str:
     raise SkillError(f"no skill named {name!r}")
 
 
-def _validate(name: str, description: str) -> None:
+def _validate_name(name: str) -> None:
+    """Raise :class:`SkillError` unless ``name`` is safe to use as one path segment."""
     if not _NAME.fullmatch(name):
         raise SkillError(f"{name!r} is not a valid skill name (letters, digits, - and _, max 64)")
+
+
+def _validate(name: str, description: str) -> None:
+    _validate_name(name)
     if not description.strip():
         raise SkillError("description must not be empty")
     if any(ch in description for ch in _LINE_BREAKS):
@@ -100,8 +105,12 @@ def save(name: str, description: str, body: str, dest_dir: Path) -> Path:
 
 def remove(name: str, dirs: list[tuple[str, Path]]) -> bool:
     """Delete skill ``name`` from the first directory that has it."""
+    _validate_name(name)
     for _scope, root in dirs:
-        target = Path(root) / name
+        root = Path(root)
+        target = (root / name).resolve()
+        if not target.is_relative_to(root.resolve()):
+            continue
         if (target / "SKILL.md").is_file():
             shutil.rmtree(target)
             return True
@@ -136,6 +145,20 @@ def _source(source: str, resolve: Callable[[str], dict] | None) -> tuple[str, st
     )
 
 
+def _reject_external_symlinks(src: Path) -> None:
+    """Refuse a skill folder containing a symlink that points outside it.
+
+    ``install`` copies with ``symlinks=True`` so a link is copied as a link rather
+    than having its target's content read into the install directory, but a link
+    that escapes the skill folder could still be followed later from inside the
+    installed skill — so it is rejected outright instead of being installed.
+    """
+    root = src.resolve()
+    for path in src.rglob("*"):
+        if path.is_symlink() and not path.resolve().is_relative_to(root):
+            raise SkillError(f"skill contains a symlink escaping its folder: {path.name}")
+
+
 def install(
     source: str,
     dest_dir: Path,
@@ -147,6 +170,7 @@ def install(
     """Clone ``source`` and copy the skill into ``dest_dir``; returns a status line."""
     clone, subdir, default = _source(source, resolve)
     skill_name = name or default
+    _validate_name(skill_name)
     tmp = Path(tempfile.mkdtemp(prefix="luna-skill-"))
     try:
         try:
@@ -169,10 +193,14 @@ def install(
             raise SkillError(
                 f"{source}: SKILL.md needs YAML frontmatter with 'name' and 'description'"
             )
-        dest = Path(dest_dir) / skill_name
+        _reject_external_symlinks(src)
+        dest_root = Path(dest_dir).resolve()
+        dest = (dest_root / skill_name).resolve()
+        if not dest.is_relative_to(dest_root):
+            raise SkillError(f"{skill_name!r} escapes the destination directory")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"), symlinks=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return f"installed skill {skill_name!r}"

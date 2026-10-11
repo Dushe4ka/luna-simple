@@ -16,6 +16,7 @@ from luna_core.workspace import InvalidPath, OutsideWorkspace, Workspace
 
 MAX_ATTACH = 100_000
 MAX_MEMORY = 20_000
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _IMAGES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -32,11 +33,13 @@ Paths are relative to the project root; you cannot touch files outside it."""
 
 
 def _read(path: Path, limit: int) -> str:
+    """Read at most ``limit`` characters, never loading a larger file whole."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            text = fh.read(limit + 1)
     except OSError:
         return ""
-    return text if len(text) <= limit else text[:limit] + "\n… (truncated)"
+    return text[:limit] + "\n… (truncated)" if len(text) > limit else text
 
 
 def build_system_prompt(
@@ -95,10 +98,16 @@ def expand_mentions(text: str, workspace: Workspace) -> tuple[str, list[Image]]:
             names = sorted(p.name + ("/" if p.is_dir() else "") for p in path.iterdir())
             extra += f"\n\n<dir {rel}>\n" + "\n".join(names) + "\n</dir>"
         elif path.is_file() and path.suffix.lower() in _IMAGES:
-            images.append(
-                Image(_IMAGES[path.suffix.lower()], base64.b64encode(path.read_bytes()).decode())
-            )
-            extra += f"\n<image: {rel}>"
+            size = path.stat().st_size
+            if size > MAX_IMAGE_BYTES:
+                extra += f"\n(@{rel}: image too large, {size / 1_048_576:.1f} MB)"
+            else:
+                images.append(
+                    Image(
+                        _IMAGES[path.suffix.lower()], base64.b64encode(path.read_bytes()).decode()
+                    )
+                )
+                extra += f"\n<image: {rel}>"
         elif path.is_file():
             extra += f"\n\n<attached: {rel}>\n{_read(path, MAX_ATTACH)}\n</attached>"
         else:

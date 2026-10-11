@@ -1,6 +1,7 @@
 import base64
 import datetime
 
+from luna_core import context
 from luna_core.context import PinnedFiles, build_system_prompt, expand_mentions, render_pinned
 from luna_core.memory import append_note
 from luna_core.messages import Image
@@ -55,6 +56,53 @@ def test_mentions_attach_files_dirs_and_images(tmp_path):
         images == [Image("image/png", base64.b64encode(png).decode())]
         and "<image: shot.png>" in text
     )
+
+
+def test_mentions_invalid_path_is_not_a_crash(tmp_path):
+    text, images = expand_mentions("@bad\x00.txt", Workspace(tmp_path))
+    assert "(@bad\x00.txt: invalid path)" in text
+    assert images == []
+
+
+def test_read_caps_without_loading_whole_file():
+    class FakeFile:
+        def __init__(self, content):
+            self.content = content
+            self.reads: list[int] = []
+
+        def open(self, encoding=None, errors=None):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n=-1):
+            self.reads.append(n)
+            return self.content[:n]
+
+    fake = FakeFile("x" * 10_000)
+    out = context._read(fake, 5)
+    assert out == "xxxxx\n… (truncated)"
+    assert fake.reads == [6]
+
+
+def test_large_attachment_is_truncated(tmp_path):
+    (tmp_path / "big.txt").write_text("y" * (context.MAX_ATTACH + 500))
+    text, _ = expand_mentions("@big.txt", Workspace(tmp_path))
+    assert text.count("y") == context.MAX_ATTACH
+    assert "(truncated)" in text
+
+
+def test_mentions_skips_oversized_image(tmp_path):
+    big = tmp_path / "huge.png"
+    big.write_bytes(b"\x89PNG" + b"0" * context.MAX_IMAGE_BYTES)
+    text, images = expand_mentions("@huge.png", Workspace(tmp_path))
+    assert images == []
+    assert "too large" in text and "huge.png" in text
+    assert "<image: huge.png>" not in text
 
 
 def test_pinned_files_render_fresh(tmp_path):

@@ -70,6 +70,59 @@ def test_install_from_a_local_git_repo(tmp_path):
     assert skills.remove("pdf", [("user", dest)]) and not (dest / "pdf").exists()
 
 
+def test_remove_rejects_path_traversal(tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "marker.txt").write_text("keep me")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    with pytest.raises(SkillError):
+        skills.remove("../victim", [("user", skills_dir)])
+    assert victim.is_dir() and (victim / "marker.txt").read_text() == "keep me"
+
+
+def test_install_rejects_path_traversal_name(tmp_path):
+    repo = tmp_path / "repo"
+    write_skill(repo / "skills", "pdf", "read pdfs")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "."], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+        cwd=repo,
+        check=True,
+    )
+    victim = tmp_path / "x"
+    victim.mkdir()
+    (victim / "marker.txt").write_text("keep me")
+    dest = tmp_path / "installed"
+    with pytest.raises(SkillError):
+        skills.install(str(repo / "skills" / "pdf"), dest, name="../x")
+    assert victim.is_dir() and (victim / "marker.txt").read_text() == "keep me"
+
+
+def test_install_rejects_skill_with_external_symlink(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET")
+    repo = tmp_path / "repo2"
+    skill_dir = write_skill(repo / "skills", "sneaky", "desc")
+    (skill_dir / "link").symlink_to(secret)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "."], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+        cwd=repo,
+        check=True,
+    )
+    dest = tmp_path / "installed2"
+    with pytest.raises(SkillError):
+        skills.install(str(repo / "skills" / "sneaky"), dest)
+    assert not (dest / "sneaky").exists()
+
+
 async def test_skill_and_save_skill_tools(tmp_path):
     write_skill(tmp_path / "s", "deploy", "ship it", "step one")
     tool = skills.skill_tool(lambda: [("project", tmp_path / "s")])
