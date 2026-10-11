@@ -178,3 +178,103 @@ async def test_cancel_before_first_step_delivers_exactly_once(tmp_path, log):
     await asyncio.sleep(0)
     assert [i.status for i in done] == ["cancelled"]
     assert seen[1:] == [BackgroundDone(session.id, False, "")]
+
+
+async def test_task_tools_do_not_reach_other_sessions_tasks(tmp_path, log):
+    from luna_core.tools.base import ToolContext
+
+    mine = Session.create(log, str(tmp_path), undo=False)
+    other = Session.create(log, str(tmp_path), undo=False)
+    tasks = BackgroundTasks()
+
+    async def forever():
+        await asyncio.sleep(60)
+
+    handle = tasks.start("theirs", forever, session=other)
+    ctx = ToolContext(session_id=mine.id, services={"background": tasks})
+    status = await task_status_tool().invoke(ctx, {"handle": handle})
+    assert status.content[0].text == f"no task {handle}"
+    cancel = await task_cancel_tool().invoke(ctx, {"handle": handle})
+    assert cancel.is_error and cancel.content[0].text == f"{handle} is not running"
+    assert tasks.get(handle).status in ("queued", "running")
+    own = ToolContext(session_id=other.id, services={"background": tasks})
+    assert handle in (await task_status_tool().invoke(own, {"handle": handle})).content[0].text
+    assert not (await task_cancel_tool().invoke(own, {"handle": handle})).is_error
+    await tasks.shutdown()
+
+
+async def test_background_tasks_retain_at_most_200_finished(tmp_path, log):
+    session = Session.create(log, str(tmp_path), undo=False)
+    tasks = BackgroundTasks()
+    gate = asyncio.Event()
+
+    async def slow():
+        await gate.wait()
+
+    async def quick():
+        return "ok"
+
+    live = tasks.start("live", slow, session=session)
+    handles = [tasks.start(f"q{i}", quick, session=session) for i in range(205)]
+    while set(tasks._tasks) != {live}:
+        await asyncio.sleep(0.01)
+    infos = tasks.list()
+    assert len(infos) <= 200 + 1
+    assert tasks.get(handles[0]) is None and tasks.get(handles[-1]) is not None
+    assert tasks.get(live).status in ("queued", "running")
+    assert set(tasks._tasks) == {live}  # finished tasks drop their asyncio.Task
+    gate.set()
+    assert (await tasks.wait(live)).status == "done"
+    assert (await tasks.wait(handles[-1])).status == "done"  # finished handles still wait
+
+
+async def test_agent_manager_retains_at_most_200_finished(tmp_path, log):
+    ws = Workspace(tmp_path)
+    gate = asyncio.Event()
+
+    @tool()
+    async def wait_gate() -> str:
+        """Block until the test opens the gate."""
+        await gate.wait()
+        return "gate open"
+
+    manager = AgentManager(max_parallel=8)
+    live_session = Session.create(log, str(tmp_path), undo=False)
+    slow = Agent(
+        FakeProvider([FakeProvider.call("wait_gate", {}), FakeProvider.text("x")]),
+        "m",
+        workspace=ws,
+        tools=[wait_gate],
+    )
+    manager.start(slow, live_session, "live")
+    ids = []
+    for i in range(205):
+        s = Session.create(log, str(tmp_path), undo=False)
+        manager.start(Agent(FakeProvider([FakeProvider.text(f"r{i}")]), "m", workspace=ws), s, "go")
+        await manager.wait(s.id)
+        ids.append(s.id)
+    assert len(manager.list()) <= 200 + 1
+    assert manager.get(ids[0]) is None and manager.events(ids[0]) == []
+    assert manager.get(ids[-1]).status == "done"
+    assert manager.get(live_session.id).status in ("running", "waiting")
+    assert set(manager._tasks) == {live_session.id} and set(manager._sessions) == {live_session.id}
+    gate.set()
+    assert (await manager.wait(live_session.id)).status == "done"
+    assert (await manager.wait(ids[-1])).status == "done"
+
+
+async def test_agent_manager_event_index_is_monotonic_across_runs(tmp_path, log):
+    ws = Workspace(tmp_path)
+    session = Session.create(log, str(tmp_path), undo=False)
+    agent = Agent(
+        FakeProvider([FakeProvider.text("one"), FakeProvider.text("two")]), "m", workspace=ws
+    )
+    manager = AgentManager()
+    manager.start(agent, session, "first")
+    await manager.wait(session.id)
+    last = manager.events(session.id)[-1]["index"]
+    manager.start(agent, session, "second")
+    await manager.wait(session.id)
+    second = manager.events(session.id)
+    assert second[0]["index"] > last
+    assert [e["event"] for e in manager.events(session.id, after=last)][-1] == "turn_done"

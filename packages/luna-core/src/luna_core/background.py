@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -21,6 +22,8 @@ from luna_core.events import (
     to_wire,
 )
 from luna_core.session import Session
+
+KEEP_FINISHED = 200  # finished tasks / runs kept for status and replay
 
 
 @dataclass
@@ -43,25 +46,25 @@ class BackgroundTasks:
     def __init__(self, max_parallel: int = 4) -> None:
         self._semaphore = asyncio.Semaphore(max_parallel)
         self._infos: dict[str, TaskInfo] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
-        self._delivered: set[str] = set()
+        self._tasks: dict[str, asyncio.Task] = {}  # live tasks only
+        self._done: OrderedDict[str, None] = OrderedDict()  # finished handles, oldest first
 
     def start(
         self, label: str, factory: Callable[[], Awaitable[object]], *, session: Session
     ) -> str:
         """Start ``factory()`` in the background; returns its handle."""
         handle = f"bg-{uuid.uuid4().hex[:6]}"
-        self._infos[handle] = TaskInfo(handle, label, session.id, "queued", time.time())
-        task = asyncio.create_task(self._run(handle, factory, session))
+        info = TaskInfo(handle, label, session.id, "queued", time.time())
+        self._infos[handle] = info
+        task = asyncio.create_task(self._run(info, factory, session))
         # A task cancelled before its first step never enters ``_run``; deliver then.
-        task.add_done_callback(lambda _t: self._deliver(handle, session))
+        task.add_done_callback(lambda _t: self._deliver(info, session))
         self._tasks[handle] = task
         return handle
 
     async def _run(
-        self, handle: str, factory: Callable[[], Awaitable[object]], session: Session
+        self, info: TaskInfo, factory: Callable[[], Awaitable[object]], session: Session
     ) -> None:
-        info = self._infos[handle]
         try:
             async with self._semaphore:
                 info.status = "running"
@@ -74,14 +77,13 @@ class BackgroundTasks:
         except Exception as exc:  # noqa: BLE001 - reported to the parent, never raised
             info.status, info.ok, info.summary = "failed", False, f"{type(exc).__name__}: {exc}"
         finally:
-            self._deliver(handle, session)
+            self._deliver(info, session)
 
-    def _deliver(self, handle: str, session: Session) -> None:
+    def _deliver(self, info: TaskInfo, session: Session) -> None:
         """Log, queue and notify the result — exactly once per task."""
-        if handle in self._delivered:
+        if info.finished is not None:
             return
-        self._delivered.add(handle)
-        info = self._infos[handle]
+        handle = info.handle
         if info.status in ("queued", "running"):
             info.status, info.ok, info.summary = "cancelled", False, "cancelled"
         info.finished = time.time()
@@ -90,6 +92,11 @@ class BackgroundTasks:
             session.append("background_done", payload)
         session.queue(f"[background task {handle} · {info.label} · {info.status}]\n{info.summary}")
         session.notify(BackgroundDone(handle, bool(info.ok), info.summary[:2000]))
+        self._tasks.pop(handle, None)
+        self._done[handle] = None
+        while len(self._done) > KEEP_FINISHED:
+            old, _ = self._done.popitem(last=False)
+            self._infos.pop(old, None)
 
     def get(self, handle: str) -> TaskInfo | None:
         """One task's info."""
@@ -109,15 +116,18 @@ class BackgroundTasks:
 
     async def wait(self, handle: str) -> TaskInfo:
         """Wait until the task has finished."""
-        task = self._tasks[handle]
-        await asyncio.gather(task, return_exceptions=True)
-        return self._infos[handle]
+        info = self._infos[handle]
+        task = self._tasks.get(handle)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        return info
 
     async def shutdown(self) -> None:
         """Cancel everything."""
-        for task in self._tasks.values():
+        tasks = list(self._tasks.values())
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclass
@@ -147,12 +157,12 @@ class AgentManager:
         self._on_done = on_done
         self._limit = buffer
         self._runs: dict[str, RunInfo] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
-        self._sessions: dict[str, Session] = {}
-        self._events: dict[str, list[dict]] = {}
-        self._next_index: dict[str, int] = {}
+        self._tasks: dict[str, asyncio.Task] = {}  # live runs only
+        self._sessions: dict[str, Session] = {}  # live runs only
+        self._events: dict[str, deque[dict]] = {}
+        self._next_index: dict[str, int] = {}  # monotonic per session, across runs
         self._listeners: dict[str, list[Callable[[dict], None]]] = {}
-        self._finished: dict[str, RunInfo] = {}
+        self._done: OrderedDict[str, None] = OrderedDict()  # finished session ids, oldest first
 
     def start(self, agent, session: Session, text: str, *, images=(), label: str = "") -> RunInfo:
         """Run one turn of ``session`` detached from any client."""
@@ -162,8 +172,9 @@ class AgentManager:
         info = RunInfo(session.id, label or session.title or text[:60], "queued", time.time())
         self._runs[session.id] = info
         self._sessions[session.id] = session
-        self._events[session.id] = []
-        self._next_index[session.id] = 0
+        self._events[session.id] = deque(maxlen=self._limit)
+        self._next_index.setdefault(session.id, 0)
+        self._done.pop(session.id, None)
         task = asyncio.create_task(self._run(agent, session, text, list(images), info))
         # A run cancelled before its first step never enters ``_run``; finish it then.
         task.add_done_callback(lambda _t: self._finish(session, info))
@@ -176,8 +187,6 @@ class AgentManager:
         self._next_index[session_id] = index + 1
         wire = {**wire, "index": index}
         events.append(wire)
-        if len(events) > self._limit:
-            del events[: len(events) - self._limit]
         for fn in list(self._listeners.get(session_id, [])):
             try:
                 fn(wire)
@@ -219,9 +228,8 @@ class AgentManager:
 
     def _finish(self, session: Session, info: RunInfo) -> None:
         """Close the run: ``on_done`` and ``BackgroundDone`` — exactly once per run."""
-        if self._finished.get(session.id) is info:
+        if info.finished is not None:
             return
-        self._finished[session.id] = info
         if info.status in ("queued", "running", "waiting"):
             info.status = "cancelled"
         info.finished = time.time()
@@ -234,6 +242,16 @@ class AgentManager:
                 pass
         summary = info.text[-2000:] or info.error
         session.notify(BackgroundDone(session.id, info.status == "done", summary))
+        if self._runs.get(session.id) is info:
+            self._tasks.pop(session.id, None)
+            self._sessions.pop(session.id, None)
+            self._done[session.id] = None
+            while len(self._done) > KEEP_FINISHED:
+                old, _ = self._done.popitem(last=False)
+                for store in (self._runs, self._events, self._next_index):
+                    store.pop(old, None)
+                if not self._listeners.get(old):
+                    self._listeners.pop(old, None)
 
     def get(self, session_id: str) -> RunInfo | None:
         """Run info for a session."""
@@ -274,11 +292,15 @@ class AgentManager:
 
     async def wait(self, session_id: str) -> RunInfo:
         """Wait for a run to finish."""
-        await asyncio.gather(self._tasks[session_id], return_exceptions=True)
-        return self._runs[session_id]
+        info = self._runs[session_id]
+        task = self._tasks.get(session_id)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        return info
 
     async def shutdown(self) -> None:
         """Cancel every run (server shutdown)."""
-        for task in self._tasks.values():
+        tasks = list(self._tasks.values())
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)

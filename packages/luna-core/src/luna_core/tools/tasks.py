@@ -92,7 +92,8 @@ def task_status_tool() -> Tool:
             return ToolOutput.error("background tasks are not enabled in this host")
         handle = str(args.get("handle") or "")
         infos = [background.get(handle)] if handle else background.list(ctx.session_id)
-        infos = [i for i in infos if i is not None]
+        # A shared host runs many sessions: never show another session's task.
+        infos = [i for i in infos if i is not None and i.session_id == ctx.session_id]
         if not infos:
             return ToolOutput.text("no background tasks" if not handle else f"no task {handle}")
         lines = [
@@ -117,7 +118,8 @@ def task_cancel_tool() -> Tool:
         if background is None:
             return ToolOutput.error("background tasks are not enabled in this host")
         handle = str(args.get("handle", ""))
-        if background.cancel(handle):
+        info = background.get(handle)
+        if info is not None and info.session_id == ctx.session_id and background.cancel(handle):
             return ToolOutput.text(f"cancelled {handle}")
         return ToolOutput.error(f"{handle} is not running")
 
