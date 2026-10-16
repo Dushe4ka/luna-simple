@@ -61,21 +61,46 @@ def test_unknown_provider_via_env_is_config_error(monkeypatch, capsys):
     assert "grok" in capsys.readouterr().err
 
 
+class _FakeBundle:
+    agent = None
+    closed = False
+
+    async def aclose(self):
+        _FakeBundle.closed = True
+
+
+async def _fake_build(*a, **k):
+    return _FakeBundle()
+
+
+def _async(fn):
+    async def run(*a, **k):
+        return fn(*a, **k)
+
+    return run
+
+
 def test_one_shot_dispatches_run_once(monkeypatch, tmp_path):
     calls = {}
-    monkeypatch.setattr("luna.cli.build_agent", lambda *a, **k: object())
-    monkeypatch.setattr("luna.cli.run_once", lambda *a, **k: calls.setdefault("once", True) or "ok")
-    monkeypatch.setattr("luna.cli.run_repl", lambda *a, **k: calls.setdefault("repl", True) or 0)
+    _FakeBundle.closed = False
+    monkeypatch.setattr("luna.cli.build_agent", _fake_build)
+    monkeypatch.setattr(
+        "luna.cli.run_once", _async(lambda *a, **k: calls.setdefault("once", True) or "ok")
+    )
+    monkeypatch.setattr(
+        "luna.cli.run_repl", _async(lambda *a, **k: calls.setdefault("repl", True) or 0)
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     code = main(["fix the bug", "--no-splash", "--workdir", str(tmp_path)])
     assert code == 0
     assert calls == {"once": True}
+    assert _FakeBundle.closed  # the bundle (MCP servers, sandbox) is closed on the way out
 
 
 def test_no_prompt_dispatches_repl(monkeypatch, tmp_path):
     calls = {}
-    monkeypatch.setattr("luna.cli.build_agent", lambda *a, **k: object())
-    monkeypatch.setattr("luna.cli.run_repl", lambda *a, **k: calls.setdefault("repl", 0))
+    monkeypatch.setattr("luna.cli.build_agent", _fake_build)
+    monkeypatch.setattr("luna.cli.run_repl", _async(lambda *a, **k: calls.setdefault("repl", 0)))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     code = main(["--no-splash", "--workdir", str(tmp_path)])
     assert code == 0
@@ -160,40 +185,77 @@ def test_missing_key_non_interactive_is_config_error(monkeypatch, tmp_path, caps
     assert "luna setup" in capsys.readouterr().err
 
 
-def test_json_output_is_one_parseable_object(tmp_path, fake_model, monkeypatch, capsys):
+def test_json_output_is_one_parseable_object(tmp_path, monkeypatch, capsys):
     import json
 
-    from langchain_core.messages import AIMessage
+    from luna_core.providers.fake import FakeProvider
 
     import luna.cli as cli
+    from luna.core.agent import build_agent as real_build
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setattr(
-        cli,
-        "build_agent",
-        lambda *a, **k: __import__("luna.core._legacy_agent", fromlist=["x"]).build_agent_legacy(
-            *a,
-            model=fake_model(AIMessage(content="hi")),
-            **{kk: vv for kk, vv in k.items() if kk != "model"},
-        ),
-    )
+
+    async def build(config, **kw):
+        return await real_build(config, provider=FakeProvider([FakeProvider.text("hi")]), **kw)
+
+    monkeypatch.setattr(cli, "build_agent", build)
     rc = cli.main(["--json", "hello"])
     assert rc == 0
     out = capsys.readouterr().out.strip()
     data = json.loads(out.splitlines()[-1])
     assert data["text"] == "hi"
-    assert "thread_id" in data
+    assert data["session_id"]
+
+
+def test_continue_reuses_the_latest_session_of_this_folder(tmp_path, monkeypatch):
+    import luna.cli as cli
+    from luna.core.store import open_log
+
+    seen = {}
+
+    async def fake_once(bundle, prompt, **kw):
+        seen["session"] = kw["session"]
+        return ""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(cli, "build_agent", _fake_build)
+    monkeypatch.setattr(cli, "run_once", fake_once)
+    log = open_log()
+    workdir = str(tmp_path.resolve())
+    log.create(workdir, title="older", session_id="s-old")
+    log.create(workdir, title="newer", session_id="s-new")
+    log.create(workdir, title="child", parent_id="s-new", session_id="s-child")
+    assert cli.main(["-c", "-p", "more", "--workdir", workdir, "--no-splash"]) == 0
+    assert seen["session"].id == "s-new"  # the newest top-level one, never the child
+    assert cli.main(["--resume", "nope", "-p", "x", "--workdir", workdir]) == 2
 
 
 def test_missing_key_interactive_runs_wizard(monkeypatch, tmp_path):
     calls = {}
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr("luna.cli.run_setup", lambda *a, **k: calls.setdefault("wiz", 0))
-    monkeypatch.setattr("luna.cli.build_agent", lambda *a, **k: object())
-    monkeypatch.setattr("luna.cli.run_once", lambda *a, **k: "ok")
+    monkeypatch.setattr("luna.cli.build_agent", _fake_build)
+    monkeypatch.setattr("luna.cli.run_once", _async(lambda *a, **k: "ok"))
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("luna.ui.console.Console.is_terminal", property(lambda self: True))
     code = main(["hi", "--no-splash", "--workdir", str(tmp_path)])
     assert calls == {"wiz": 0}
     assert code == 0
+
+
+def test_a_failed_one_shot_turn_exits_1(tmp_path, monkeypatch):
+    from luna_core.errors import ProviderError
+    from luna_core.providers.fake import FakeProvider
+
+    import luna.cli as cli
+    from luna.core.agent import build_agent as real_build
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+    async def build(config, **kw):
+        script = [[ProviderError("no route", kind="network")]]
+        return await real_build(config, provider=FakeProvider(script), **kw)
+
+    monkeypatch.setattr(cli, "build_agent", build)
+    assert cli.main(["-p", "hi", "--workdir", str(tmp_path), "--no-splash"]) == 1

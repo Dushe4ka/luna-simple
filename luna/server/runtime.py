@@ -19,8 +19,9 @@ from starlette.responses import JSONResponse
 
 from luna.config.config import LunaConfig, load_config
 from luna.config.providers import LunaConfigError
+from luna.config.usage import SessionUsage
 from luna.core.session_state import SessionState, SessionStateStore
-from luna.turn.engine import PreparedTurn, TurnOutcome
+from luna.turn._legacy_engine import PreparedTurn, TurnOutcome
 
 
 class WorkdirMismatch(Exception):
@@ -44,6 +45,8 @@ class SessionRuntime:
         self.phase = "idle"
         self.prepared: PreparedTurn | None = None
         self.outcome = TurnOutcome()
+        #: Token usage of this session while the server runs (not persisted).
+        self.usage = SessionUsage()
         self.lock = asyncio.Lock()
         #: Set by /init: rebuild after its turn so a new AGENTS.md is loaded.
         self.reload_after_turn = False

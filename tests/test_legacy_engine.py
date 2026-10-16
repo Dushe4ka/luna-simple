@@ -1,10 +1,12 @@
+"""TEMPORARY: the LangGraph-era pipeline the server still uses (goes with the server port)."""
+
 from types import SimpleNamespace
 
 from luna.config.config import LunaConfig
-from luna.config.usage import TurnUsage
+from luna.config.usage import SessionUsage, TurnUsage
 from luna.core.session_state import SessionState
-from luna.turn import engine
-from luna.turn.engine import (
+from luna.turn import _legacy_engine as engine
+from luna.turn._legacy_engine import (
     FinishResult,
     Notice,
     PreparedTurn,
@@ -83,20 +85,27 @@ class _Index:
         self.touched.append(thread_id)
 
 
-def _finish(state, outcome, cfg, tmp_path, index=None):
+def _finish(state, outcome, cfg, tmp_path, index=None, usage=None):
     prepared = PreparedTurn(content="x", title_line="fix the bug", dirty_before=[])
     return finish_turn(
-        state, prepared, outcome, cfg=cfg, index=index, thread_id="t1", workdir=str(tmp_path)
+        state,
+        prepared,
+        outcome,
+        cfg=cfg,
+        index=index,
+        thread_id="t1",
+        workdir=str(tmp_path),
+        usage=usage,
     )
 
 
 def test_read_only_turn_records_usage_and_index_without_verify(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "run_verify", lambda *a: (_ for _ in ()).throw(AssertionError))
-    state, index = SessionState("t1", str(tmp_path)), _Index()
+    state, index, usage = SessionState("t1", str(tmp_path)), _Index(), SessionUsage()
     cfg = LunaConfig(workdir=str(tmp_path), verify_command="pytest")
-    result = _finish(state, TurnOutcome(usage=TurnUsage(10, 2, 12)), cfg, tmp_path, index)
+    result = _finish(state, TurnOutcome(usage=TurnUsage(10, 2, 12)), cfg, tmp_path, index, usage)
     assert result == FinishResult(notices=[], fixup_prompt=None, reload=False)
-    assert state.usage.totals == (10, 2, 12)
+    assert usage.totals == (10, 2, 12)
     assert index.recorded == [("t1", str(tmp_path), "fix the bug")] and index.touched == ["t1"]
 
 

@@ -14,7 +14,7 @@ from collections import namedtuple
 from collections.abc import Mapping
 from pathlib import Path
 
-from luna.core.persistence import _INDEX_ERRORS, _db_path
+from luna.core.store import INDEX_ERRORS, db_path
 
 ProjectRow = namedtuple("ProjectRow", "path trusted_at last_opened")
 
@@ -52,7 +52,7 @@ class ProjectIndex:
         """Open ``sessions.db``, create the table, migrate once; degrade on failure."""
         self._conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(_db_path(env), check_same_thread=False)
+            conn = sqlite3.connect(db_path(env), check_same_thread=False)
             existed = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'luna_projects'"
             ).fetchone()
@@ -64,7 +64,7 @@ class ProjectIndex:
                 _migrate(conn)
             conn.commit()
             self._conn = conn
-        except _INDEX_ERRORS:
+        except INDEX_ERRORS:
             self._conn = None
 
     @property

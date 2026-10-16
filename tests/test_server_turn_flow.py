@@ -92,7 +92,7 @@ async def test_new_message_after_abandoned_approval_is_accepted(client_for, tmp_
 async def test_mutating_turn_with_failing_verify_streams_notices_and_fixup(
     client_for, tmp_path, monkeypatch
 ):
-    from luna.turn import engine
+    from luna.turn import _legacy_engine as engine
 
     results = iter([(False, "boom"), (True, "")])
     monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: next(results))
@@ -142,7 +142,7 @@ async def test_turn_is_prepared_only_while_holding_the_session_lock(
     client_for, tmp_path, monkeypatch
 ):
     """No TOCTOU: two racing messages must never prepare concurrently."""
-    from luna.turn import engine
+    from luna.turn import _legacy_engine as engine
 
     c, app = client_for(AIMessage(content="ok"))
     seen = []
@@ -159,7 +159,7 @@ async def test_turn_is_prepared_only_while_holding_the_session_lock(
 
 
 async def test_a_failing_prepare_reports_a_readable_error(client_for, tmp_path, monkeypatch):
-    from luna.turn import engine
+    from luna.turn import _legacy_engine as engine
 
     def boom(*a, **k):
         raise ValueError("bad .luna.toml")

@@ -894,7 +894,7 @@ def test_compact_then_undo_does_not_try_to_remove_the_summary(tmp_path, fake_mod
 
     from luna.config.config import LunaConfig
     from luna.core._legacy_agent import build_agent_legacy as build_agent
-    from luna.core.session import compact_thread
+    from luna.core._legacy_session import compact_thread
     from luna.turn.undo import begin_turn, forget_messages, undo
 
     _git(tmp_path, "init", "-q")
@@ -962,7 +962,7 @@ def test_compact_then_double_undo_preserves_the_summary_for_every_prior_turn(tmp
 
     from luna.config.config import LunaConfig
     from luna.core._legacy_agent import build_agent_legacy as build_agent
-    from luna.core.session import compact_thread
+    from luna.core._legacy_session import compact_thread
     from luna.turn.undo import begin_turn, forget_messages, undo
 
     _git(tmp_path, "init", "-q")

@@ -18,7 +18,6 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
     monkeypatch.setattr(cli_mod, "run_tui", fake_run_tui)
     monkeypatch.setattr(cli_mod, "ensure_trusted", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
-    monkeypatch.setattr(cli_mod, "build_agent", lambda *a, **k: object())
     monkeypatch.setattr(cli_mod, "run_repl", fail_run_repl)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     # Console.is_terminal is read from the real console; force it via the
@@ -37,7 +36,6 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
 def _force_interactive(monkeypatch, cli_mod):
     monkeypatch.setattr(cli_mod, "ensure_trusted", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
-    monkeypatch.setattr(cli_mod, "build_agent", lambda *a, **k: object())
     monkeypatch.setattr(
         cli_mod, "run_repl", lambda *a, **k: pytest.fail("run_repl should not be called")
     )
@@ -102,9 +100,19 @@ def test_main_still_dispatches_repl_when_not_interactive(monkeypatch, tmp_path):
     def fail_run_tui(*a, **k):
         pytest.fail("run_tui should not be called when not interactive")
 
+    class _Bundle:
+        async def aclose(self):
+            pass
+
+    async def build(*a, **k):
+        return _Bundle()
+
+    async def repl(*a, **k):
+        return calls.setdefault("repl", 0)
+
     monkeypatch.setattr(cli_mod, "run_tui", fail_run_tui)
-    monkeypatch.setattr(cli_mod, "build_agent", lambda *a, **k: object())
-    monkeypatch.setattr(cli_mod, "run_repl", lambda *a, **k: calls.setdefault("repl", 0))
+    monkeypatch.setattr(cli_mod, "build_agent", build)
+    monkeypatch.setattr(cli_mod, "run_repl", repl)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
     code = cli_mod.main(["--no-splash", "--no-input", "--workdir", str(tmp_path)])
@@ -132,7 +140,19 @@ def test_one_shot_prompt_never_asks_for_trust(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli_mod, "ensure_trusted", lambda *a, **k: pytest.fail("-p must not prompt for trust")
     )
-    monkeypatch.setattr(cli_mod, "run_once", lambda *a, **k: None)
+
+    class _Bundle:
+        async def aclose(self):
+            pass
+
+    async def build(*a, **k):
+        return _Bundle()
+
+    async def once(*a, **k):
+        return ""
+
+    monkeypatch.setattr(cli_mod, "build_agent", build)
+    monkeypatch.setattr(cli_mod, "run_once", once)
 
     assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path), "-p", "hi"]) == 0
 

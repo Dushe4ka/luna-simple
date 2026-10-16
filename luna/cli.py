@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import uuid
+from collections import namedtuple
 from pathlib import Path
 
 from luna import __version__
@@ -20,10 +21,8 @@ from luna.config.credentials import (
     set_api_key,
     unset_api_key,
 )
-from luna.config.providers import LunaConfigError, merge_providers
-
-# TEMPORARY: the REPL still drives the LangGraph agent (ported in Task 29).
-from luna.core._legacy_agent import build_agent_legacy as build_agent
+from luna.config.providers import LunaConfigError, build_provider, merge_providers
+from luna.core.agent import build_agent
 from luna.core.session import run_once, run_repl
 from luna.extensions import mcp, skills
 from luna.extensions.initgen import init_prompt
@@ -350,18 +349,23 @@ def _run_init(argv: list[str]) -> int:
     """Explore the repo and write/update AGENTS.md in one agent turn."""
     console = get_console()
     config = load_config({})
+    return asyncio.run(_init_core(config, console))
+
+
+async def _init_core(config, console) -> int:
+    from luna.core.store import open_log
+
     try:
-        agent = build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        bundle = await build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
     except LunaConfigError as exc:
         print(f"luna: {exc}", file=sys.stderr)
         return 2
-    run_once(
-        agent,
-        init_prompt(config.workdir),
-        thread_id=uuid.uuid4().hex,
-        console=console,
-        workdir=config.workdir,
-    )
+    try:
+        await run_once(
+            bundle, init_prompt(config.workdir), console=console, log=open_log(), cfg=config
+        )
+    finally:
+        await bundle.aclose()
     return 0
 
 
@@ -430,75 +434,146 @@ def main(argv: list[str] | None = None) -> int:
     if config.show_splash and not prompt and console.is_terminal:
         render_splash(console)
 
-    from luna.core.persistence import SessionIndex, checkpointer
-
-    index = SessionIndex()
-    cp = checkpointer(on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
-    start_thread = uuid.uuid4().hex
-    if args.cont or args.resume:
-        try:
-            target = _resolve_resume(args, index, config.workdir, console, interactive)
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return 130
-        if target is None:
-            return 2
-        start_thread = target
-    session_id = start_thread  # the undo journal follows the session across --continue
-    plan_state = [False]
-
-    from luna.turn import undo
-
-    undo.gc(config.workdir, keep=session_id)  # after session_id: never gc the journal we resume
-
-    def _rebuild():
-        return build_agent(
-            config,
-            checkpointer=cp,
-            on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
-            session_id=session_id,
-            plan_flag=lambda: plan_state[0],
-        )
-
+    if interactive and not prompt:
+        return _run_tui_path(args, config, console)
     try:
-        agent = _rebuild()
-    except LunaConfigError as exc:
-        print(f"luna: {exc}", file=sys.stderr)
-        return 2
-
-    try:
-        if prompt:
-            run_once(
-                agent,
-                prompt,
-                thread_id=start_thread,
-                console=console,
-                index=index,
-                workdir=config.workdir,
-                session_id=session_id,
-                cfg=config,
-                output_format=args.output_format,
-            )
-            return 0
-        if interactive:
-            # Absolute: the shared server would resolve a relative "." against
-            # its own cwd, i.e. whichever project happened to start it.
-            workdir = str(Path(config.workdir).resolve())
-            return run_tui(config, workdir=workdir, thread_id=start_thread)
-        return run_repl(
-            agent,
-            console=console,
-            rebuild=_rebuild,
-            index=index,
-            thread_id=start_thread,
-            workdir=config.workdir,
-            config=config,
-            session_id=session_id,
-            plan_state=plan_state,
-        )
+        return asyncio.run(_run_core(args, config, console, prompt, interactive))
     except KeyboardInterrupt:
         console.print()
         return 130
     except Exception as exc:  # noqa: BLE001 - top-level guard
         print(f"luna: {exc}", file=sys.stderr)
         return 1
+
+
+def _run_tui_path(args, config, console) -> int:
+    """Launch the full-screen TUI (still served by the LangGraph server until it is ported)."""
+    from luna.core.persistence import SessionIndex
+    from luna.turn import undo
+
+    try:  # fail fast on a bad provider/model/key instead of inside the server
+        build_provider(
+            config.provider, config.model, registry=merge_providers(config.custom_providers)
+        )
+    except LunaConfigError as exc:
+        print(f"luna: {exc}", file=sys.stderr)
+        return 2
+    index = SessionIndex()
+    start_thread = uuid.uuid4().hex
+    if args.cont or args.resume:
+        try:
+            target = _resolve_resume(args, index, config.workdir, console, True)
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
+        if target is None:
+            return 2
+        start_thread = target
+    undo.gc(config.workdir, keep=start_thread)  # never gc the journal we resume
+    try:
+        # Absolute: the shared server would resolve a relative "." against
+        # its own cwd, i.e. whichever project happened to start it.
+        workdir = str(Path(config.workdir).resolve())
+        return run_tui(config, workdir=workdir, thread_id=start_thread)
+    except KeyboardInterrupt:
+        console.print()
+        return 130
+    except Exception as exc:  # noqa: BLE001 - top-level guard
+        print(f"luna: {exc}", file=sys.stderr)
+        return 1
+
+
+_LogRow = namedtuple("_LogRow", "thread_id title")
+_ENDS = ("turn_done", "turn_error", "cancelled")
+
+
+class _LogIndex:
+    """The event log in the shape :func:`_resolve_resume` reads (top-level sessions only)."""
+
+    def __init__(self, log) -> None:
+        self._log = log
+
+    def list(self, workdir: str) -> list[_LogRow]:
+        rows = self._log.list(str(Path(workdir).resolve()))
+        return [_LogRow(i.id, i.title or "(untitled)") for i in rows if i.parent_id is None]
+
+    def latest_for(self, workdir: str) -> _LogRow | None:
+        rows = self.list(workdir)
+        return rows[0] if rows else None
+
+
+async def _run_core(args, config, console, prompt: str | None, interactive: bool) -> int:
+    """``luna -p`` and the line REPL, on luna-core."""
+    from luna_core.session import Session
+    from luna_core.undo import gc
+
+    from luna.core.store import open_log
+    from luna.turn import engine
+
+    log = open_log()
+    workdir = str(Path(config.workdir).resolve())
+    session = None
+    if args.cont or args.resume:
+        try:
+            target = _resolve_resume(args, _LogIndex(log), workdir, console, interactive)
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
+        if target is None:
+            return 2
+        if log.info(target) is None:
+            print(f"luna: no session {target!r}", file=sys.stderr)
+            return 2
+        session = Session.open(log, target)
+    await asyncio.to_thread(gc, workdir, keep=session.id if session else None)
+
+    plan_state = [False]
+    hooks_state: dict = {}
+    current: list = []
+
+    async def rebuild():
+        bundle = await build_agent(
+            config,
+            on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
+            plan_flag=lambda: plan_state[0],
+            hooks=engine.make_hooks(lambda: hooks_state.get("state"), lambda: config),
+        )
+        current[:] = [bundle]
+        return bundle
+
+    try:
+        bundle = await rebuild()
+    except LunaConfigError as exc:
+        print(f"luna: {exc}", file=sys.stderr)
+        return 2
+    try:
+        if prompt:
+            from luna.core.store import make_title
+
+            session = session or Session.create(log, workdir, title=make_title(prompt))
+            await run_once(
+                bundle,
+                prompt,
+                console=console,
+                log=log,
+                session=session,
+                cfg=config,
+                output_format=args.output_format,
+                hooks_state=hooks_state,
+            )
+            # a scripted caller must see a failed or cancelled turn in the exit code
+            last = next((r.type for r in reversed(session.records()) if r.type in _ENDS), "")
+            return 1 if last in ("turn_error", "cancelled") else 0
+        return await run_repl(
+            bundle,
+            console=console,
+            rebuild=rebuild,
+            log=log,
+            session=session or Session.create(log, workdir),
+            config=config,
+            plan_state=plan_state,
+            hooks_state=hooks_state,
+        )
+    finally:
+        for live in current:  # the REPL closes the bundles it replaced; this is the last one
+            await live.aclose()

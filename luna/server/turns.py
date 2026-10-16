@@ -14,7 +14,8 @@ from starlette.responses import JSONResponse
 
 from luna.config.providers import LunaConfigError
 from luna.core import permissions
-from luna.core.persistence import SessionIndex, make_title
+from luna.core.persistence import SessionIndex
+from luna.core.store import make_title
 from luna.core.turn_events import (
     Interrupted,
     ReloadRequested,
@@ -30,7 +31,7 @@ from luna.core.turn_events import (
 from luna.extensions.subagents import subagent_summaries
 from luna.server.runtime import runtime_for
 from luna.server.trust import trust_error
-from luna.turn import engine
+from luna.turn import _legacy_engine as engine
 
 
 def _event_dict(event) -> dict:
@@ -172,6 +173,7 @@ async def stream_turn(runtime, payload, index, *, prepare=None):
                             index=index,
                             thread_id=runtime.thread_id,
                             workdir=runtime.workdir,
+                            usage=runtime.usage,
                         )
                     )
                     for notice in result.notices:

@@ -16,7 +16,9 @@ every other prompt in Luna already lets Ctrl-C propagate.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 from collections.abc import Callable
 
 from rich.console import Console
@@ -69,3 +71,42 @@ def arrow_confirm(
     if result is None:
         raise KeyboardInterrupt
     return result
+
+
+async def in_thread(fn: Callable, /, *args, **kwargs):
+    """Run a blocking prompt (or handler) in a daemon thread and await its result.
+
+    Unlike ``asyncio.to_thread`` the thread is a daemon outside the default
+    executor, so a prompt still blocked on stdin when the loop stops (Ctrl-C,
+    exit) never holds up interpreter shutdown. A ``StopIteration`` (a scripted
+    ``input_fn`` that ran out of answers) arrives as ``EOFError``.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def deliver(result, exc) -> None:
+        if future.done():
+            return
+        if exc is not None:
+            future.set_exception(exc)
+        else:
+            future.set_result(result)
+
+    def post(result, exc) -> None:
+        try:
+            loop.call_soon_threadsafe(deliver, result, exc)
+        except RuntimeError:  # the loop is gone: nobody is waiting any more
+            pass
+
+    def work() -> None:
+        try:
+            result = fn(*args, **kwargs)
+        except StopIteration:
+            post(None, EOFError("input exhausted"))
+        except BaseException as exc:  # noqa: BLE001 - handed to the awaiting coroutine
+            post(None, exc)
+        else:
+            post(result, None)
+
+    threading.Thread(target=work, daemon=True, name="luna-prompt").start()
+    return await future

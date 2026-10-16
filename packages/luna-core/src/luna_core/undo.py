@@ -10,12 +10,24 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 # Luna state that is never part of a snapshot (subagent worktrees live under .luna too).
 _EXCLUDES = (":(exclude).luna/undo", ":(exclude).luna/worktrees")
+
+
+# One lock per journal directory: parallel tool calls (threads) and several
+# ``UndoJournal`` objects for the same session must not lose each other's updates.
+_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(directory: Path) -> threading.RLock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(str(directory), threading.RLock())
 
 
 @dataclass(frozen=True)
@@ -82,6 +94,7 @@ class UndoJournal:
         self.session_id = session_id or "default"
         self.dir = self.root / ".luna" / "undo" / self.session_id
         self.is_git = _is_git(self.root)
+        self._lock = _lock_for(self.dir)
 
     # -- storage ---------------------------------------------------------
     def _load(self) -> dict:
@@ -93,7 +106,7 @@ class UndoJournal:
 
     def _save(self, data: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.dir / "journal.json.tmp"
+        tmp = self.dir / f"journal.json.{os.getpid()}.{threading.get_ident()}.tmp"
         tmp.write_text(json.dumps(data))
         tmp.replace(self.dir / "journal.json")
 
@@ -120,10 +133,11 @@ class UndoJournal:
         was logged) — there is nothing for the user to see restored, so the
         record is dropped in place rather than undone.
         """
-        data = self._load()
-        if data["turns"]:
-            data["turns"].pop()
-            self._save(data)
+        with self._lock:
+            data = self._load()
+            if data["turns"]:
+                data["turns"].pop()
+                self._save(data)
 
     def top_redo(self) -> str | None:
         """Turn id of the newest redoable record, or ``None``."""
@@ -133,31 +147,33 @@ class UndoJournal:
     # -- recording -------------------------------------------------------
     def begin_turn(self, turn_id: str) -> None:
         """Record the state before a turn; clears the redo stack."""
-        data = self._load()
-        record: dict = {"turn_id": turn_id, "ts": time.time()}
-        if self.is_git:
-            tree = _snapshot_tree(self.root)
-            if tree:
-                record["pre_tree"] = tree
-                commit = _git(self.root, ["commit-tree", tree, "-m", f"luna turn {turn_id}"])
-                if commit:
-                    _git(self.root, ["update-ref", f"refs/luna/undo/{self.session_id}", commit])
-        else:
-            record["files"] = {}
-        data["turns"].append(record)
-        data["redo"] = []
-        self._save(data)
+        with self._lock:
+            data = self._load()
+            record: dict = {"turn_id": turn_id, "ts": time.time()}
+            if self.is_git:
+                tree = _snapshot_tree(self.root)
+                if tree:
+                    record["pre_tree"] = tree
+                    commit = _git(self.root, ["commit-tree", tree, "-m", f"luna turn {turn_id}"])
+                    if commit:
+                        _git(self.root, ["update-ref", f"refs/luna/undo/{self.session_id}", commit])
+            else:
+                record["files"] = {}
+            data["turns"].append(record)
+            data["redo"] = []
+            self._save(data)
 
     def before_write(self, turn_id: str, rel: str) -> None:
         """Keep ``rel``'s pre-image for this turn (file-journal mode only)."""
-        if self.is_git:
-            return
-        data = self._load()
-        turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
-        if turn is None or rel in turn.setdefault("files", {}):
-            return
-        turn["files"][rel] = self._read(rel)
-        self._save(data)
+        with self._lock:
+            if self.is_git:
+                return
+            data = self._load()
+            turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
+            if turn is None or rel in turn.setdefault("files", {}):
+                return
+            turn["files"][rel] = self._read(rel)
+            self._save(data)
 
     def _read(self, rel: str) -> dict:
         """Capture ``rel``'s current content as raw bytes (base64 in the journal).
@@ -201,67 +217,76 @@ class UndoJournal:
         claiming "no file changes" (which would be indistinguishable from a
         turn that genuinely made none).
         """
-        data = self._load()
-        if not data["turns"]:
-            return None
-        turn = data["turns"].pop()
-        if self.is_git:
-            post = _snapshot_tree(self.root)
-            pre = turn.get("pre_tree")
-            if not pre or not post:
-                note = "files could not be restored (no snapshot of the turn)"
-            elif pre == post:
-                note = "no file changes in this turn"
+        with self._lock:
+            data = self._load()
+            if not data["turns"]:
+                return None
+            turn = data["turns"].pop()
+            if self.is_git:
+                post = _snapshot_tree(self.root)
+                pre = turn.get("pre_tree")
+                if not pre or not post:
+                    note = "files could not be restored (no snapshot of the turn)"
+                elif pre == post:
+                    note = "no file changes in this turn"
+                else:
+                    self._restore_tree(pre, post)
+                    note = "files restored"
+                data["redo"].append(
+                    {"turn_id": turn["turn_id"], "pre_tree": pre, "post_tree": post}
+                )
             else:
-                self._restore_tree(pre, post)
-                note = "files restored"
-            data["redo"].append({"turn_id": turn["turn_id"], "pre_tree": pre, "post_tree": post})
-        else:
-            files = turn.get("files", {})
-            post_images = {rel: self._read(rel) for rel in files}
-            skipped = [rel for rel, image in files.items() if not self._write(rel, image)]
-            data["redo"].append(
-                {
-                    "turn_id": turn["turn_id"],
-                    "files": files,
-                    "post": post_images,
-                    "skipped": skipped,
-                }
-            )
-            restored = len(files) - len(skipped)
-            if not files:
-                note = "no file changes in this turn"
-            elif skipped:
-                note = f"restored {restored} files; could not restore: {', '.join(sorted(skipped))}"
-            else:
-                note = "files restored"
-        self._save(data)
-        return UndoResult(turn["turn_id"], note)
+                files = turn.get("files", {})
+                post_images = {rel: self._read(rel) for rel in files}
+                skipped = [rel for rel, image in files.items() if not self._write(rel, image)]
+                data["redo"].append(
+                    {
+                        "turn_id": turn["turn_id"],
+                        "files": files,
+                        "post": post_images,
+                        "skipped": skipped,
+                    }
+                )
+                restored = len(files) - len(skipped)
+                if not files:
+                    note = "no file changes in this turn"
+                elif skipped:
+                    missed = ", ".join(sorted(skipped))
+                    note = f"restored {restored} files; could not restore: {missed}"
+                else:
+                    note = "files restored"
+            self._save(data)
+            return UndoResult(turn["turn_id"], note)
 
     def redo(self) -> UndoResult | None:
         """Re-apply the most recently undone turn's files."""
-        data = self._load()
-        if not data["redo"]:
-            return None
-        record = data["redo"].pop()
-        if self.is_git:
-            if record.get("post_tree") and record.get("pre_tree"):
-                self._restore_tree(record["post_tree"], record["pre_tree"])
-            data["turns"].append(
-                {
-                    "turn_id": record["turn_id"],
-                    "pre_tree": record.get("pre_tree"),
-                    "ts": time.time(),
-                }
-            )
-        else:
-            for rel, image in record.get("post", {}).items():
-                self._write(rel, image)
-            data["turns"].append(
-                {"turn_id": record["turn_id"], "files": record.get("files", {}), "ts": time.time()}
-            )
-        self._save(data)
-        return UndoResult(record["turn_id"], "files re-applied")
+        with self._lock:
+            data = self._load()
+            if not data["redo"]:
+                return None
+            record = data["redo"].pop()
+            if self.is_git:
+                if record.get("post_tree") and record.get("pre_tree"):
+                    self._restore_tree(record["post_tree"], record["pre_tree"])
+                data["turns"].append(
+                    {
+                        "turn_id": record["turn_id"],
+                        "pre_tree": record.get("pre_tree"),
+                        "ts": time.time(),
+                    }
+                )
+            else:
+                for rel, image in record.get("post", {}).items():
+                    self._write(rel, image)
+                data["turns"].append(
+                    {
+                        "turn_id": record["turn_id"],
+                        "files": record.get("files", {}),
+                        "ts": time.time(),
+                    }
+                )
+            self._save(data)
+            return UndoResult(record["turn_id"], "files re-applied")
 
     def _restore_tree(self, target: str, current: str) -> None:
         _git(self.root, ["restore", "--source", target, "--worktree", "--", ".", *_EXCLUDES])

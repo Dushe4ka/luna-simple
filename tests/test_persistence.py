@@ -1,12 +1,12 @@
+"""TEMPORARY: the server's LangGraph checkpointer and session index (go with its port)."""
+
 import time
 
 from langchain_core.messages import AIMessage
-from rich.console import Console
 
 from luna.config.config import LunaConfig, config_dir
 from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.core.persistence import SessionIndex, checkpointer, make_title
-from luna.core.session import run_once
 
 
 def test_make_title_collapses_and_truncates():
@@ -74,14 +74,12 @@ def test_history_survives_rebuild(tmp_path, fake_model):
     idx = SessionIndex()
     cfg = LunaConfig(workdir=str(tmp_path))
     a1 = build_agent(cfg, model=fake_model(AIMessage(content="one")), checkpointer=cp)
-    run_once(
-        a1,
-        "remember X",
-        thread_id="keep",
-        console=Console(),
-        index=idx,
-        workdir=str(tmp_path),
+    a1.invoke(
+        {"messages": [{"role": "user", "content": "remember X"}]},
+        {"configurable": {"thread_id": "keep"}},
     )
+    idx.record("keep", str(tmp_path), make_title("remember X"))
+    assert idx.latest_for(str(tmp_path)).title == "remember X"
     a2 = build_agent(cfg, model=fake_model(AIMessage(content="two")), checkpointer=cp)
     state = a2.get_state({"configurable": {"thread_id": "keep"}})
     assert any("remember X" in getattr(m, "content", "") for m in state.values["messages"])

@@ -163,3 +163,20 @@ def test_top_redo(repo):
     assert j.top_redo() == "t1"
     j.redo()
     assert j.top_redo() is None
+
+
+def test_parallel_before_write_keeps_every_pre_image(tmp_path):
+    """Parallel tool calls journal concurrently: no lost update, no tmp-file race."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    names = [f"f{i}.txt" for i in range(16)]
+    for name in names:
+        (tmp_path / name).write_text(f"old {name}\n")
+    journal = UndoJournal(tmp_path, "s")
+    journal.begin_turn("t1")
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda n: UndoJournal(tmp_path, "s").before_write("t1", n), names))
+    for name in names:
+        (tmp_path / name).write_text("new\n")
+    journal.undo()
+    assert all((tmp_path / n).read_text() == f"old {n}\n" for n in names)

@@ -71,8 +71,8 @@ def forget_messages(workdir, session_id, count):
 
 
 def compact_history(agent, thread_id):
-    """Lazy seam over :func:`luna.core.session.compact_history` (avoids an import cycle)."""
-    from luna.core.session import compact_history as _compact
+    """Lazy seam over the LangGraph-era ``compact_history`` (the server's agents)."""
+    from luna.core._legacy_session import compact_history as _compact
 
     return _compact(agent, thread_id)
 

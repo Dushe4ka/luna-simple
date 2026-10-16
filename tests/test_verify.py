@@ -1,10 +1,14 @@
 import io
 import sys
 
+from luna_core.providers.fake import FakeProvider
 from rich.console import Console
 
 from luna.config.config import LunaConfig
-from luna.config.usage import TurnUsage
+from luna.core.agent import build_agent
+from luna.core.session import run_once
+from luna.core.store import open_log
+from luna.turn import engine
 from luna.turn.verify import run_verify
 
 
@@ -37,111 +41,78 @@ def _flaky_command(sentinel) -> str:
     )
 
 
-def test_run_verification_one_retry_then_ok(tmp_path, monkeypatch):
-    from luna.core import session
+_WRITE = FakeProvider.call("write_file", {"file_path": "a.txt", "content": "x"})
 
-    calls: list = []
 
-    def fake_stream(*args, **kwargs):
-        calls.append(args)
-        return ("", False, TurnUsage(), set())
+async def _once(tmp_path, cfg, script):
+    """``luna -p`` with the engine hooks attached: (printed output, session messages)."""
+    hooks_state: dict = {}
+    bundle = await build_agent(
+        cfg,
+        provider=FakeProvider(script),
+        hooks=engine.make_hooks(lambda: hooks_state.get("state"), lambda: cfg),
+    )
+    console = Console(file=io.StringIO(), width=200)
+    log = open_log()
+    await run_once(bundle, "go", console=console, log=log, cfg=cfg, hooks_state=hooks_state)
+    await bundle.aclose()
+    info = log.list()[0]  # the newest session: this run's
+    from luna_core.session import Session
 
-    monkeypatch.setattr(session, "_stream_turn", fake_stream)
+    messages = Session.open(log, info.id, undo=False).messages()
+    return console.file.getvalue(), [m.text for m in messages if m.role == "user"]
 
-    cmd = _flaky_command(tmp_path / "ok")
-    cfg = LunaConfig(workdir=str(tmp_path), verify_command=cmd)
-    console = _console()
 
-    session._run_verification(
-        object(), {"configurable": {"thread_id": "t"}}, console, cfg, lambda _: ""
+def _cfg(tmp_path, verify):
+    return LunaConfig(
+        workdir=str(tmp_path),
+        model="m",
+        yolo=True,
+        format_command="",
+        diagnose_command="",
+        verify_command=verify,
     )
 
-    assert len(calls) == 1  # exactly one fix-up turn
-    assert "verify ok" in console.file.getvalue()
 
-
-def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
-    from luna.core import session
-
-    calls: list = []
-    monkeypatch.setattr(session, "_stream_turn", lambda *a, **k: calls.append(1))
-
-    session._run_verification(
-        object(), {}, _console(), LunaConfig(workdir=str(tmp_path)), lambda _: ""
+async def test_run_verification_one_retry_then_ok(tmp_path):
+    cfg = _cfg(tmp_path, _flaky_command(tmp_path / "ok"))
+    out, users = await _once(
+        tmp_path, cfg, [_WRITE, FakeProvider.text("done"), FakeProvider.text("fixed")]
     )
+    assert sum("Fix it." in u for u in users) == 1  # exactly one fix-up
+    assert "verify ok" in out
 
-    assert calls == []
+
+async def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(engine, "run_verify", lambda *a: calls.append(a) or (True, ""))
+    out, users = await _once(tmp_path, _cfg(tmp_path, ""), [_WRITE, FakeProvider.text("done")])
+    assert calls == [] and users == ["go"] and "verify" not in out
 
 
-def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
-    from luna.core import session
+async def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
     from luna.turn.verify import run_verify as real_run_verify
 
     verify_calls: list = []
-
-    def counting(command, workdir):
-        verify_calls.append(command)
-        return real_run_verify(command, workdir)
-
-    # the verify call lives in the shared turn engine since the REPL/server split
-    monkeypatch.setattr(session.engine, "run_verify", counting)
-
-    stream_calls: list = []
     monkeypatch.setattr(
-        session,
-        "_stream_turn",
-        lambda *a, **k: stream_calls.append(a) or ("", False, TurnUsage(), set()),
+        engine, "run_verify", lambda c, w: verify_calls.append(c) or real_run_verify(c, w)
     )
-
-    cfg = LunaConfig(
-        workdir=str(tmp_path),
-        verify_command=f'{sys.executable} -c "import sys; sys.exit(1)"',
+    cfg = _cfg(tmp_path, f'{sys.executable} -c "import sys; sys.exit(1)"')
+    out, users = await _once(
+        tmp_path, cfg, [_WRITE, FakeProvider.text("done"), FakeProvider.text("tried")]
     )
-    console = Console(file=io.StringIO(), width=200)
-
-    session._run_verification(
-        object(), {"configurable": {"thread_id": "t"}}, console, cfg, lambda _: ""
-    )
-
-    assert len(stream_calls) == 1  # exactly one fix-up turn, no second
+    assert sum("Fix it." in u for u in users) == 1  # exactly one fix-up, no second
     assert len(verify_calls) == 2  # initial check + one re-check, no third
-    assert "still failing after 1 retry" in console.file.getvalue()
+    assert "still failing after 1 retry" in out
 
 
-def test_verification_gated_on_mutating_tool(tmp_path, monkeypatch):
-    from luna.core import session
-
+async def test_verification_gated_on_mutating_tool(tmp_path, monkeypatch):
     verify_calls: list = []
-    monkeypatch.setattr(
-        session.engine,
-        "run_verify",
-        lambda *a, **k: verify_calls.append(a) or (True, ""),
-    )
-
-    def scripted(names):
-        return lambda *a, **k: ("", False, TurnUsage(), names)
-
-    cfg = LunaConfig(workdir=str(tmp_path), verify_command="x")
-
-    monkeypatch.setattr(session, "_stream_turn", scripted({"write_file"}))
-    session.run_once(
-        object(),
-        "go",
-        thread_id="t",
-        console=_console(),
-        workdir=str(tmp_path),
-        cfg=cfg,
-    )
+    monkeypatch.setattr(engine, "run_verify", lambda *a: verify_calls.append(a) or (True, ""))
+    cfg = _cfg(tmp_path, "x")
+    await _once(tmp_path, cfg, [_WRITE, FakeProvider.text("done")])
     assert len(verify_calls) == 1  # mutating turn -> verification ran
 
     verify_calls.clear()
-    monkeypatch.setattr(session, "_stream_turn", scripted({"read_file"}))
-    session.run_once(
-        object(),
-        "go",
-        thread_id="t",
-        console=_console(),
-        workdir=str(tmp_path),
-        cfg=cfg,
-    )
+    await _once(tmp_path, cfg, [FakeProvider.call("ls", {}), FakeProvider.text("done")])
     assert verify_calls == []  # read-only turn -> verification skipped

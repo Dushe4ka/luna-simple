@@ -1,150 +1,219 @@
 import io
+from pathlib import Path
 
 import pytest
+from luna_core.messages import Message, Text, message_to_dict
+from luna_core.providers.fake import FakeProvider
+from luna_core.session import Session
+from luna_core.usage import Usage
 from rich.console import Console
 
 from luna.config.config import LunaConfig
+from luna.core.agent import build_agent
+from luna.core.session_state import SessionState, SessionStateStore
+from luna.core.store import open_log
 from luna.repl.commands import CommandContext, dispatch
 
 
-def _ctx(**kw):
-    base = dict(
-        console=Console(file=io.StringIO(), force_terminal=True),
-        config=LunaConfig(),
-        agent=object(),
-        rebuild=lambda: "rebuilt",
-        thread_id="t",
-        workdir=".",
-        index=None,
+class _Stub:
+    """A rebuilt bundle stand-in."""
+
+    def __init__(self, tag):
+        self.tag, self.closed, self.agent = tag, False, None
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.fixture
+async def make_ctx(tmp_path):
+    bundles = []
+
+    async def _make(*script, **kw):
+        cfg = kw.pop("config", None) or LunaConfig(workdir=str(tmp_path), model="m")
+        bundle = await build_agent(
+            cfg, provider=FakeProvider(list(script) or [FakeProvider.text("ok")])
+        )
+        bundles.append(bundle)
+        log = open_log()
+        session = kw.pop("session", None) or Session.create(log, str(Path(tmp_path).resolve()))
+
+        async def rebuild():
+            return _Stub("rebuilt")
+
+        base = dict(
+            console=Console(file=io.StringIO(), force_terminal=True, highlight=False),
+            config=cfg,
+            bundle=bundle,
+            rebuild=rebuild,
+            session=session,
+            log=log,
+            state=SessionState(session.id, session.workdir),
+        )
+        base.update(kw)
+        return CommandContext(**base)
+
+    yield _make
+    for bundle in bundles:
+        await bundle.aclose()
+
+
+def _out(ctx):
+    return ctx.console.file.getvalue()
+
+
+def _turn(session, tid, user, reply):
+    session.append("turn_started", {"turn_id": tid})
+    session.append("user", {"message": message_to_dict(Message.user(user))})
+    session.append(
+        "assistant",
+        {
+            "message": message_to_dict(Message.assistant([Text(reply)])),
+            "usage": Usage(5, 1).to_dict(),
+        },
     )
-    base.update(kw)
-    return CommandContext(**base)
+    session.append("turn_done", {"turn_id": tid, "usage": Usage(5, 1).to_dict(), "cost": None})
 
 
-def test_unknown_command_handled_but_noop():
-    res = dispatch("/nope", _ctx())
-    assert res.handled is True and res.exit is False
+async def test_unknown_command_handled_but_noop(make_ctx):
+    res = await dispatch("/nope", await make_ctx())
+    assert res.handled is True and res.exit is False and res.prompt is None
 
 
-def test_exit_command():
-    assert dispatch("/exit", _ctx()).exit is True
+async def test_exit_command(make_ctx):
+    assert (await dispatch("/exit", await make_ctx())).exit is True
+    assert (await dispatch("/quit", await make_ctx())).exit is True
 
 
-def test_non_command_not_handled():
-    assert dispatch("hello world", _ctx()).handled is False
+async def test_non_command_not_handled(make_ctx):
+    assert (await dispatch("hello world", await make_ctx())).handled is False
 
 
-def test_user_command_falls_through_to_a_prompt(tmp_path):
+async def test_user_command_falls_through_to_a_prompt(make_ctx):
     from luna.repl.usercmd import UserCommand
 
-    ctx = _ctx(
-        workdir=str(tmp_path),
-        user_commands={"greet": UserCommand("greet", "", "hi $ARGUMENTS")},
-    )
-    res = dispatch("/greet world", ctx)
-    assert res.handled is True
-    assert res.prompt == "hi world"
+    ctx = await make_ctx(user_commands={"greet": UserCommand("greet", "", "hi $ARGUMENTS")})
+    res = await dispatch("/greet world", ctx)
+    assert res.handled is True and res.prompt == "hi world"
 
 
-def test_unknown_command_still_reported_when_no_user_command_matches():
-    res = dispatch("/nope", _ctx())
-    assert res.prompt is None
+async def test_reload_swaps_and_closes_the_bundle(make_ctx):
+    ctx = await make_ctx()
+    first = _Stub("first")
+    ctx.bundle = first
+    await dispatch("/reload", ctx)
+    assert ctx.bundle.tag == "rebuilt" and first.closed
+    assert "reloaded" in _out(ctx)
 
 
-def test_reload_swaps_agent():
-    res = dispatch("/reload", _ctx())
-    assert res.agent == "rebuilt"
+async def test_reload_failure_does_not_raise(make_ctx):
+    async def boom():
+        raise RuntimeError("bad toml")
+
+    ctx = await make_ctx(rebuild=boom)
+    before = ctx.bundle
+    res = await dispatch("/reload", ctx)
+    assert res.handled is True and ctx.bundle is before
+    assert "/reload failed" in _out(ctx)
 
 
-def test_reload_failure_does_not_raise():
-    ctx = _ctx(
-        rebuild=lambda: (_ for _ in ()).throw(RuntimeError("bad toml")),
-        console=Console(file=io.StringIO()),
-    )
-    res = dispatch("/reload", ctx)
-    assert res.handled is True
-    assert res.agent is None
-    assert "/reload failed" in ctx.console.file.getvalue()
-
-
-def test_agents_with_broken_subagents_toml_does_not_kill_repl(tmp_path):
+async def test_agents_with_broken_subagents_toml_does_not_kill_repl(make_ctx, tmp_path):
+    ctx = await make_ctx()  # the file breaks after the agent was built
     d = tmp_path / ".luna"
-    d.mkdir()
+    d.mkdir(exist_ok=True)
     (d / "subagents.toml").write_text(
         '[subagent.x]\ndescription = "x"\ntools = ["execute", "read_file"]\n'
     )
-    ctx = _ctx(workdir=str(tmp_path), console=Console(file=io.StringIO()))
-    res = dispatch("/agents", ctx)
+    res = await dispatch("/agents", ctx)
     assert res.handled is True and res.exit is False
-    out = ctx.console.file.getvalue()
-    assert "unsafe = true" in out
+    assert "unsafe = true" in _out(ctx)
 
 
-def test_new_rotates_thread():
-    res = dispatch("/new", _ctx())
-    assert res.thread_id and res.thread_id != "t"
+async def test_new_starts_a_fresh_session(make_ctx):
+    ctx = await make_ctx()
+    old = ctx.session.id
+    ctx.state.pinned.add("a.py")
+    await dispatch("/new", ctx)
+    assert ctx.session.id != old and ctx.state.thread_id == ctx.session.id
+    assert ctx.state.pinned.paths == []
 
 
-def test_model_swap_rebuilds(monkeypatch):
-    ctx = _ctx(config=LunaConfig(model="claude-sonnet-4-5"))
-    res = dispatch("/model claude-opus-4", ctx)
-    assert ctx.config.model == "claude-opus-4"
-    assert res.agent == "rebuilt"
+async def test_model_swap_rebuilds(make_ctx, tmp_path):
+    ctx = await make_ctx(config=LunaConfig(workdir=str(tmp_path), model="claude-sonnet-4-5"))
+    await dispatch("/model claude-opus-4", ctx)
+    assert ctx.config.model == "claude-opus-4" and ctx.bundle.tag == "rebuilt"
 
 
-def test_model_with_no_arg_and_no_input_fn_just_prints(monkeypatch):
-    """No input_fn available (e.g. non-interactive) — keep today's
-    read-only behavior rather than trying to prompt."""
-    ctx = _ctx(
-        console=Console(file=io.StringIO()),
-        config=LunaConfig(provider="anthropic", model="claude-sonnet-4-5"),
+async def test_model_switch_failure_rolls_back(make_ctx, tmp_path):
+    async def boom():
+        raise RuntimeError("no such model")
+
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), model="claude-sonnet-4-5"), rebuild=boom
+    )
+    await dispatch("/model claude-opus-4", ctx)
+    assert ctx.config.model == "claude-sonnet-4-5"  # rolled back
+    assert "could not switch" in _out(ctx)
+
+
+async def test_model_with_no_arg_and_no_input_fn_just_prints(make_ctx, tmp_path):
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="anthropic", model="claude-sonnet-4-5"),
         input_fn=None,
     )
-    res = dispatch("/model", ctx)
-    assert res.handled is True
-    assert "claude-sonnet-4-5" in ctx.console.file.getvalue()
+    res = await dispatch("/model", ctx)
+    assert res.handled is True and "claude-sonnet-4-5" in _out(ctx)
 
 
-def test_model_with_no_arg_uses_the_picker_and_rebuilds(monkeypatch):
+async def test_model_with_no_arg_uses_the_picker_and_rebuilds(make_ctx, tmp_path, monkeypatch):
     from luna.config import model_discovery
 
     monkeypatch.setattr(model_discovery, "list_models", lambda *a, **k: None)
     monkeypatch.setattr(model_discovery, "known_models", lambda provider: ["model-a", "model-b"])
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    lines = iter(["2"])  # pick #2 from the numbered plain-text list (no real terminal in tests)
-    ctx = _ctx(
-        config=LunaConfig(provider="anthropic"),
+    lines = iter(["2"])  # pick #2 from the numbered plain-text list
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="anthropic"),
         input_fn=lambda _prompt: next(lines),
     )
-    res = dispatch("/model", ctx)
-    assert res.agent == "rebuilt"
-    assert ctx.config.model == "model-b"
+    await dispatch("/model", ctx)
+    assert ctx.config.model == "model-b" and ctx.bundle.tag == "rebuilt"
 
 
-def test_model_with_no_arg_falls_back_to_free_text_when_no_list(monkeypatch):
+async def test_model_with_no_arg_falls_back_to_free_text_when_no_list(
+    make_ctx, tmp_path, monkeypatch
+):
     from luna.config import model_discovery
 
     monkeypatch.setattr(model_discovery, "list_models", lambda *a, **k: None)
     monkeypatch.setattr(model_discovery, "known_models", lambda provider: [])
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     lines = iter(["claude-opus-4-1"])
-    ctx = _ctx(
-        config=LunaConfig(provider="anthropic"),
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="anthropic"),
         input_fn=lambda _prompt: next(lines),
     )
-    res = dispatch("/model", ctx)
-    assert res.agent == "rebuilt"
+    await dispatch("/model", ctx)
     assert ctx.config.model == "claude-opus-4-1"
 
 
-def test_provider_without_key_does_not_swap(monkeypatch):
+async def test_model_without_arg_and_no_terminal_does_not_hit_the_network(make_ctx, monkeypatch):
+    from luna.commands import builtin
+
+    monkeypatch.setattr(builtin, "_models_for", lambda cfg: pytest.fail("network call"))
+    ctx = await make_ctx()
+    await dispatch("/model", ctx)
+    assert "model: m" in _out(ctx)
+
+
+async def test_provider_without_key_does_not_swap(make_ctx, tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    ctx = _ctx(config=LunaConfig(provider="deepseek"))
-    dispatch("/provider anthropic", ctx)
+    ctx = await make_ctx(config=LunaConfig(workdir=str(tmp_path), provider="deepseek"))
+    await dispatch("/provider anthropic", ctx)
     assert ctx.config.provider == "deepseek"  # unchanged
 
 
-def test_provider_recognizes_a_custom_provider_from_config(monkeypatch):
+async def test_provider_recognizes_a_custom_provider_from_config(make_ctx, tmp_path, monkeypatch):
     from luna.config.providers import ProviderSpec
 
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
@@ -153,278 +222,176 @@ def test_provider_recognizes_a_custom_provider_from_config(monkeypatch):
             "mylocal", "openai_chat", "local-model", "MYLOCAL_API_KEY", "http://localhost:8000/v1"
         )
     }
-    ctx = _ctx(config=LunaConfig(provider="anthropic", custom_providers=custom))
-    dispatch("/provider mylocal", ctx)
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="anthropic", custom_providers=custom)
+    )
+    await dispatch("/provider mylocal", ctx)
     assert ctx.config.provider == "mylocal"
-    assert "unknown provider" not in ctx.console.file.getvalue()
+    assert "unknown provider" not in _out(ctx)
 
 
-def test_sessions_lists(monkeypatch, capsys):
-    from luna.core.persistence import SessionIndex
-
-    idx = SessionIndex()
-    idx.record("t-old", ".", "older task")
-    idx.record("t-new", ".", "newer task")
-    ctx = _ctx(index=idx, workdir=".")
-    res = dispatch("/sessions", ctx)
+async def test_sessions_lists_only_this_folders_top_level_sessions(make_ctx, tmp_path):
+    ctx = await make_ctx()
+    log = ctx.log
+    workdir = ctx.session.workdir
+    log.create(workdir, title="older task")
+    log.create(workdir, title="newer task")
+    log.create(workdir, title="a subagent run", parent_id=ctx.session.id)
+    log.create(str(tmp_path / "elsewhere"), title="other project")
+    res = await dispatch("/sessions", ctx)
     assert res.handled is True
-    out = ctx.console.file.getvalue()
+    out = _out(ctx)
     assert "older task" in out and "newer task" in out
+    assert "subagent run" not in out and "other project" not in out
 
 
-def test_resume_by_number_swaps_thread():
-    from luna.core.persistence import SessionIndex
-
-    idx = SessionIndex()
-    idx.record("t-old", ".", "older")
-    idx.record("t-new", ".", "newer")
-    ctx = _ctx(index=idx, workdir=".")
-    # newest first → [1] = t-new, [2] = t-old
-    res = dispatch("/resume 2", ctx)
-    assert res.thread_id == "t-old"
-
-
-def test_resume_no_arg_lists_and_hints():
-    from luna.core.persistence import SessionIndex
-
-    idx = SessionIndex()
-    idx.record("t1", ".", "one")
-    ctx = _ctx(index=idx, workdir=".")
-    res = dispatch("/resume", ctx)
-    assert res.thread_id is None
-    assert "one" in ctx.console.file.getvalue()
-
-
-def test_resume_by_number_prints_a_recap_of_the_target_thread():
-    from types import SimpleNamespace
-
-    from luna.core.persistence import SessionIndex
-
-    class _StubAgent:
-        """Fake agent with real conversation history, recording which
-        thread's config it was asked to recap."""
-
-        def __init__(self):
-            self.seen_configs = []
-
-        def get_state(self, config):
-            self.seen_configs.append(config)
-            return SimpleNamespace(
-                values={
-                    "messages": [
-                        SimpleNamespace(type="human", content="what does the old code do?"),
-                        SimpleNamespace(type="ai", content="it parses the config file"),
-                    ]
-                }
-            )
-
-    idx = SessionIndex()
-    idx.record("t-old", ".", "older")
-    idx.record("t-new", ".", "newer")
-    agent = _StubAgent()
-    ctx = _ctx(index=idx, workdir=".", agent=agent, thread_id="t-active")
-    # newest first → [1] = t-new, [2] = t-old
-    dispatch("/resume 2", ctx)
-    out = ctx.console.file.getvalue()
-
-    assert "— resuming, last" in out
-    assert "it parses the config file" in out
+async def test_resume_by_number_switches_session_and_prints_a_recap(make_ctx):
+    ctx = await make_ctx()
+    log, workdir = ctx.log, ctx.session.workdir
+    old = Session.create(log, workdir, title="older")
+    _turn(old, "t1", "what does the old code do?", "it parses the config file")
+    store = SessionStateStore()
+    saved = store.load(old.id, workdir)
+    saved.pinned.add("kept.py")
+    store.save(saved)
+    Session.create(log, workdir, title="newer")
+    active = ctx.session.id
+    # newest first → [1] = newer, [2] = older (its turns bumped it), [3] = the active one
+    await dispatch("/resume 2", ctx)
+    out = _out(ctx)
+    assert ctx.session.id == old.id != active
+    assert "— resuming, last" in out and "it parses the config file" in out
     assert "resumed session" in out
-
-    # the recap must be for the thread being switched TO, not the one
-    # that was active before the switch.
-    assert agent.seen_configs[-1]["configurable"]["thread_id"] == "t-old"
-    assert agent.seen_configs[-1]["configurable"]["thread_id"] != ctx.thread_id
+    assert ctx.state.pinned.paths == ["kept.py"]  # the resumed session's own settings
 
 
-def test_sessions_without_index_is_graceful():
-    ctx = _ctx(index=None)
-    res = dispatch("/sessions", ctx)
-    assert res.handled is True  # no crash
+async def test_resume_no_arg_lists_and_hints(make_ctx):
+    ctx = await make_ctx(input_fn=None)
+    Session.create(ctx.log, ctx.session.workdir, title="one")
+    before = ctx.session.id
+    await dispatch("/resume", ctx)
+    assert ctx.session.id == before
+    assert "one" in _out(ctx) and "usage: /resume" in _out(ctx)
 
 
-def test_undo_declined_does_not_revert(tmp_path):
-    from luna.turn.undo import journal_dir, snapshot
-
-    f = tmp_path / "a.py"
-    f.write_text("old\n")
-    snapshot(str(tmp_path), "s1", "edit_file", "a.py")
-    f.write_text("new\n")
-    ctx = _ctx(workdir=str(tmp_path), session_id="s1", input_fn=lambda _: "n")
-    dispatch("/undo", ctx)
-    assert f.read_text() == "new\n"  # file untouched
-    assert list(journal_dir(str(tmp_path), "s1").glob("[0-9]*.json"))  # entry kept
+async def test_resume_refuses_another_folders_session(make_ctx, tmp_path):
+    ctx = await make_ctx()
+    other = ctx.log.create(str(tmp_path / "elsewhere"), title="x")
+    before = ctx.session.id
+    await dispatch(f"/resume {other}", ctx)
+    assert ctx.session.id == before and "another folder" in _out(ctx)
 
 
-def test_undo_confirmed_reverts(tmp_path):
-    from luna.turn.undo import snapshot
-
-    f = tmp_path / "a.py"
-    f.write_text("old\n")
-    snapshot(str(tmp_path), "s1", "edit_file", "a.py")
-    f.write_text("new\n")
-    ctx = _ctx(workdir=str(tmp_path), session_id="s1", input_fn=lambda _: "y")
-    dispatch("/undo", ctx)
-    assert f.read_text() == "old\n"
+async def test_resume_unknown_id_is_graceful(make_ctx):
+    ctx = await make_ctx()
+    await dispatch("/resume nope", ctx)
+    assert "no session 'nope'" in _out(ctx)
 
 
-def test_undo_without_input_fn_proceeds(tmp_path):
-    from luna.turn.undo import snapshot
-
-    f = tmp_path / "a.py"
-    f.write_text("old\n")
-    snapshot(str(tmp_path), "s1", "edit_file", "a.py")
-    f.write_text("new\n")
-    ctx = _ctx(workdir=str(tmp_path), session_id="s1")  # input_fn is None
-    dispatch("/undo", ctx)
-    assert f.read_text() == "old\n"
+async def test_undo_declined_does_not_rewind(make_ctx):
+    ctx = await make_ctx(input_fn=lambda _: "n")
+    _turn(ctx.session, "t1", "first", "a")
+    await dispatch("/undo", ctx)
+    assert "undo cancelled" in _out(ctx)
+    assert [m.text for m in ctx.session.messages()] == ["first", "a"]
 
 
-def test_model_switch_failure_rolls_back(monkeypatch):
-    def boom():
-        raise RuntimeError("no such model")
-
-    ctx = _ctx(
-        config=LunaConfig(model="claude-sonnet-4-5"),
-        rebuild=boom,
-        console=Console(file=io.StringIO()),
-    )
-    res = dispatch("/model claude-opus-4", ctx)
-    assert res.agent is None
-    assert ctx.config.model == "claude-sonnet-4-5"  # rolled back
-    assert "could not switch" in ctx.console.file.getvalue()
+async def test_undo_confirmed_rewinds_and_redo_restores(make_ctx):
+    ctx = await make_ctx(input_fn=lambda _: "y")
+    _turn(ctx.session, "t1", "first", "a")
+    _turn(ctx.session, "t2", "second", "b")
+    await dispatch("/undo", ctx)
+    assert [m.text for m in ctx.session.messages()] == ["first", "a"]
+    await dispatch("/redo", ctx)
+    assert [m.text for m in ctx.session.messages()] == ["first", "a", "second", "b"]
+    assert "turn restored" in _out(ctx)
 
 
-def test_compact_failure_does_not_raise(tmp_path):
-    class _BoomAgent:
-        def invoke(self, *a, **k):
-            raise RuntimeError("boom")
-
-    ctx = _ctx(
-        agent=_BoomAgent(),
-        workdir=str(tmp_path),
-        thread_id="old",
-        console=Console(file=io.StringIO()),
-    )
-    res = dispatch("/compact", ctx)
-    assert res.handled is True and res.thread_id is None
-    assert "/compact failed" in ctx.console.file.getvalue()
+async def test_undo_without_input_fn_proceeds(make_ctx):
+    ctx = await make_ctx(input_fn=None)
+    _turn(ctx.session, "t1", "first", "a")
+    await dispatch("/undo", ctx)
+    assert ctx.session.messages() == []
 
 
-def test_compact_replaces_history_in_place(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path)),
-        model=fake_model(AIMessage(content="chatter"), AIMessage(content="SUMMARY: did X and Y")),
-    )
-    cfg = {"configurable": {"thread_id": "keep"}}
-    agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config=cfg)
-
-    ctx = _ctx(agent=agent, thread_id="keep", workdir=str(tmp_path), index=None)
-    res = dispatch("/compact", ctx)
-
-    assert res.thread_id is None  # same thread
-    msgs = agent.get_state(cfg).values["messages"]
-    assert len(msgs) == 1
-    assert "did X and Y" in msgs[0].content
-    assert msgs[0].type == "human"
+async def test_undo_and_redo_with_nothing_to_do(make_ctx):
+    ctx = await make_ctx()
+    await dispatch("/undo", ctx)
+    await dispatch("/redo", ctx)
+    assert "nothing to undo" in _out(ctx) and "nothing to redo" in _out(ctx)
 
 
-def test_add_drop_context_handlers(tmp_path):
-    from luna.turn.context import PinnedFiles
+async def test_diff_without_changes(make_ctx):
+    ctx = await make_ctx()
+    await dispatch("/diff", ctx)
+    assert "no changes this session" in _out(ctx)
 
+
+async def test_compact_summarises_older_turns(make_ctx):
+    ctx = await make_ctx(FakeProvider.text("SUMMARY of the work"))
+    for i in range(6):
+        _turn(ctx.session, f"t{i}", f"q{i}", f"a{i}")
+    await dispatch("/compact", ctx)
+    assert "compacted" in _out(ctx)
+    assert "SUMMARY of the work" in ctx.session.messages()[0].text
+
+
+async def test_compact_with_too_little_history_says_so(make_ctx):
+    ctx = await make_ctx()
+    _turn(ctx.session, "t1", "q", "a")
+    await dispatch("/compact", ctx)
+    assert "nothing to compact yet" in _out(ctx)
+
+
+async def test_compact_failure_does_not_raise(make_ctx):
+    ctx = await make_ctx([ValueError("boom")])
+    for i in range(6):
+        _turn(ctx.session, f"t{i}", f"q{i}", f"a{i}")
+    res = await dispatch("/compact", ctx)
+    assert res.handled is True and "/compact failed" in _out(ctx)
+
+
+async def test_usage_reads_the_event_log(make_ctx):
+    ctx = await make_ctx()
+    _turn(ctx.session, "t1", "q", "a")
+    _turn(ctx.session, "t2", "q", "a")
+    await dispatch("/usage", ctx)
+    assert "turns: 2  in: 10  out: 2  total: 12" in _out(ctx)
+
+
+async def test_add_drop_context_handlers(make_ctx, tmp_path):
     (tmp_path / "p.py").write_text("P = 1\n")
-    pins = PinnedFiles()
-    # highlight=False: Rich would otherwise splice ANSI codes through "/add",
-    # breaking a literal substring match on the usage line.
-    ctx = _ctx(
-        pinned=pins,
-        workdir=str(tmp_path),
-        console=Console(file=io.StringIO(), force_terminal=True, highlight=False),
-    )
-
-    dispatch("/add p.py", ctx)
-    assert pins.paths == ["p.py"]
-    dispatch("/context", ctx)
-    assert "p.py" in ctx.console.file.getvalue()
-    dispatch("/drop p.py", ctx)
-    assert pins.paths == []
-    dispatch("/add", ctx)  # no arg -> usage line, no crash
-    assert "usage: /add" in ctx.console.file.getvalue()
+    ctx = await make_ctx()
+    await dispatch("/add p.py", ctx)
+    assert ctx.state.pinned.paths == ["p.py"]
+    await dispatch("/context", ctx)
+    assert "p.py" in _out(ctx)
+    await dispatch("/drop p.py", ctx)
+    assert ctx.state.pinned.paths == []
+    await dispatch("/add", ctx)  # no arg -> usage line, no crash
+    assert "usage: /add" in _out(ctx)
 
 
-def test_compact_no_summary_is_graceful(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    agent = build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(AIMessage(content="")))
-    ctx = _ctx(agent=agent, thread_id="t", workdir=str(tmp_path), index=None)
-    res = dispatch("/compact", ctx)  # must not raise
-    assert res.handled is True
-
-
-def test_compact_empty_summary_trims_the_instruction_turn(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    # first turn produces no reusable AI text; the summary turn is empty too
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path)),
-        model=fake_model(AIMessage(content=""), AIMessage(content="")),
-    )
-    cfg = {"configurable": {"thread_id": "keep"}}
-    agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config=cfg)
-    before = len(agent.get_state(cfg).values["messages"])
-
-    ctx = _ctx(agent=agent, thread_id="keep", workdir=str(tmp_path), index=None)
-    dispatch("/compact", ctx)
-
-    after = len(agent.get_state(cfg).values["messages"])
-    assert after == before  # the failed-summary turn was rolled back
-    assert "no summary produced" in ctx.console.file.getvalue()
-
-
-def test_plan_toggle_and_explicit_state():
-    ctx = _ctx()
-    ctx.plan_state = [False]
-    dispatch("/plan", ctx)
+async def test_plan_toggle_and_explicit_state(make_ctx):
+    ctx = await make_ctx(plan_state=[False])
+    await dispatch("/plan", ctx)
     assert ctx.plan_state[0] is True
-    dispatch("/plan off", ctx)
+    await dispatch("/plan off", ctx)
     assert ctx.plan_state[0] is False
-    dispatch("/plan on", ctx)
+    await dispatch("/plan on", ctx)
     assert ctx.plan_state[0] is True
 
 
-def test_dispatch_goes_through_the_shared_registry(monkeypatch):
+async def test_init_becomes_a_prompt_with_a_reload_after(make_ctx):
+    res = await dispatch("/init", await make_ctx())
+    assert "AGENTS.md" in res.prompt and res.reload_after is True
+
+
+async def test_dispatch_goes_through_the_shared_registry(make_ctx, monkeypatch):
     import luna.repl.commands as repl
 
     seen = []
     real = repl.run_line
     monkeypatch.setattr(repl, "run_line", lambda line, env: seen.append(line) or real(line, env))
-    dispatch("/tools", _ctx())
+    await dispatch("/tools", await make_ctx())
     assert seen == ["/tools"]
-
-
-def test_confirm_without_input_fn_proceeds_like_before(tmp_path, monkeypatch):
-    from luna.commands import builtin
-
-    monkeypatch.setattr(builtin, "_is_git", lambda wd: False)
-    monkeypatch.setattr(builtin, "peek_last", lambda wd, sid: "undo x")
-    monkeypatch.setattr(builtin, "undo_last", lambda wd, sid: "reverted x")
-    ctx = _ctx(workdir=str(tmp_path))
-    dispatch("/undo", ctx)
-    assert "reverted x" in ctx.console.file.getvalue()
-
-
-def test_model_without_arg_and_no_terminal_does_not_hit_the_network(monkeypatch):
-    from luna.commands import builtin
-
-    monkeypatch.setattr(builtin, "_models_for", lambda cfg: pytest.fail("network call"))
-    ctx = _ctx()
-    dispatch("/model", ctx)
-    assert "model: (provider default)" in ctx.console.file.getvalue()

@@ -1,11 +1,12 @@
-"""Durable SQLite checkpointer and a small session index for Luna.
+"""Durable SQLite checkpointer and a small session index (legacy server path).
 
-This is the only module besides ``agent``/``session`` that touches langgraph.
+The REPL and ``luna -p`` use :mod:`luna.core.store` (the luna-core event
+log); the local server still runs LangGraph agents on these until it is
+ported, after which this module goes away.
 """
 
 from __future__ import annotations
 
-import re
 import sqlite3
 import time
 from collections import namedtuple
@@ -15,25 +16,13 @@ from pathlib import Path
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from luna.config.config import config_dir
+from luna.core.store import INDEX_ERRORS as _INDEX_ERRORS
+from luna.core.store import db_path as _db_path
+from luna.core.store import make_title
+
+__all__ = ["Row", "SessionIndex", "checkpointer", "make_title"]
 
 Row = namedtuple("Row", "thread_id workdir created updated title")
-
-_TITLE_MAX = 72
-_WS = re.compile(r"\s+")
-_INDEX_ERRORS = (sqlite3.Error, OSError)
-
-
-def _db_path(env: Mapping[str, str] | None) -> Path:
-    path = config_dir(env) / "sessions.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def make_title(text: str) -> str:
-    """Collapse whitespace and truncate for the session list."""
-    clean = _WS.sub(" ", text).strip()
-    return clean if len(clean) <= _TITLE_MAX else clean[:_TITLE_MAX] + "…"
 
 
 def checkpointer(

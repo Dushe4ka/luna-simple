@@ -1,43 +1,68 @@
 import io
+from pathlib import Path
 
-from langchain_core.messages import AIMessage
+from luna_core.providers.fake import FakeProvider
+from luna_core.session import Session
 from rich.console import Console
 
 from luna.config.config import LunaConfig
-from luna.core._legacy_agent import build_agent_legacy as build_agent
-from luna.core.session import SLASH_COMMANDS, collect_decisions, run_once
+from luna.core.agent import build_agent
+from luna.core.session import SLASH_COMMANDS, render_turn, run_once, run_repl
+from luna.core.store import open_log
 
 
 def _console():
     return Console(file=io.StringIO(), force_terminal=True)
 
 
-def test_collect_decisions_maps_multiple():
-    iv = {
-        "action_requests": [
-            {"name": "write_file", "args": {"file_path": "/a", "content": "x"}},
-            {"name": "execute", "args": {"command": "ls"}},
+def _cfg(tmp_path, **kw):
+    return LunaConfig(workdir=str(tmp_path), model="m", format_command="", **kw)
+
+
+async def test_render_turn_approves_and_rejects_in_order(tmp_path):
+    """Two approvals in one turn: Enter approves, "n" + reason rejects."""
+    from luna_core.messages import Message, ToolCall
+
+    both = Message.assistant(
+        [
+            ToolCall("1", "write_file", {"file_path": "a.txt", "content": "x"}),
+            ToolCall("2", "execute", {"command": "echo hi"}),
         ]
-    }
-    answers = iter(["", "n", "nope"])
-    out = collect_decisions(_console(), iv, input_fn=lambda _: next(answers))
-    assert out["decisions"][0] == {"type": "approve"}
-    assert out["decisions"][1]["type"] == "reject"
-    assert out["decisions"][1]["message"] == "nope"
-
-
-def test_collect_decisions_handles_singular_key():
-    iv = {"action_request": {"name": "delete", "args": {"file_path": "/x"}}}
-    out = collect_decisions(_console(), iv, input_fn=lambda _: "")
-    assert out == {"decisions": [{"type": "approve"}]}
-
-
-def test_run_once_returns_final_text(tmp_path, fake_model):
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path)), model=fake_model(AIMessage(content="done"))
     )
-    text = run_once(agent, "hi", thread_id="t", console=_console())
-    assert text == "done"
+    bundle = await build_agent(
+        _cfg(tmp_path), provider=FakeProvider([both, FakeProvider.text("ok")])
+    )
+    session = Session.create(open_log(), str(Path(tmp_path).resolve()))
+    answers = iter(["", "n", "nope"])
+    summary = await render_turn(
+        bundle.agent, session, "go", console=_console(), input_fn=lambda _: next(answers)
+    )
+    await bundle.aclose()
+    assert (tmp_path / "a.txt").read_text() == "x"
+    results = session.messages()[2].results
+    assert not results[0].is_error
+    assert results[1].is_error and "rejected by the user: nope" in results[1].text
+    assert summary.text == "ok" and summary.tools == {"write_file", "execute"}
+
+
+async def test_run_once_returns_final_text(tmp_path):
+    cfg = _cfg(tmp_path)
+    bundle = await build_agent(cfg, provider=FakeProvider([FakeProvider.text("done")]))
+    assert await run_once(bundle, "hi", console=_console(), log=open_log(), cfg=cfg) == "done"
+    await bundle.aclose()
+
+
+async def test_run_once_continues_a_given_session(tmp_path):
+    cfg = _cfg(tmp_path)
+    log = open_log()
+    bundle = await build_agent(
+        cfg, provider=FakeProvider([FakeProvider.text("one"), FakeProvider.text("two")])
+    )
+    session = Session.create(log, str(Path(tmp_path).resolve()))
+    await run_once(bundle, "first", console=_console(), log=log, session=session, cfg=cfg)
+    await run_once(bundle, "second", console=_console(), log=log, session=session, cfg=cfg)
+    assert [m.text for m in session.messages()] == ["first", "one", "second", "two"]
+    await bundle.aclose()
 
 
 def test_slash_help_registered():
@@ -46,42 +71,28 @@ def test_slash_help_registered():
     assert "/tools" in SLASH_COMMANDS
 
 
-def test_at_agent_mention_is_rewritten_to_a_delegation_instruction(tmp_path, fake_model):
-    from luna.core.session import run_repl
-
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content="ok"))
-    )
-    seen: list[str] = []
-    real_stream = agent.stream
-
-    def _spy(payload, *a, **kw):
-        if isinstance(payload, dict):
-            msgs = payload.get("messages", [])
-            if msgs:
-                seen.append(msgs[-1]["content"])
-        yield from real_stream(payload, *a, **kw)
-
-    agent.stream = _spy
-    console = _console()
+async def test_at_agent_mention_is_rewritten_to_a_delegation_instruction(tmp_path):
+    cfg = _cfg(tmp_path, yolo=True)
+    bundle = await build_agent(cfg, provider=FakeProvider([FakeProvider.text("ok")]))
+    log = open_log()
+    session = Session.create(log, str(Path(tmp_path).resolve()))
     lines = iter(["@researcher find the entry point", "/exit"])
-    run_repl(
-        agent,
-        console=console,
+    await run_repl(
+        bundle,
+        console=_console(),
         input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
+        log=log,
+        session=session,
+        config=cfg,
     )
-    assert seen and "researcher" in seen[0] and "task tool" in seen[0]
-    assert "find the entry point" in seen[0]
+    await bundle.aclose()
+    (seen,) = [m.text for m in session.messages() if m.role == "user"]
+    assert "researcher" in seen and "task tool" in seen and "find the entry point" in seen
+    assert session.title == "@researcher find the entry point"  # the line the user typed
 
 
-def test_stream_turn_pauses_and_resumes_progress_around_an_interrupt(monkeypatch):
-    from types import SimpleNamespace
-
-    from luna.core import session
+async def test_render_turn_pauses_and_resumes_progress_around_an_approval(tmp_path, monkeypatch):
+    from luna.core import session as session_mod
 
     events: list[str] = []
 
@@ -104,46 +115,13 @@ def test_stream_turn_pauses_and_resumes_progress_around_an_interrupt(monkeypatch
         def close(self):
             events.append("close")
 
-    monkeypatch.setattr(session, "ToolProgress", _SpyProgress)
-
-    tool_call = AIMessage(
-        content="", tool_calls=[{"name": "write_file", "id": "1", "args": {"file_path": "/a"}}]
-    )
-    interrupt = SimpleNamespace(
-        value={"action_requests": [{"name": "write_file", "args": {"file_path": "/a"}}]}
-    )
-
-    class _FakeAgent:
-        """Mimics a real agent's state machine across iter_turn's two calls:
-        ``get_state`` is now called both *before* streaming (iter_turn seeds
-        its dedup sets from persisted state) and *after* (to discover an
-        out-of-band interrupt) — so its answer must depend on how far
-        ``stream`` has progressed, not merely on "has get_state ever been
-        called before", or the extra pre-stream call reads back a stale
-        interrupt that hasn't actually happened yet.
-        """
-
-        def __init__(self):
-            self._phase = 0  # 0: before first stream, 1: paused at interrupt, 2: resumed
-
-        def stream(self, payload, config, stream_mode):
-            if self._phase == 0:
-                yield "updates", {"model": {"messages": [tool_call]}}
-                self._phase = 1
-            else:
-                yield "messages", (AIMessage(content="done"), {"langgraph_node": "model"})
-                self._phase = 2
-
-        def get_state(self, config):
-            interrupts = [interrupt] if self._phase == 1 else []
-            return SimpleNamespace(values={}, interrupts=interrupts)
-
-    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
-    session._stream_turn(
-        _FakeAgent(),
-        {"messages": [{"role": "user", "content": "hi"}]},
-        {"configurable": {"thread_id": "t"}},
-        console,
-        input_fn=lambda _: "",
-    )
-    assert events == ["created", "start", "pause", "resume", "close"]
+    monkeypatch.setattr(session_mod, "ToolProgress", _SpyProgress)
+    script = [
+        FakeProvider.call("write_file", {"file_path": "a", "content": ""}),
+        FakeProvider.text("done"),
+    ]
+    bundle = await build_agent(_cfg(tmp_path), provider=FakeProvider(script))
+    session = Session.create(open_log(), str(Path(tmp_path).resolve()))
+    await render_turn(bundle.agent, session, "hi", console=_console(), input_fn=lambda _: "")
+    await bundle.aclose()
+    assert events == ["created", "pause", "resume", "start", "finish", "close"]

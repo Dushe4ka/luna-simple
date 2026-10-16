@@ -26,7 +26,7 @@ class _ServerEnv:
         self.index = SessionIndex()
         self.user_commands = usercmd.load(runtime.workdir)
         self.pinned = runtime.state.pinned
-        self.usage = runtime.state.usage
+        self.usage = runtime.usage
         self._config = None
 
     @property
@@ -113,8 +113,8 @@ async def get_state(request: Request) -> JSONResponse:
     cfg = await run_in_threadpool(runtime.config)
     state = runtime.state
     summary = (
-        indicator_line(state.usage, cfg.provider, cfg.model, cfg.pricing)
-        if state.usage.turns
+        indicator_line(runtime.usage, cfg.provider, cfg.model, cfg.pricing)
+        if runtime.usage.turns
         else ""
     )
     return JSONResponse(

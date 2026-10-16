@@ -14,9 +14,10 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
+from luna_core.context import PinnedFiles
+
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage
-from luna.turn.context import PinnedFiles
 from luna.turn.engine import Notice
 
 #: ui = handled by the client; read = allowed mid-turn; mutate = changes the

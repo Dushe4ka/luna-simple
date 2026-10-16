@@ -1,679 +1,407 @@
+import asyncio
 import io
+import json
+import os
+import signal
 import subprocess
 import sys
+from pathlib import Path
 
-from langchain_core.messages import AIMessage
+from luna_core.events import TextDelta
+from luna_core.messages import Message, Text, ToolCall
+from luna_core.providers.fake import FakeProvider
+from luna_core.session import Session
 from rich.console import Console
 
 from luna.config.config import LunaConfig
-from luna.core._legacy_agent import build_agent_legacy as build_agent
-from luna.core.persistence import SessionIndex, make_title
-from luna.core.session import run_repl
+from luna.core.agent import build_agent
+from luna.core.session import run_once, run_repl
+from luna.core.store import make_title, open_log
+from luna.repl.usercmd import expand as usercmd_expand
 from luna.repl.usercmd import load as load_user_commands
+from luna.turn import engine
 
 
-def test_repl_flow_at_expansion_diff_undo(tmp_path, fake_model):
-    (tmp_path / "README.md").write_text("# demo\n")
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
-                }
-            ],
-        ),
-        AIMessage(content="wrote notes.txt"),
+def console(**kw):
+    kw.setdefault("force_terminal", True)
+    return Console(file=io.StringIO(), **kw)
+
+
+def _cfg(tmp_path, **kw):
+    kw.setdefault("format_command", "")
+    kw.setdefault("diagnose_command", "")
+    return LunaConfig(workdir=str(tmp_path), model="m", **kw)
+
+
+async def _repl(tmp_path, script, lines, *, cfg=None, out=None, hooks=False, rebuild=None):
+    """Run the REPL over ``script`` with scripted input; returns (code, out, session, provider)."""
+    cfg = cfg or _cfg(tmp_path, yolo=True)
+    provider = FakeProvider(script)
+    hooks_state: dict = {}
+    pipeline = engine.make_hooks(lambda: hooks_state.get("state"), lambda: cfg) if hooks else None
+    bundle = await build_agent(cfg, provider=provider, hooks=pipeline)
+    out = out or console()
+    log = open_log()
+    session = Session.create(log, str(Path(tmp_path).resolve()))
+    answers = iter(lines)
+    try:
+        code = await run_repl(
+            bundle,
+            console=out,
+            input_fn=lambda _prompt: next(answers),
+            rebuild=rebuild,
+            log=log,
+            session=session,
+            config=cfg,
+            plan_state=[False],
+            hooks_state=hooks_state,
+        )
+    finally:
+        await bundle.aclose()
+    return code, out.file.getvalue(), session, provider
+
+
+def _user_texts(session):
+    return [m.text for m in session.messages() if m.role == "user"]
+
+
+async def test_run_once_text_and_json(tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    bundle = await build_agent(
+        cfg, provider=FakeProvider([FakeProvider.text("hello"), FakeProvider.text("again")])
+    )
+    log = open_log()
+    assert await run_once(bundle, "hi", console=console(), log=log, cfg=cfg) == "hello"
+    await run_once(bundle, "hi", console=console(), log=log, cfg=cfg, output_format="json")
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["text"] == "again" and payload["session_id"] and payload["usage"]["input"] == 10
+    assert payload["error"] is None
+    await bundle.aclose()
+
+
+async def test_run_once_titles_the_session_with_the_prompt(tmp_path):
+    cfg = _cfg(tmp_path)
+    bundle = await build_agent(cfg, provider=FakeProvider([FakeProvider.text("ok")]))
+    log = open_log()
+    await run_once(bundle, "  fix   the\nbug ", console=console(), log=log, cfg=cfg)
+    (info,) = log.list(str(Path(tmp_path).resolve()))
+    assert info.title == "fix the bug"
+    await bundle.aclose()
+
+
+async def test_repl_approval_reject_with_reason(tmp_path):
+    script = [
+        FakeProvider.call("write_file", {"file_path": "a.txt", "content": "x"}),
+        FakeProvider.text("ok"),
     ]
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True),
-        model=fake_model(*calls),
-        session_id="sid",
+    code, out, session, _ = await _repl(
+        tmp_path, script, ["write it", "n", "not now", "/exit"], cfg=_cfg(tmp_path)
     )
-    console = Console(file=io.StringIO(), force_terminal=True)
-    lines = iter(["@README.md summarise this", "/diff", "/undo", "n", "/exit"])
+    assert code == 0 and not (tmp_path / "a.txt").exists()
+    assert "rejected by the user: not now" in session.messages()[2].results[0].text
 
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
-        session_id="sid",
+
+async def test_repl_flow_at_expansion_diff_undo(tmp_path):
+    (tmp_path / "README.md").write_text("# demo\n")
+    script = [
+        FakeProvider.call("write_file", {"file_path": "/notes.txt", "content": "hi\n"}),
+        FakeProvider.text("wrote notes.txt"),
+    ]
+    code, out, session, _ = await _repl(
+        tmp_path, script, ["@README.md summarise this", "/diff", "/undo", "n", "/exit"]
     )
-    assert rc == 0
-    out = console.file.getvalue()
-    assert list((tmp_path / ".luna" / "undo" / "sid").glob("[0-9]*.json"))
-    assert "notes.txt" in out  # /diff showed the change
+    assert code == 0
+    assert "<attached: README.md>" in _user_texts(session)[0]
+    assert (tmp_path / ".luna" / "undo" / session.id / "journal.json").exists()
+    assert "notes.txt" in out.split("wrote notes.txt")[-1]  # /diff showed the change
     assert "undo cancelled" in out  # scripted "n" declined it
     assert (tmp_path / "notes.txt").exists()  # not reverted
 
 
-def test_repl_records_prompt_not_indicator_line_as_session_title(tmp_path, fake_model):
-    """A real turn (with token usage) must not corrupt the persisted title.
-
-    Regression for a bug where the dim usage indicator printed after a turn
-    reused the ``line`` variable also holding the user's raw prompt, so the
-    session title recorded via ``index.record`` ended up being the indicator
-    string (``"ctx ~... · $0.0042"``) instead of the actual prompt text.
-    """
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True),
-        model=fake_model(
-            AIMessage(
-                content="ok",
-                usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-            )
-        ),
-        session_id="sid2",
+async def test_repl_undo_confirmed_reverts_files_and_conversation(tmp_path):
+    script = [
+        FakeProvider.call("write_file", {"file_path": "notes.txt", "content": "hi\n"}),
+        FakeProvider.text("wrote it"),
+    ]
+    code, out, session, _ = await _repl(
+        tmp_path, script, ["write notes", "/undo", "y", "/redo", "/exit"]
     )
-    console = Console(file=io.StringIO(), force_terminal=True)
+    assert code == 0 and "files restored; conversation rewound" in out
+    assert "files re-applied; turn restored" in out
+    assert (tmp_path / "notes.txt").read_text() == "hi\n"  # redo re-applied it
+
+
+async def test_repl_records_prompt_not_indicator_line_as_session_title(tmp_path):
+    """A turn with usage must not put the usage line into the session title."""
     prompt = "remember X please"
-    lines = iter([prompt, "/exit"])
-    idx = SessionIndex()
-
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        index=idx,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t2",
-        session_id="sid2",
-    )
-    assert rc == 0
-    row = idx.latest_for(str(tmp_path))
-    assert row is not None
-    assert row.title == make_title(prompt)
-    assert "ctx " not in row.title
-    assert "$" not in row.title
+    code, out, session, _ = await _repl(tmp_path, [FakeProvider.text("ok")], [prompt, "/exit"])
+    assert code == 0 and "10 in · 5 out" in out
+    assert session.title == make_title(prompt)
+    assert " in · " not in session.title and "$" not in session.title
 
 
-def test_user_command_fallthrough_expands_at_mentions_exactly_once(tmp_path, fake_model):
-    """Regression test for the M2 fix (final whole-branch review): usercmd.expand no
-    longer runs expand_mentions itself, so a custom command's @file mention is expanded
-    exactly once by run_repl's own turn-building call — not twice.
-
-    Before the fix, a user command's body containing an ``@file`` mention was expanded
-    once by ``usercmd.expand`` (inside ``dispatch``) and the resulting text — which
-    still contained the literal, unremoved ``@file`` token — fell through to
-    ``run_repl``'s own ``expand_mentions`` call, attaching the file's content a second
-    time. usercmd.expand now leaves ``@file``/``@agent`` tokens untouched, so only
-    run_repl's single pass expands them.
-    """
+async def test_user_command_fallthrough_expands_at_mentions_exactly_once(tmp_path):
+    """A custom command's @file is expanded once, by the REPL's own turn preparation."""
     commands_dir = tmp_path / ".luna" / "commands"
     commands_dir.mkdir(parents=True)
     (commands_dir / "greet.md").write_text("hi @notes.txt $ARGUMENTS\n")
     (tmp_path / "notes.txt").write_text("NOTE_CONTENT\n")
-
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True),
-        model=fake_model(AIMessage(content="ok")),
-        session_id="sid3",
+    code, _, session, provider = await _repl(
+        tmp_path, [FakeProvider.text("ok")], ["/greet world", "/exit"]
     )
-    seen_payloads: list[str] = []
-    real_stream = agent.stream
-
-    def _spy(payload, *a, **kw):
-        if isinstance(payload, dict):
-            msgs = payload.get("messages", [])
-            if msgs:
-                seen_payloads.append(msgs[-1].get("content", ""))
-        return real_stream(payload, *a, **kw)
-
-    agent.stream = _spy
-    console = Console(file=io.StringIO(), force_terminal=True)
-    lines = iter(["/greet world", "/exit"])
-    idx = SessionIndex()
-
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        index=idx,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t3",
-        session_id="sid3",
-    )
-    assert rc == 0
-    assert len(seen_payloads) == 1
-    payload = seen_payloads[0]
+    assert code == 0 and len(provider.requests) == 1
+    (payload,) = _user_texts(session)
     assert payload.count("NOTE_CONTENT") == 1
     assert payload.count("<attached: notes.txt>") == 1
     assert "hi @notes.txt world" in payload
-
-    # The title, recorded from the reassigned `line` (the expanded prompt, not
-    # the raw "/greet world"), must reflect that single expansion correctly and
-    # must not be corrupted by unrelated REPL output (see
-    # test_repl_records_prompt_not_indicator_line_as_session_title).
-    row = idx.latest_for(str(tmp_path))
-    assert row is not None
-    user_commands = load_user_commands(str(tmp_path))
-    from luna.repl.usercmd import expand as usercmd_expand
-
-    expanded_once = usercmd_expand(user_commands["greet"], "world", str(tmp_path))
+    expanded_once = usercmd_expand(
+        load_user_commands(str(tmp_path))["greet"], "world", str(tmp_path)
+    )
     assert expanded_once == "hi @notes.txt world"
-    assert row.title == make_title(expanded_once)
-    assert "ctx " not in row.title
-    assert "$" not in row.title
+    assert session.title == make_title(expanded_once)
 
 
-def test_user_command_body_starting_with_at_agent_delegates_cleanly(tmp_path, fake_model):
-    """A .luna/commands/*.md body that itself starts with @<known-subagent> must
-    delegate cleanly via run_repl's @agent rewrite, not get a spurious '(...: not
-    found)' file-mention annotation injected before the @agent check runs (M2)."""
+async def test_user_command_body_starting_with_at_agent_delegates_cleanly(tmp_path):
     commands_dir = tmp_path / ".luna" / "commands"
     commands_dir.mkdir(parents=True)
     (commands_dir / "ask.md").write_text("@researcher $ARGUMENTS")
-
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content="ok"))
+    _, _, session, _ = await _repl(
+        tmp_path, [FakeProvider.text("ok")], ["/ask find the docs", "/exit"]
     )
-    seen_payloads: list[str] = []
-    real_stream = agent.stream
-
-    def _spy(payload, *a, **kw):
-        if isinstance(payload, dict):
-            msgs = payload.get("messages", [])
-            if msgs:
-                seen_payloads.append(msgs[-1].get("content", ""))
-        return real_stream(payload, *a, **kw)
-
-    agent.stream = _spy
-    console = Console(file=io.StringIO(), force_terminal=True)
-    lines = iter(["/ask find the docs", "/exit"])
-    run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
-    )
-    payload = seen_payloads[0]
+    (payload,) = _user_texts(session)
     assert "not found" not in payload
     assert "researcher" in payload and "task tool" in payload
 
 
-def test_diagnostics_are_injected_into_the_next_turn(tmp_path, fake_model):
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/a.py", "content": "x = 1\n"},
-                }
-            ],
-        ),
-        AIMessage(content="wrote a.py"),
-        AIMessage(content="saw the diagnostics"),
+async def test_diagnostics_are_injected_into_the_next_turn(tmp_path):
+    script = [
+        FakeProvider.call("write_file", {"file_path": "/a.py", "content": "x = 1\n"}),
+        FakeProvider.text("wrote a.py"),
+        FakeProvider.text("saw the diagnostics"),
     ]
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls), session_id="sid"
+    cfg = _cfg(tmp_path, yolo=True, diagnose_command="echo a.py:1: fake finding")
+    _, out, session, _ = await _repl(
+        tmp_path, script, ["write a.py", "second turn", "/exit"], cfg=cfg, hooks=True
     )
-    seen_payloads: list[str] = []
-    real_stream = agent.stream
+    first, second = _user_texts(session)
+    assert "<diagnostics>" not in first
+    assert second.startswith("<diagnostics>") and "fake finding" in second
+    assert "fake finding" in out  # shown as a dim notice after the first turn
 
-    def _spy(payload, *a, **kw):
-        if isinstance(payload, dict):
-            msgs = payload.get("messages", [])
-            if msgs:
-                seen_payloads.append(msgs[-1].get("content", ""))
-        return real_stream(payload, *a, **kw)
 
-    agent.stream = _spy
-    console = Console(file=io.StringIO(), force_terminal=True)
-    lines = iter(["write a.py", "second turn", "/exit"])
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=True, diagnose_command="echo a.py:1: fake finding")
-    run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=cfg,
-        thread_id="t",
-        session_id="sid",
+def _git(root, *args):
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
     )
-    assert any("<diagnostics>" in p and "fake finding" in p for p in seen_payloads)
 
 
-def test_format_only_touches_files_the_turn_actually_changed(tmp_path, fake_model, monkeypatch):
-    """A file the user had already modified (uncommitted) BEFORE the turn ran must
-    not be passed to the formatter — only files that became newly dirty during the
-    turn itself (the M5 fix)."""
-
-    def _git(*args):
-        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
-
-    _git("init", "-q")
+async def test_format_only_touches_files_the_turn_actually_changed(tmp_path, monkeypatch):
+    """A file the user had already modified before the turn is not formatted."""
+    _git(tmp_path, "init", "-q")
     (tmp_path / "a.txt").write_text("v0\n")
-    _git("add", "-A")
-    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
-
-    # the user already had an uncommitted change to a.txt BEFORE the turn started
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "init")
     (tmp_path / "a.txt").write_text("pre-existing uncommitted change\n")
-
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/b.txt", "content": "new\n"},
-                }
-            ],
-        ),
-        AIMessage(content="wrote b.txt"),
-    ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
 
     import luna.turn.fmt as fmt_module
 
     seen_paths: list[list[str]] = []
     real_run = fmt_module.run
-
-    def _spy_run(command, workdir, paths):
-        seen_paths.append(list(paths))
-        return real_run(command, workdir, paths)
-
-    monkeypatch.setattr(fmt_module, "run", _spy_run)
-
-    console = Console(file=io.StringIO(), force_terminal=True)
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=True, format_command=f'{sys.executable} -c "pass"')
-    lines = iter(["write b.txt", "/exit"])
-    run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=cfg,
-        thread_id="t",
+    monkeypatch.setattr(
+        fmt_module, "run", lambda c, w, p: seen_paths.append(list(p)) or real_run(c, w, p)
     )
-    assert seen_paths  # the formatter ran at least once
-    touched = seen_paths[0]
-    assert "b.txt" in touched
-    assert "a.txt" not in touched  # pre-existing dirty file was left alone
+    script = [
+        FakeProvider.call("write_file", {"file_path": "/b.txt", "content": "new\n"}),
+        FakeProvider.text("wrote b.txt"),
+    ]
+    cfg = _cfg(tmp_path, yolo=True, format_command=f'{sys.executable} -c "pass"')
+    await _repl(tmp_path, script, ["write b.txt", "/exit"], cfg=cfg, hooks=True)
+    assert seen_paths == [["b.txt"]]  # neither a.txt nor Luna's own .luna/ state
 
 
-def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_dirty_files(
-    tmp_path, fake_model, monkeypatch
+async def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_dirty_files(
+    tmp_path, monkeypatch
 ):
-    """Regression for NEW-1 (round 2 of the final review): when a turn's ONLY file
-    changes are to files that were already dirty before the turn started, the
-    scoped `changed` list comes out empty. fmt.run/diagnose.run both treat an
-    empty `paths` list as "run over the whole project" (that convention exists for
-    the non-git / before=None callers). Before the fix, the scoped (git,
-    before-is-not-None) path fell into that same whole-project branch whenever
-    `changed` came out empty — exactly backwards from M5's intent. The formatter
-    must not run at all in this case, not run bare over the whole repo.
-    """
-
-    def _git(*args):
-        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
-
-    _git("init", "-q")
-    # .luna/ (the undo journal begin_turn writes) must not itself count as
-    # "newly dirty" for this test — mirrors this project's own .gitignore, per
-    # the C3 finding's note that the bug (and this related pollution) only
-    # reproduces in a repo that doesn't already ignore .luna/.
+    """An empty scoped delta must not be treated as "format everything"."""
+    _git(tmp_path, "init", "-q")
     (tmp_path / ".gitignore").write_text(".luna/\n")
     (tmp_path / "a.txt").write_text("v0\n")
-    (tmp_path / "c.py").write_text("x = 1\n")  # "the rest of the repo"
-    _git("add", "-A")
-    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
-
-    # the user already had an uncommitted change to a.txt BEFORE the turn started
+    (tmp_path / "c.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "init")
     (tmp_path / "a.txt").write_text("pre-existing uncommitted change\n")
-
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/a.txt", "content": "edited by the turn too\n"},
-                }
-            ],
-        ),
-        AIMessage(content="edited a.txt"),
-    ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
 
     import luna.turn.fmt as fmt_module
 
     fmt_calls: list[list[str]] = []
     real_run = fmt_module.run
-
-    def _spy_run(command, workdir, paths):
-        fmt_calls.append(list(paths))
-        return real_run(command, workdir, paths)
-
-    monkeypatch.setattr(fmt_module, "run", _spy_run)
-
-    console = Console(file=io.StringIO(), force_terminal=True)
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=True, format_command=f'{sys.executable} -c "pass"')
-    lines = iter(["edit a.txt again", "/exit"])
-    run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=cfg,
-        thread_id="t",
+    monkeypatch.setattr(
+        fmt_module, "run", lambda c, w, p: fmt_calls.append(list(p)) or real_run(c, w, p)
     )
-    # the formatter must never be invoked at all — the turn's only change was to
-    # a file already dirty before it started, so the scoped delta is empty and
-    # that must NOT be treated as "format everything"
+    script = [
+        FakeProvider.call("write_file", {"file_path": "/a.txt", "content": "edited too\n"}),
+        FakeProvider.text("edited a.txt"),
+    ]
+    cfg = _cfg(tmp_path, yolo=True, format_command=f'{sys.executable} -c "pass"')
+    await _repl(tmp_path, script, ["edit a.txt again", "/exit"], cfg=cfg, hooks=True)
     assert fmt_calls == []
 
 
-def test_tool_progress_prints_an_informative_label_and_done_line(tmp_path, fake_model):
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
-                }
-            ],
-        ),
-        AIMessage(content="wrote notes.txt"),
+async def test_tool_progress_prints_an_informative_label_and_done_line(tmp_path):
+    script = [
+        FakeProvider.call("write_file", {"file_path": "/notes.txt", "content": "hi\n"}),
+        FakeProvider.text("wrote notes.txt"),
     ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
-    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
-    lines = iter(["write notes.txt please", "/exit"])
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
+    code, out, _, _ = await _repl(
+        tmp_path, script, ["write notes.txt please", "/exit"], out=console(no_color=True)
     )
-    assert rc == 0
-    out = console.file.getvalue()
+    assert code == 0
     assert "write_file(/notes.txt) · done" in out
-    assert "Updated file /notes.txt" in out
+    assert "wrote notes.txt" in out
 
 
-def test_tool_progress_handles_two_parallel_tool_calls(tmp_path, fake_model):
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/a.txt", "content": "a\n"},
-                },
-                {
-                    "name": "write_file",
-                    "id": "2",
-                    "args": {"file_path": "/b.txt", "content": "b\n"},
-                },
-            ],
-        ),
-        AIMessage(content="wrote both files"),
-    ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
-    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
-    lines = iter(["write a.txt and b.txt", "/exit"])
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
+async def test_tool_progress_handles_two_parallel_tool_calls(tmp_path):
+    both = Message.assistant(
+        [
+            ToolCall("1", "write_file", {"file_path": "/a.txt", "content": "a\n"}),
+            ToolCall("2", "write_file", {"file_path": "/b.txt", "content": "b\n"}),
+        ]
     )
-    assert rc == 0
-    out = console.file.getvalue()
-    assert "write_file(/a.txt) · done" in out
-    assert "write_file(/b.txt) · done" in out
+    code, out, _, _ = await _repl(
+        tmp_path,
+        [both, FakeProvider.text("wrote both files")],
+        ["write a.txt and b.txt", "/exit"],
+        out=console(no_color=True),
+    )
+    assert code == 0
+    assert "write_file(/a.txt) · done" in out and "write_file(/b.txt) · done" in out
 
 
-def test_tool_progress_does_not_erase_prose_that_precedes_a_tool_call(tmp_path, fake_model):
-    """Regression for the CRITICAL finding from the final whole-branch review:
-    when the model's response is prose followed by a tool call in the SAME
-    message (e.g. "Sure, I'll check that." then a `read_file`/`write_file`
-    call — the most common tool-use shape), the streamed text is printed with
-    ``end=""`` and no trailing newline. Before the original fix, `ToolProgress`'s
-    `rich.live.Live` then rendered its first frame on that same line, and its
-    next refresh erased the prose with ANSI erase-line sequences. `_stream_turn`
-    now renders answer text via `AnswerRenderer` (its own `Live`, stopped —
-    finalizing that line — before any tool-progress output starts), so the
-    prose and the tool label must always land on separate terminal lines.
-    """
+async def test_tool_progress_does_not_erase_prose_that_precedes_a_tool_call(tmp_path):
+    """Prose and the tool label never share a terminal line (the old erase-line bug)."""
     prose = "Sure, I'll check that."
-    calls = [
-        AIMessage(
-            content=prose,
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
-                }
-            ],
-        ),
-        AIMessage(content="done"),
-    ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
-    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
-    lines = iter(["check and write notes.txt", "/exit"])
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
+    reply = Message.assistant(
+        [Text(prose), ToolCall("1", "write_file", {"file_path": "/notes.txt", "content": "hi\n"})]
     )
-    assert rc == 0
-    out = console.file.getvalue()
-    assert prose in out
-    assert "write_file(/notes.txt) · done" in out
-    # The prose and the tool label must never share a terminal line — that
-    # adjacency (with no line break between them) is exactly what the
-    # erase-line bug produced. A rendered Markdown paragraph may pad its
-    # last line with spaces before the newline, so check for a newline
-    # ANYWHERE between the two, not strict character-adjacency.
+    code, out, _, _ = await _repl(
+        tmp_path,
+        [reply, FakeProvider.text("done")],
+        ["check and write notes.txt", "/exit"],
+        out=console(no_color=True),
+    )
+    assert code == 0 and prose in out
     prose_end = out.index(prose) + len(prose)
     label_idx = out.index("write_file(/notes.txt)")
-    assert label_idx > prose_end
-    assert "\n" in out[prose_end:label_idx]
+    assert label_idx > prose_end and "\n" in out[prose_end:label_idx]
 
 
-def test_tool_progress_renders_error_line_when_user_rejects_approval(tmp_path, fake_model):
-    """Regression for the IMPORTANT finding from the final whole-branch review:
-    no test exercised the real end-to-end path where a user rejects an
-    approval prompt (yolo=False) and the resulting `ToolMessage(status="error")`
-    — real langchain human-in-the-loop middleware behavior — renders as a
-    `· error ·` line via `ToolProgress.finish`.
-    """
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "write_file",
-                    "id": "1",
-                    "args": {"file_path": "/notes.txt", "content": "hi\n"},
-                }
-            ],
-        ),
-        AIMessage(content="ok, not writing it"),
+async def test_tool_progress_renders_error_line_when_user_rejects_approval(tmp_path):
+    script = [
+        FakeProvider.call("write_file", {"file_path": "/notes.txt", "content": "hi\n"}),
+        FakeProvider.text("ok, not writing it"),
     ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=False), model=fake_model(*calls))
-    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
-    # "n" rejects the pending action_request; the follow-up line is the reject reason.
-    lines = iter(["write notes.txt please", "n", "not needed", "/exit"])
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=False),
-        thread_id="t",
+    code, out, _, _ = await _repl(
+        tmp_path,
+        script,
+        ["write notes.txt please", "n", "not needed", "/exit"],
+        cfg=_cfg(tmp_path),
+        out=console(no_color=True),
     )
-    assert rc == 0
-    out = console.file.getvalue()
+    assert code == 0
     assert "write_file(/notes.txt) · error" in out
     assert not (tmp_path / "notes.txt").exists()
 
 
-def test_tool_progress_omits_content_dump_for_a_successful_read(tmp_path, fake_model):
-    """A successful read_file/ls/glob/grep gets no content-excerpt detail —
-    the label already says what ran, and dumping the first line of the
-    result (a code line, a directory listing) is noise, not information."""
-    (tmp_path / "notes.txt").write_text("first line of the file\nsecond line\n")
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[{"name": "read_file", "id": "1", "args": {"file_path": "/notes.txt"}}],
-        ),
-        AIMessage(content="read it"),
+async def test_always_allow_persists_a_rule_and_skips_the_next_prompt(tmp_path):
+    script = [
+        FakeProvider.call("write_file", {"file_path": "a.txt", "content": "1"}, "c1"),
+        FakeProvider.call("write_file", {"file_path": "a.txt", "content": "2"}, "c2"),
+        FakeProvider.text("done"),
     ]
-    agent = build_agent(LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(*calls))
-    console = Console(file=io.StringIO(), force_terminal=True, no_color=True)
-    lines = iter(["read notes.txt please", "/exit"])
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
+    # "a" = always allow, "" = accept the suggested rule; the second write never asks
+    code, out, _, _ = await _repl(
+        tmp_path, script, ["write twice", "a", "", "/exit"], cfg=_cfg(tmp_path)
     )
-    assert rc == 0
-    out = console.file.getvalue()
+    assert code == 0 and (tmp_path / "a.txt").read_text() == "2"
+    assert "write_file:a.txt" in (tmp_path / ".luna" / "permissions.toml").read_text()
+
+
+async def test_tool_progress_omits_content_dump_for_a_successful_read(tmp_path):
+    (tmp_path / "notes.txt").write_text("first line of the file\nsecond line\n")
+    script = [FakeProvider.call("read_file", {"file_path": "/notes.txt"}), FakeProvider.text("ok")]
+    code, out, _, _ = await _repl(
+        tmp_path, script, ["read notes.txt please", "/exit"], out=console(no_color=True)
+    )
+    assert code == 0
     assert "read_file(/notes.txt) · done" in out
     assert "first line of the file" not in out
 
 
-def test_answer_text_is_rendered_as_live_markdown(tmp_path, fake_model):
-    """The assistant's answer text renders through rich.markdown.Markdown —
-    a real truecolor bold escape for **bold**, not the literal asterisks."""
+async def test_answer_text_is_rendered_as_live_markdown(tmp_path):
     text = "**Done.** See the list:\n\n- one\n- two"
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path), yolo=True), model=fake_model(AIMessage(content=text))
+    out = Console(file=io.StringIO(), width=60, force_terminal=True, color_system="truecolor")
+    code, rendered, _, _ = await _repl(
+        tmp_path, [FakeProvider.text(text)], ["hi", "/exit"], out=out
     )
-    console = Console(file=io.StringIO(), width=60, force_terminal=True, color_system="truecolor")
-    lines = iter(["hi", "/exit"])
-    rc = run_repl(
-        agent,
-        console=console,
-        input_fn=lambda _: next(lines),
-        rebuild=lambda: agent,
-        workdir=str(tmp_path),
-        config=LunaConfig(workdir=str(tmp_path), yolo=True),
-        thread_id="t",
-    )
-    assert rc == 0
-    out = console.file.getvalue()
-    assert "\x1b[1mDone.\x1b[0m" in out  # bold ANSI, not literal "**Done.**"
-    assert "**Done.**" not in out
-    assert "one" in out and "two" in out
+    assert code == 0
+    assert "\x1b[1mDone.\x1b[0m" in rendered and "**Done.**" not in rendered
+    assert "one" in rendered and "two" in rendered
 
 
-def test_repl_uses_the_shared_engine(monkeypatch, tmp_path):
-    """run_repl must build turns through luna.turn.engine.prepare_turn."""
-    import io
-
-    from rich.console import Console
-
+async def test_repl_uses_the_shared_engine(monkeypatch, tmp_path):
     from luna.core import session as session_mod
 
     calls = []
     real = session_mod.engine.prepare_turn
-
-    def spy(*a, **k):
-        calls.append(a[1])
-        return real(*a, **k)
-
-    monkeypatch.setattr(session_mod.engine, "prepare_turn", spy)
-
-    class _Agent:
-        def get_state(self, config):
-            from types import SimpleNamespace
-
-            return SimpleNamespace(values={"messages": []})
-
-    lines = iter(["hi"])
-
-    def _input(_prompt):
-        try:
-            return next(lines)
-        except StopIteration:
-            raise EOFError from None
-
     monkeypatch.setattr(
-        session_mod,
-        "_stream_turn_resilient",
-        lambda *a, **k: ("", False, session_mod.TurnUsage(), set()),
+        session_mod.engine, "prepare_turn", lambda *a, **k: calls.append(a[1]) or real(*a, **k)
     )
-    session_mod.run_repl(
-        _Agent(), console=Console(file=io.StringIO()), input_fn=_input, workdir=str(tmp_path)
-    )
+    await _repl(tmp_path, [FakeProvider.text("ok")], ["hi"])  # input runs out -> EOF -> exit
     assert calls == ["hi"]
 
 
-def test_ctrl_c_during_post_turn_verify_keeps_the_repl_alive(monkeypatch, tmp_path):
-    """Regression: interrupting a long verify used to cancel only the verify."""
-    import io
+class _HangingProvider:
+    """Streams one delta, then sends this process SIGINT and waits (until cancelled)."""
 
-    from rich.console import Console
+    name = "fake"
 
-    from luna.core import session as session_mod
+    def __init__(self):
+        self.calls = 0
 
-    class _Agent:
-        def get_state(self, config):
-            from types import SimpleNamespace
+    async def stream(self, request):
+        self.calls += 1
+        if self.calls == 1:
+            yield TextDelta("working")
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(30)
+        async for event in FakeProvider([FakeProvider.text("second answer")]).stream(request):
+            yield event
 
-            return SimpleNamespace(values={"messages": []})
 
-    lines = iter(["edit it", "again"])
-    turns = []
-
-    def _input(_prompt):
-        try:
-            return next(lines)
-        except StopIteration:
-            raise EOFError from None
-
-    def fake_stream(*a, **k):
-        turns.append(1)
-        return ("", False, session_mod.TurnUsage(), {"edit_file"})
-
-    def boom(*a, **k):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(session_mod, "_stream_turn_resilient", fake_stream)
-    monkeypatch.setattr(session_mod.engine, "finish_turn", boom)
-    console = Console(file=io.StringIO())
-    code = session_mod.run_repl(_Agent(), console=console, input_fn=_input, workdir=str(tmp_path))
-    assert code == 0 and turns == [1, 1]
-    assert "verify fix-up cancelled" in console.file.getvalue()
+async def test_ctrl_c_cancels_the_turn_and_keeps_the_repl_alive(tmp_path):
+    before = signal.getsignal(signal.SIGINT)
+    cfg = _cfg(tmp_path, yolo=True)
+    bundle = await build_agent(cfg, provider=_HangingProvider())
+    out = console(no_color=True)
+    log = open_log()
+    session = Session.create(log, str(Path(tmp_path).resolve()))
+    answers = iter(["long task", "again", "/exit"])
+    code = await asyncio.wait_for(
+        run_repl(
+            bundle,
+            console=out,
+            input_fn=lambda _p: next(answers),
+            log=log,
+            session=session,
+            config=cfg,
+        ),
+        timeout=10,
+    )
+    await bundle.aclose()
+    text = out.file.getvalue()
+    assert code == 0 and "turn cancelled" in text and "second answer" in text
+    assert any(r.type == "cancelled" for r in session.records())
+    assert signal.getsignal(signal.SIGINT) == before  # the REPL's handler is restored

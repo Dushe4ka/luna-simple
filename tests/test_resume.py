@@ -47,27 +47,32 @@ def test_resume_list_non_interactive_returns_none(tmp_path):
     assert got is None
 
 
-def test_session_id_follows_resumed_thread(tmp_path, monkeypatch):
+def test_repl_continue_opens_the_resumed_session(tmp_path, monkeypatch):
     import luna.cli as cli
-    from luna.core.persistence import SessionIndex
+    from luna.core.store import open_log
 
-    idx = SessionIndex()
-    idx.record("thread-abc", str(tmp_path), "earlier work")
-
+    open_log().create(str(tmp_path.resolve()), title="earlier work", session_id="thread-abc")
     seen: dict = {}
 
-    def _capture(agent, **kw):
+    class _Bundle:
+        async def aclose(self):
+            pass
+
+    async def _build(*a, **k):
+        return _Bundle()
+
+    async def _capture(bundle, **kw):
         seen.update(kw)
         return 0
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setattr(cli, "run_repl", _capture)
-    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "build_agent", _build)
 
-    cli.main(["-c"])
-    assert seen["thread_id"] == "thread-abc"
-    assert seen["session_id"] == "thread-abc"
+    assert cli.main(["-c"]) == 0
+    assert seen["session"].id == "thread-abc"
+    assert seen["session"].undo_journal.session_id == "thread-abc"  # the journal follows it
 
 
 def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkeypatch):
@@ -131,8 +136,6 @@ def test_main_handles_keyboard_interrupt_during_resume_list(tmp_path, monkeypatc
     # Ensure interactive detection works: console must be terminal, stdin must be tty
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cli, "get_console", lambda: get_console(force_terminal=True))
-    # Dummy agent so we don't hit build errors
-    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
 
     # Call main() with --resume (no id) to trigger interactive list branch
     result = cli.main(["--resume"])
