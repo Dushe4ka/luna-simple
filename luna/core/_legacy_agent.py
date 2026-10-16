@@ -10,6 +10,7 @@ caller — do not add new importers.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -64,6 +65,12 @@ _LC_PREFIX: dict[str, tuple[str, str]] = {
 }
 
 
+# Presets the LangChain path cannot reach correctly: GigaChat has its own wire
+# API, Yandex needs a folder id in the model and a project header, and
+# ``openai_chat`` would collide with LangChain's own ``openai`` integration.
+_CORE_ONLY = frozenset({"gigachat", "yandex", "openai_chat"})
+
+
 def build_model_legacy(
     provider: str,
     model: str | None = None,
@@ -79,6 +86,10 @@ def build_model_legacy(
     if spec is None:
         raise LunaConfigError(
             f"Unknown provider {provider!r}. Choose one of: {', '.join(sorted(reg))}."
+        )
+    if provider in _CORE_ONLY:
+        raise LunaConfigError(
+            f"provider {provider} needs the new core (available after the cut-over)"
         )
     if spec.env_var and not os.environ.get(spec.env_var):
         from luna.config.credentials import apply_stored_key
@@ -232,6 +243,8 @@ def _lsp_tools(workdir: str, language: str) -> list:
 
 # -- MCP via langchain-mcp-adapters -----------------------------------------
 
+LC_MCP_AVAILABLE = importlib.util.find_spec("langchain_mcp_adapters") is not None
+
 
 def to_connections(servers: Mapping[str, dict]) -> dict[str, dict]:
     """Translate Claude-style server specs into langchain connection dicts."""
@@ -266,11 +279,11 @@ def load_mcp_tools(connections: Mapping[str, dict], *, on_warn: Callable[[str], 
     """Discover tools from every configured MCP server (``[]`` and a warning on failure)."""
     if not connections:
         return []
-    try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient
-    except ImportError:
+    if not LC_MCP_AVAILABLE:
         on_warn('MCP support not installed. Run: pip install "luna-simple[mcp]"')
         return []
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
     try:
         client = MultiServerMCPClient(dict(connections), tool_name_prefix=True)
         return asyncio.run(client.get_tools())

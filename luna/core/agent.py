@@ -148,44 +148,47 @@ async def build_agent(
         roles = _roles(config, registry)
         if manager is not None:
             _merge_tools(tools, await manager.start(), on_warn)
+        all_hooks = Hooks()
+        if hooks is not None:
+            all_hooks.extend(hooks)
+        all_hooks.extend(load_command_hooks(config.hooks, workdir))
+        if config.sandbox == "docker":
+            sandbox = DockerSandbox(
+                workdir, image=config.sandbox_image, network=config.sandbox_network
+            )
+        else:
+            sandbox = LocalSandbox()
+        summarize_provider, summarize_model = roles.get("summarize", provider, model)
+
+        def system(session) -> str:
+            return build_system_prompt(
+                LUNA_SYSTEM_PROMPT, root=workdir, skills=core_skills.discover(skill_dirs(workdir))
+            )
+
+        agent = Agent(
+            provider,
+            model,
+            tools=tools,
+            system=system,
+            policy=policy,
+            workspace=workspace,
+            sandbox=sandbox,
+            hooks=all_hooks,
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
+            reasoning=config.reasoning,
+            max_cost=config.max_cost,
+            compactor=Compactor(provider=summarize_provider, model=summarize_model),
+            services={"background": background or BackgroundTasks(config.max_parallel)},
+            model_overrides=config.pricing or None,
+            roles=roles,
+        )
+        return AgentBundle(agent, manager)
     except BaseException:
+        # any failure after the servers started must not leak their processes
         if manager is not None:
             await manager.close()
         raise
-    all_hooks = Hooks()
-    if hooks is not None:
-        all_hooks.extend(hooks)
-    all_hooks.extend(load_command_hooks(config.hooks, workdir))
-    if config.sandbox == "docker":
-        sandbox = DockerSandbox(workdir, image=config.sandbox_image, network=config.sandbox_network)
-    else:
-        sandbox = LocalSandbox()
-    summarize_provider, summarize_model = roles.get("summarize", provider, model)
-
-    def system(session) -> str:
-        return build_system_prompt(
-            LUNA_SYSTEM_PROMPT, root=workdir, skills=core_skills.discover(skill_dirs(workdir))
-        )
-
-    agent = Agent(
-        provider,
-        model,
-        tools=tools,
-        system=system,
-        policy=policy,
-        workspace=workspace,
-        sandbox=sandbox,
-        hooks=all_hooks,
-        max_tokens=config.max_tokens,
-        temperature=config.temperature,
-        reasoning=config.reasoning,
-        max_cost=config.max_cost,
-        compactor=Compactor(provider=summarize_provider, model=summarize_model),
-        services={"background": background or BackgroundTasks(config.max_parallel)},
-        model_overrides=config.pricing or None,
-        roles=roles,
-    )
-    return AgentBundle(agent, manager)
 
 
 async def describe_capabilities(config: LunaConfig) -> dict:

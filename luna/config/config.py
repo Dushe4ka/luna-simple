@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from luna_core.hooks import POINTS
+
 from luna.config.providers import (
     DEFAULT_PROVIDER,
     PROVIDERS,
@@ -148,6 +150,25 @@ def _apply_toml(data: dict, into: dict) -> None:
         }
 
 
+def _validate_hook(index: int, entry: dict) -> None:
+    """Raise ``LunaConfigError`` naming the ``[[hooks]]`` entry unless it is well formed."""
+    where = f"[[hooks]] entry {index}"
+    if entry.get("event") not in POINTS:
+        raise LunaConfigError(
+            f"{where}: event must be one of {', '.join(POINTS)}, got {entry.get('event')!r}."
+        )
+    command = entry.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise LunaConfigError(f"{where}: command must be a non-empty string.")
+    if "match" in entry and not isinstance(entry["match"], str):
+        raise LunaConfigError(f"{where}: match must be a string, got {entry['match']!r}.")
+    timeout = entry.get("timeout")
+    if "timeout" in entry and (
+        isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0
+    ):
+        raise LunaConfigError(f"{where}: timeout must be a number > 0, got {timeout!r}.")
+
+
 def _apply_env(env: Mapping[str, str], into: dict) -> None:
     if env.get("LUNA_PROVIDER"):
         into["provider"] = env["LUNA_PROVIDER"]
@@ -216,6 +237,19 @@ def load_config(
         raise LunaConfigError(
             f"[agent] reasoning must be 'low', 'medium' or 'high', got {reasoning!r}."
         )
+    max_parallel = merged.get("max_parallel", 4)
+    if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or max_parallel < 1:
+        raise LunaConfigError(
+            f"[agent] max_parallel must be an integer >= 1, got {max_parallel!r}."
+        )
+    max_cost = merged.get("max_cost")
+    if max_cost is not None and (
+        isinstance(max_cost, bool) or not isinstance(max_cost, (int, float)) or max_cost < 0
+    ):
+        raise LunaConfigError(f"[agent] max_cost must be a number >= 0, got {max_cost!r}.")
+    hooks = list(merged.get("hooks", []))
+    for index, entry in enumerate(hooks, 1):
+        _validate_hook(index, entry)
     roles = dict(merged.get("roles", {}))
 
     return LunaConfig(
@@ -233,13 +267,13 @@ def load_config(
         temperature=merged.get("temperature"),
         max_tokens=merged.get("max_tokens"),
         reasoning=reasoning,
-        max_cost=merged.get("max_cost"),
-        max_parallel=int(merged.get("max_parallel", 4)),
+        max_cost=max_cost,
+        max_parallel=max_parallel,
         roles=roles,
         sandbox=sandbox,
         sandbox_image=merged.get("sandbox_image", "python:3.12-slim"),
         sandbox_network=sandbox_network,
-        hooks=list(merged.get("hooks", [])),
+        hooks=hooks,
         ignored_extra=bool(merged.get("ignored_extra", False)),
         custom_providers=custom_providers,
     )

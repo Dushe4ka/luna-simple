@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from luna_core.events import NeedsApproval, TurnDone
 from luna_core.providers.fake import FakeProvider
 from luna_core.session import EventLog, Session
@@ -160,3 +161,181 @@ async def test_describe_capabilities_lists_extensions(tmp_path):
     caps = await describe_capabilities(LunaConfig(workdir=str(tmp_path)))
     assert caps["mcp"] == [] and caps["skills"] == []
     assert {"researcher", "reviewer", "general-purpose"} <= set(caps["subagents"])
+
+
+# -- core-path equivalents of the legacy builder's behaviour tests ------------
+
+
+def _session(tmp_path):
+    return Session.create(EventLog(tmp_path / "s.db"), str(tmp_path), undo=False)
+
+
+async def _turn(bundle, session, text="go"):
+    return [e async for e in bundle.agent.run(session, text)]
+
+
+def _child_results(session) -> str:
+    """Tool-result text of every subagent session the turn spawned."""
+    texts = []
+    for info in session.log.children(session.id):
+        child = Session.open(session.log, info.id, undo=False)
+        texts += [r.text for m in child.messages() for r in getattr(m, "results", ())]
+    return " | ".join(texts)
+
+
+def _details(events) -> str:
+    from luna_core.events import ToolFinished
+
+    return " | ".join(e.detail for e in events if isinstance(e, ToolFinished))
+
+
+async def test_build_runs_offline_with_a_fake_provider(tmp_path, fake_provider):
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path)), provider=fake_provider(FakeProvider.text("hello luna"))
+    )
+    session = _session(tmp_path)
+    events = await _turn(bundle, session, "hi")
+    assert isinstance(events[-1], TurnDone)
+    assert session.messages()[-1].text == "hello luna"
+    assert bundle.agent.model == "fake-model"
+    await bundle.aclose()
+
+
+async def test_yolo_disables_approvals_for_every_mutating_tool(tmp_path):
+    (tmp_path / "old.txt").write_text("bye")
+    script = [
+        FakeProvider.call("write_file", {"file_path": "a.txt", "content": "x"}, "1"),
+        FakeProvider.call(
+            "edit_file", {"file_path": "a.txt", "old_string": "x", "new_string": "y"}, "2"
+        ),
+        FakeProvider.call("delete", {"file_path": "old.txt"}, "3"),
+        FakeProvider.call("execute", {"command": "echo ran > ran.txt"}, "4"),
+        FakeProvider.text("done"),
+    ]
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), provider=FakeProvider(script)
+    )
+    events = await _turn(bundle, _session(tmp_path))
+    assert not any(isinstance(e, NeedsApproval) for e in events)
+    assert (tmp_path / "a.txt").read_text() == "y" and not (tmp_path / "old.txt").exists()
+    assert (tmp_path / "ran.txt").exists()
+    await bundle.aclose()
+
+
+async def test_agents_md_and_luna_memory_reach_the_system_prompt(tmp_path, fake_provider):
+    (tmp_path / "AGENTS.md").write_text("Always run uv sync first.")
+    memory = tmp_path / ".luna" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "failures.md").write_text("Tried pinning httpx 0.26: breaks sse.")
+    bundle = await build_agent(LunaConfig(workdir=str(tmp_path)), provider=fake_provider())
+    prompt = bundle.agent.system_prompt(_session(tmp_path))
+    assert "Always run uv sync first." in prompt
+    assert "Tried pinning httpx 0.26: breaks sse." in prompt
+    await bundle.aclose()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        FakeProvider.call("write_file", {"file_path": "a.py", "content": "replaced\n"}, "w"),
+        FakeProvider.call(
+            "edit_file", {"file_path": "./a.py", "old_string": "original", "new_string": "x"}, "e"
+        ),
+        FakeProvider.call("delete", {"file_path": "/a.py"}, "d"),
+    ],
+    ids=["write", "edit", "delete"],
+)
+async def test_mutation_after_an_external_change_is_blocked(tmp_path, call):
+    p = tmp_path / "a.py"
+    p.write_text("original\nsecond\n")
+    script = [
+        FakeProvider.call("read_file", {"file_path": "a.py"}, "r"),
+        FakeProvider.text("read"),
+        call,
+        FakeProvider.text("done"),
+    ]
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), provider=FakeProvider(script)
+    )
+    session = _session(tmp_path)
+    await _turn(bundle, session, "read it")
+    p.write_text("original\nMODIFIED by hand\n")
+    events = await _turn(bundle, session, "now change it")
+    assert "changed on disk" in _details(events)
+    assert p.read_text() == "original\nMODIFIED by hand\n"
+    await bundle.aclose()
+
+
+async def test_subagent_edit_after_an_external_change_is_blocked(tmp_path):
+    p = tmp_path / "a.py"
+    p.write_text("original\nsecond\n")
+    edit = {"file_path": "a.py", "old_string": "original", "new_string": "x"}
+    task = {"description": "edit a.py", "subagent_type": "general-purpose"}
+    script = [
+        FakeProvider.call("read_file", {"file_path": "a.py"}, "r"),
+        FakeProvider.text("read"),
+        FakeProvider.call("task", task, "t"),  # main agent delegates
+        FakeProvider.call("edit_file", edit, "e"),  # the subagent tries the edit
+        FakeProvider.text("could not edit"),  # subagent report
+        FakeProvider.text("done"),  # main agent
+    ]
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), provider=FakeProvider(script)
+    )
+    session = _session(tmp_path)
+    await _turn(bundle, session, "read it")
+    p.write_text("original\nMODIFIED by hand\n")
+    events = await _turn(bundle, session, "delegate the edit")
+    assert isinstance(events[-1], TurnDone)
+    assert "changed on disk" in _child_results(session)
+    assert p.read_text() == "original\nMODIFIED by hand\n"
+    await bundle.aclose()
+
+
+async def test_deny_rule_is_enforced_inside_a_subagent(tmp_path):
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["execute:*"]\n')
+    task = {"description": "run it", "subagent_type": "general-purpose"}
+    script = [
+        FakeProvider.call("task", task, "t"),
+        FakeProvider.call("execute", {"command": "echo ran > ran.txt"}, "x"),
+        FakeProvider.text("blocked"),
+        FakeProvider.text("done"),
+    ]
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path), yolo=True), provider=FakeProvider(script)
+    )
+    session = _session(tmp_path)
+    events = await _turn(bundle, session)
+    assert isinstance(events[-1], TurnDone)
+    assert "blocked by a Luna permission rule" in _child_results(session)
+    assert not (tmp_path / "ran.txt").exists()
+    await bundle.aclose()
+
+
+async def test_a_failing_build_after_mcp_start_closes_the_manager(tmp_path, monkeypatch):
+    import luna.core.agent as agent_mod
+
+    calls: list[str] = []
+
+    class FakeManager:
+        def __init__(self, servers, *, on_warn):
+            pass
+
+        async def start(self):
+            calls.append("start")
+            return []
+
+        async def close(self):
+            calls.append("close")
+
+    def broken_compactor(**kwargs):
+        raise RuntimeError("compactor exploded")
+
+    monkeypatch.setattr(agent_mod, "MCPManager", FakeManager)
+    monkeypatch.setattr(agent_mod, "Compactor", broken_compactor)
+    (tmp_path / ".luna").mkdir()
+    (tmp_path / ".luna" / "mcp.json").write_text('{"mcpServers": {"srv": {"command": "x"}}}')
+    with pytest.raises(RuntimeError, match="compactor exploded"):
+        await build_agent(LunaConfig(workdir=str(tmp_path)), provider=FakeProvider([]))
+    assert calls == ["start", "close"]

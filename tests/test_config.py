@@ -185,3 +185,42 @@ def test_new_core_settings(tmp_path):
     assert (cfg.reasoning, cfg.max_cost, cfg.max_parallel) == ("high", 2.5, 2)
     assert (cfg.sandbox, cfg.sandbox_image, cfg.sandbox_network) == ("docker", "node:22", "bridge")
     assert cfg.hooks == [{"event": "post_tool", "match": "edit_file", "command": "ruff check"}]
+
+
+@pytest.mark.parametrize(
+    ("toml", "needle"),
+    [
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "x"\ntimeout = "30s"\n', "timeout"),
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "x"\ntimeout = 0\n', "timeout"),
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "  "\n', "command"),
+        ('[[hooks]]\nevent = "pre_tool"\n', "command"),
+        ('[[hooks]]\nevent = "before_tool"\ncommand = "x"\n', "event"),
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "x"\nmatch = 3\n', "match"),
+    ],
+)
+def test_invalid_hooks_are_rejected_naming_the_entry(tmp_path, toml, needle):
+    (tmp_path / ".luna.toml").write_text(toml)
+    with pytest.raises(LunaConfigError, match=rf"\[\[hooks\]\] entry 1: {needle}"):
+        load_config({}, env={}, cwd=str(tmp_path))
+
+
+def test_valid_hook_with_timeout_and_match_loads(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        '[[hooks]]\nevent = "pre_tool"\ncommand = "x"\nmatch = "execute"\ntimeout = 30\n'
+    )
+    assert load_config({}, env={}, cwd=str(tmp_path)).hooks[0]["timeout"] == 30
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        "[agent]\nmax_parallel = 0\n",
+        '[agent]\nmax_parallel = "4"\n',
+        "[agent]\nmax_cost = -1\n",
+        '[agent]\nmax_cost = "lots"\n',
+    ],
+)
+def test_invalid_limits_are_rejected(tmp_path, toml):
+    (tmp_path / ".luna.toml").write_text(toml)
+    with pytest.raises(LunaConfigError):
+        load_config({}, env={}, cwd=str(tmp_path))
