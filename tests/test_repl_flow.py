@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 from rich.console import Console
 
 from luna.config.config import LunaConfig
-from luna.core.agent import build_agent
+from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.core.persistence import SessionIndex, make_title
 from luna.core.session import run_repl
 from luna.repl.usercmd import load as load_user_commands

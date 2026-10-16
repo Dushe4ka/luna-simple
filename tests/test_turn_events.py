@@ -1,7 +1,7 @@
 from langchain_core.messages import AIMessage, ToolMessage
 
 from luna.config.config import LunaConfig
-from luna.core.agent import build_agent
+from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.core.turn_events import (
     Interrupted,
     TextDelta,

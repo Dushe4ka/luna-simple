@@ -1,13 +1,8 @@
 import pytest
+from luna_core.subagents import READ_ONLY, WRITE_TOOLS, SubagentSpec
 
 from luna.config.providers import LunaConfigError
-from luna.extensions.subagents import (
-    _MUTATING_TOOLS,
-    _SAFE_TOOLS,
-    BUILTIN_SUBAGENTS,
-    load_subagents,
-    subagent_summaries,
-)
+from luna.extensions.subagents import load_subagents, subagent_files, subagent_summaries
 
 
 def _write_subagents(tmp_path, body: str):
@@ -32,36 +27,23 @@ def test_unsafe_mutating_subagent_loads_and_warns(tmp_path):
     )
     warns: list[str] = []
     subs = load_subagents(str(tmp_path), on_warn=warns.append)
-    names = {s["name"] for s in subs}
-    assert "impl" in names
+    assert isinstance(subs["impl"], SubagentSpec)
+    assert subs["impl"].tools == ("write_file", "read_file") and subs["impl"].unsafe
     assert warns and "impl" in warns[0]
-    assert "deny rules, approval prompts, and undo all apply" in warns[0]
 
 
-def test_guard_is_first_middleware_on_every_subagent(tmp_path):
-    sentinel = object()
-    subs = load_subagents(str(tmp_path), guard=sentinel)
-    for s in subs:
-        assert s["middleware"][0] is sentinel
-
-
-def test_builtins_are_safe_only():
-    assert _MUTATING_TOOLS.isdisjoint(_SAFE_TOOLS)
-    subs = load_subagents(".")
-    assert {s["name"] for s in subs} >= {"researcher", "reviewer"}
-
-
-def test_user_subagent_without_tools_key_is_restricted(tmp_path):
-    from deepagents.middleware import FilesystemMiddleware
-
-    _write_subagents(
-        tmp_path,
-        '[subagent.helper]\ndescription = "help"\nprompt = "you help"\n',
-    )
+def test_builtins_present_and_read_only_ones_are_safe(tmp_path):
     subs = load_subagents(str(tmp_path))
-    helper = next(s for s in subs if s["name"] == "helper")
-    fs = [m for m in helper["middleware"] if isinstance(m, FilesystemMiddleware)]
-    assert fs, "missing tools key must fall back to a restricted FilesystemMiddleware"
+    assert {"researcher", "reviewer", "general-purpose"} <= set(subs)
+    for name in ("researcher", "reviewer"):
+        assert not set(subs[name].tools) & set(WRITE_TOOLS) and not subs[name].writes
+
+
+def test_user_subagent_without_tools_key_is_read_only(tmp_path):
+    _write_subagents(tmp_path, '[subagent.helper]\ndescription = "help"\nprompt = "you help"\n')
+    helper = load_subagents(str(tmp_path))["helper"]
+    assert helper.tools == READ_ONLY
+    assert (helper.description, helper.prompt) == ("help", "you help")
 
 
 def test_unsafe_string_value_does_not_count_as_consent(tmp_path):
@@ -69,14 +51,8 @@ def test_unsafe_string_value_does_not_count_as_consent(tmp_path):
         tmp_path,
         '[subagent.x]\ndescription = "x"\ntools = ["execute", "read_file"]\nunsafe = "yes"\n',
     )
-    # a non-boolean 'unsafe' is not consent: the hard gate still fires
     with pytest.raises(LunaConfigError, match="unsafe = true"):
         load_subagents(str(tmp_path), on_warn=lambda _l: None)
-
-
-def test_builtins_present():
-    names = {s["name"] for s in BUILTIN_SUBAGENTS}
-    assert {"researcher", "reviewer"} <= names
 
 
 def test_user_subagent_parsed(tmp_path, monkeypatch):
@@ -87,14 +63,17 @@ def test_user_subagent_parsed(tmp_path, monkeypatch):
         'tools = ["read_file", "write_file"]\nunsafe = true\n'
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    names = [n for n, _ in subagent_summaries(str(tmp_path))]
-    assert "docs" in names
+    assert ("docs", "write docs") in subagent_summaries(str(tmp_path))
 
 
-def test_fast_model_applied_to_builtins(tmp_path):
-    subs = load_subagents(str(tmp_path), fast_model="anthropic:claude-haiku-4-5")
-    by_name = {s["name"]: s for s in subs}
-    assert by_name["researcher"].get("model") == "anthropic:claude-haiku-4-5"
+def test_project_file_overrides_user_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    user, project = subagent_files(str(tmp_path))
+    assert user == tmp_path / ".config" / "luna" / "subagents.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text('[subagent.a]\ndescription = "user"\n')
+    _write_subagents(tmp_path, '[subagent.a]\ndescription = "project"\n')
+    assert load_subagents(str(tmp_path))["a"].description == "project"
 
 
 def test_bad_tool_name_rejected(tmp_path, monkeypatch):
@@ -102,5 +81,5 @@ def test_bad_tool_name_rejected(tmp_path, monkeypatch):
     cfg.mkdir(parents=True)
     (cfg / "subagents.toml").write_text('[subagent.x]\ndescription = "d"\ntools = ["frobnicate"]\n')
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    with pytest.raises(LunaConfigError):
+    with pytest.raises(LunaConfigError, match="unknown tools"):
         load_subagents(str(tmp_path))

@@ -48,12 +48,7 @@ def test_has_api_key_checks_a_custom_provider_via_the_given_registry(monkeypatch
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
     registry = {
         "mylocal": ProviderSpec(
-            "mylocal",
-            "openai",
-            "local-model",
-            "MYLOCAL_API_KEY",
-            "openai",
-            "http://localhost:8000/v1",
+            "mylocal", "openai_chat", "local-model", "MYLOCAL_API_KEY", "http://localhost:8000/v1"
         )
     }
     assert _has_api_key("mylocal", registry) is True
@@ -177,7 +172,7 @@ def test_json_output_is_one_parseable_object(tmp_path, fake_model, monkeypatch, 
     monkeypatch.setattr(
         cli,
         "build_agent",
-        lambda *a, **k: __import__("luna.core.agent", fromlist=["build_agent"]).build_agent(
+        lambda *a, **k: __import__("luna.core._legacy_agent", fromlist=["x"]).build_agent_legacy(
             *a,
             model=fake_model(AIMessage(content="hi")),
             **{kk: vv for kk, vv in k.items() if kk != "model"},

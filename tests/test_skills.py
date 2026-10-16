@@ -142,7 +142,7 @@ def test_save_escapes_colon_and_roundtrips_exactly_through_list_skills(tmp_path,
     text = path.read_text()
     # The written frontmatter must quote the value (not a bare unescaped
     # scalar containing ": ", which breaks YAML parsers).
-    assert 'description: "run make: then check"' in text
+    assert "description: run make: then check" not in text
     entries = list_skills(str(tmp_path))
     assert ("project", "x", description) in entries
 

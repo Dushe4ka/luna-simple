@@ -150,12 +150,7 @@ def test_provider_recognizes_a_custom_provider_from_config(monkeypatch):
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-test")
     custom = {
         "mylocal": ProviderSpec(
-            "mylocal",
-            "openai",
-            "local-model",
-            "MYLOCAL_API_KEY",
-            "openai",
-            "http://localhost:8000/v1",
+            "mylocal", "openai_chat", "local-model", "MYLOCAL_API_KEY", "http://localhost:8000/v1"
         )
     }
     ctx = _ctx(config=LunaConfig(provider="anthropic", custom_providers=custom))
@@ -319,7 +314,7 @@ def test_compact_failure_does_not_raise(tmp_path):
 def test_compact_replaces_history_in_place(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.core.agent import build_agent
+    from luna.core._legacy_agent import build_agent_legacy as build_agent
 
     agent = build_agent(
         LunaConfig(workdir=str(tmp_path)),
@@ -364,7 +359,7 @@ def test_add_drop_context_handlers(tmp_path):
 def test_compact_no_summary_is_graceful(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.core.agent import build_agent
+    from luna.core._legacy_agent import build_agent_legacy as build_agent
 
     agent = build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(AIMessage(content="")))
     ctx = _ctx(agent=agent, thread_id="t", workdir=str(tmp_path), index=None)
@@ -375,7 +370,7 @@ def test_compact_no_summary_is_graceful(tmp_path, fake_model):
 def test_compact_empty_summary_trims_the_instruction_turn(tmp_path, fake_model):
     from langchain_core.messages import AIMessage
 
-    from luna.core.agent import build_agent
+    from luna.core._legacy_agent import build_agent_legacy as build_agent
 
     # first turn produces no reusable AI text; the summary turn is empty too
     agent = build_agent(

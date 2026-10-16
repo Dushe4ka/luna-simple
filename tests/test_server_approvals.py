@@ -4,7 +4,7 @@ import httpx
 from langchain_core.messages import AIMessage
 
 from luna.config.config import LunaConfig
-from luna.core.agent import build_agent
+from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.server.app import create_app
 
 

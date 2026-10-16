@@ -10,7 +10,7 @@ from luna.config.credentials import (
     set_api_key,
     unset_api_key,
 )
-from luna.config.providers import LunaConfigError, ProviderSpec, build_model
+from luna.config.providers import LunaConfigError, ProviderSpec, build_provider
 
 
 def test_set_get_roundtrip():
@@ -55,12 +55,13 @@ def test_mask_key():
     assert mask_key("sk-ant-abcd1234") == "****1234"
 
 
-def test_build_model_reads_stored_key(monkeypatch):
+def test_build_provider_reads_stored_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     set_api_key("anthropic", "sk-ant-fromfile")
-    build_model("anthropic")  # must not raise about a missing key
+    provider, _ = build_provider("anthropic", None)  # must not raise about a missing key
+    assert provider.api_key == "sk-ant-fromfile"
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-fromfile"
-    # build_model() writes straight to os.environ (apply_stored_key), bypassing
+    # build_provider() writes straight to os.environ (apply_stored_key), bypassing
     # monkeypatch's own save/restore tracking, so it would otherwise leak this
     # fake key into the real process environment for every later test in the
     # run. A raw pop scrubs it without going through monkeypatch, which would
@@ -71,26 +72,22 @@ def test_build_model_reads_stored_key(monkeypatch):
 def test_env_var_still_wins(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fromenv")
     set_api_key("anthropic", "sk-ant-fromfile")
-    build_model("anthropic")
+    provider, _ = build_provider("anthropic", None)
+    assert provider.api_key == "sk-ant-fromenv"
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-fromenv"
 
 
 def test_error_hint_mentions_setup(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(LunaConfigError) as exc:
-        build_model("anthropic")
+        build_provider("anthropic", None)
     assert "luna setup" in str(exc.value)
 
 
 def test_set_api_key_accepts_a_provider_from_a_custom_registry():
     custom_registry = {
         "mylocal": ProviderSpec(
-            "mylocal",
-            "openai",
-            "local-model",
-            "MYLOCAL_API_KEY",
-            "openai",
-            "http://localhost:8000/v1",
+            "mylocal", "openai_chat", "local-model", "MYLOCAL_API_KEY", "http://localhost:8000/v1"
         )
     }
     set_api_key("mylocal", "sk-local-test", registry=custom_registry)
@@ -100,12 +97,7 @@ def test_set_api_key_accepts_a_provider_from_a_custom_registry():
 def test_set_api_key_still_rejects_unknown_provider_against_a_custom_registry():
     custom_registry = {
         "mylocal": ProviderSpec(
-            "mylocal",
-            "openai",
-            "local-model",
-            "MYLOCAL_API_KEY",
-            "openai",
-            "http://localhost:8000/v1",
+            "mylocal", "openai_chat", "local-model", "MYLOCAL_API_KEY", "http://localhost:8000/v1"
         )
     }
     with pytest.raises(LunaConfigError):
@@ -115,12 +107,7 @@ def test_set_api_key_still_rejects_unknown_provider_against_a_custom_registry():
 def test_unset_api_key_works_with_a_custom_registry():
     custom_registry = {
         "mylocal": ProviderSpec(
-            "mylocal",
-            "openai",
-            "local-model",
-            "MYLOCAL_API_KEY",
-            "openai",
-            "http://localhost:8000/v1",
+            "mylocal", "openai_chat", "local-model", "MYLOCAL_API_KEY", "http://localhost:8000/v1"
         )
     }
     set_api_key("mylocal", "sk-local-test", registry=custom_registry)

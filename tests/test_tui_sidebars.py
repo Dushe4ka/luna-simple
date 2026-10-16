@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 from textual.widgets import Input, Label
 
 from luna.config.config import LunaConfig
-from luna.core.agent import build_agent
+from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.core.persistence import SessionIndex
 from luna.server.app import create_app
 from luna.tui.app import LunaApp

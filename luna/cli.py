@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import json
 import os
@@ -20,7 +21,9 @@ from luna.config.credentials import (
     unset_api_key,
 )
 from luna.config.providers import LunaConfigError, merge_providers
-from luna.core.agent import build_agent
+
+# TEMPORARY: the REPL still drives the LangGraph agent (ported in Task 29).
+from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.core.session import run_once, run_repl
 from luna.extensions import mcp, skills
 from luna.extensions.initgen import init_prompt
@@ -245,6 +248,17 @@ def _split_ddash(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv, []
 
 
+async def _mcp_probe(name: str, spec: dict, console) -> list:
+    """Connect to one MCP server, list its tools, disconnect."""
+    from luna_core.mcp import MCPManager
+
+    manager = MCPManager({name: spec}, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+    try:
+        return await manager.start()
+    finally:
+        await manager.close()
+
+
 def _run_mcp(argv: list[str]) -> int:
     console = get_console()
     head, rest = _split_ddash(argv)
@@ -274,8 +288,7 @@ def _run_mcp(argv: list[str]) -> int:
     if args.cmd == "test":
         configured = mcp.load_mcp_config()
         spec = configured.get(args.name) or resolve_mcp(args.name)
-        conns = mcp.to_connections({args.name: spec})
-        tools = mcp.load_mcp_tools(conns, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        tools = asyncio.run(_mcp_probe(args.name, spec, console))
         if not tools:
             return 1
         console.print(f"{args.name}: {', '.join(t.name for t in tools)}")

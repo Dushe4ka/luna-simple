@@ -1,133 +1,200 @@
-"""Assemble the Luna deep agent from a resolved config.
-
-All ``deepagents`` / ``langgraph`` / ``langchain_mcp_adapters`` imports are
-confined to this module and ``luna.core.session``.
-"""
+"""Build the Luna agent on luna-core from a resolved LunaConfig."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
-from deepagents import create_deep_agent
-from deepagents.backends import LocalShellBackend
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.memory import InMemorySaver
+from luna_core import skills as core_skills
+from luna_core.background import BackgroundTasks
+from luna_core.compaction import Compactor
+from luna_core.context import build_system_prompt
+from luna_core.hooks import Hooks, load_command_hooks
+from luna_core.loop import Agent
+from luna_core.mcp import MCPManager
+from luna_core.memory import remember
+from luna_core.policy import DEFAULT_APPROVAL, Policy, Rules, append_rule
+from luna_core.providers.base import Provider
+from luna_core.roles import ModelRoles
+from luna_core.sandbox import DockerSandbox, LocalSandbox
+from luna_core.subagents import SubagentRunner, task_tool
+from luna_core.tools import builtin_tools
+from luna_core.tools.base import Tool
+from luna_core.tools.tasks import task_cancel_tool, task_status_tool
+from luna_core.workspace import Workspace
 
-from luna.config.config import LunaConfig
+from luna.config.config import LunaConfig, config_dir
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
-from luna.config.providers import build_model, merge_providers
-from luna.core.permissions import load_rules
-from luna.core.toolguard import tool_guard
+from luna.config.providers import ProviderSpec, build_provider, merge_providers
 from luna.extensions import lspnav
 from luna.extensions import mcp as mcp_mod
-from luna.extensions import skills as skills_mod
-from luna.extensions import subagents as subagents_mod
-from luna.extensions.extension_tools import EXTENSION_INTERRUPTS, EXTENSION_TOOLS
-from luna.turn.memory import memory_files
+from luna.extensions.extension_tools import EXTENSION_APPROVALS, EXTENSION_TOOLS
+from luna.extensions.subagents import load_subagents
 
-# Tools that mutate the workspace and therefore pause for approval.
-INTERRUPT_TOOLS: dict = {
-    "write_file": True,
-    "edit_file": True,
-    "delete": True,
-    "execute": {"allowed_decisions": ["approve", "edit", "reject"]},
-}
+__all__ = [
+    "EXTENSION_APPROVALS",
+    "AgentBundle",
+    "build_agent",
+    "describe_capabilities",
+    "skill_dirs",
+]
 
 
-def _extension_bits(
-    config: LunaConfig,
-    on_warn: Callable[[str], None],
-    guard: object | None = None,
-    backend: object | None = None,
-):
-    skill_dirs = [str(d) for d in skills_mod.existing_skill_dirs(config.workdir)]
-    servers = mcp_mod.load_mcp_config(config.workdir)
-    mcp_tools = (
-        mcp_mod.load_mcp_tools(mcp_mod.to_connections(servers), on_warn=on_warn) if servers else []
-    )
-    subs = subagents_mod.load_subagents(
-        config.workdir,
-        fast_model=config.fast_model,
-        guard=guard,
-        on_warn=on_warn,
-        backend=backend,
-    )
-    return skill_dirs, list(servers), mcp_tools, subs
+@dataclass
+class AgentBundle:
+    """An agent plus the resources that must be closed with it."""
+
+    agent: Agent
+    mcp: MCPManager | None = None
+
+    async def aclose(self) -> None:
+        """Stop MCP servers and the sandbox."""
+        if self.mcp is not None:
+            await self.mcp.close()
+        await self.agent.sandbox.close()
 
 
-def build_agent(
+def skill_dirs(workdir: str | Path) -> list[tuple[str, Path]]:
+    """User skills first, then the project's (a project skill overrides a user one)."""
+    return [("user", config_dir() / "skills"), ("project", Path(workdir) / ".luna" / "skills")]
+
+
+def _roles(config: LunaConfig, registry: dict[str, ProviderSpec]) -> ModelRoles:
+    """Model roles from config: ``"model"`` (same provider) or ``"provider:model"``."""
+    targets = dict(config.roles)
+    if config.fast_model:  # ``fast_model`` is the alias of ``roles["fast"]``
+        targets["fast"] = config.fast_model
+    values: dict = {}
+    for role, target in targets.items():
+        name, sep, rest = target.partition(":")
+        if sep and name in registry:
+            values[role] = build_provider(name, rest or None, registry=registry)
+        else:
+            values[role] = target
+    return ModelRoles(**values)
+
+
+def _merge_tools(tools: list[Tool], extra: list[Tool], on_warn: Callable[[str], None]) -> None:
+    """Append ``extra`` to ``tools``, skipping (with a warning) any name already taken."""
+    names = {t.name for t in tools}
+    for t in extra:
+        if t.name in names:
+            on_warn(f"MCP tool {t.name!r} skipped: a tool with that name already exists")
+            continue
+        names.add(t.name)
+        tools.append(t)
+
+
+async def build_agent(
     config: LunaConfig,
     *,
-    model: BaseChatModel | None = None,
-    checkpointer=None,
+    provider: Provider | None = None,
     on_warn: Callable[[str], None] = print,
-    session_id: str = "",
     plan_flag: Callable[[], bool] | None = None,
-):
-    """Build a compiled Luna deep agent.
+    hooks: Hooks | None = None,
+    background: BackgroundTasks | None = None,
+) -> AgentBundle:
+    """Build a Luna agent.
 
-    Args:
-        config: resolved runtime settings.
-        model: inject a model instance to bypass provider resolution (tests).
-        checkpointer: LangGraph checkpointer; defaults to an in-memory one.
-        on_warn: sink for non-fatal warnings (e.g. an MCP server that failed).
-        session_id: per-process id for the undo journal (``/diff`` and ``/undo``).
-        plan_flag: when it returns ``True``, mutating tool calls are refused
-            without rebuilding the agent (backs ``/plan``).
-
+    ``provider`` injects an adapter (tests pass a ``FakeProvider``); the
+    model then defaults to ``config.model or "fake-model"``. Project files
+    (``.luna/mcp.json``, ``subagents.toml``, ``[[hooks]]``) can run code, so
+    callers must only build agents for trusted workdirs.
     """
     workdir = Path(config.workdir).resolve()
+    workspace = Workspace(workdir)
+    registry = merge_providers(config.custom_providers)
+    if provider is None:
+        provider, model = build_provider(config.provider, config.model, registry=registry)
+    else:
+        model = config.model or "fake-model"
+    if config.ignored_extra:
+        on_warn(
+            "[agent] extra is no longer used (it held LangChain model kwargs); "
+            "use temperature, max_tokens and reasoning"
+        )
+    project_rules = workdir / ".luna" / "permissions.toml"
+    policy = Policy(
+        Rules.load([config_dir() / "config.toml", project_rules]),
+        approval_tools=DEFAULT_APPROVAL | EXTENSION_APPROVALS,
+        yolo=config.yolo,
+        plan_mode=plan_flag or False,
+        workspace=workspace,
+        persist_rule=lambda rule: append_rule(project_rules, rule),
+    )
+    tools: list[Tool] = [
+        *builtin_tools(),
+        remember,
+        core_skills.skill_tool(lambda: skill_dirs(workdir)),
+        core_skills.save_skill_tool(lambda project: skill_dirs(workdir)[1 if project else 0][1]),
+        *EXTENSION_TOOLS,
+    ]
     language = config.language or lspnav.detect_language(str(workdir))
-    lsp_tools: list = []
-    if language:
-        if lspnav.available():
-            lsp_tools = lspnav.make_tools(str(workdir), language)
-        else:
-            on_warn(
-                f"a '{language}' project was detected but the 'lsp' extra "
-                f"(multilspy) is not installed — goto_definition/find_references/"
-                f"hover/symbol_range are unavailable"
-            )
-    # virtual_mode maps the agent's "/" to workdir: real files, confined to the repo.
-    backend = LocalShellBackend(root_dir=str(workdir), virtual_mode=True, inherit_env=True)
-    mem = (["AGENTS.md"] if (workdir / "AGENTS.md").is_file() else []) + memory_files(str(workdir))
-    memory = mem or None
-    rules = load_rules(str(workdir))
-    # One guard instance for the main agent and every subagent: shared deny rules
-    # and a single per-session undo journal for all changes made this session.
-    guard = tool_guard(rules, str(workdir), session_id=session_id, plan=plan_flag)
-    skill_dirs, _servers, mcp_tools, subs = _extension_bits(
-        config, on_warn, guard=guard, backend=backend
+    if language and lspnav.available():
+        tools += lspnav.make_tools(str(workdir), language)
+    elif language:
+        on_warn(
+            f"a '{language}' project was detected but the 'lsp' extra (multilspy) is not "
+            "installed — goto_definition/find_references/hover/symbol_range are unavailable"
+        )
+    servers = mcp_mod.load_mcp_config(str(workdir))
+    manager = MCPManager(servers, on_warn=on_warn) if servers else None
+    try:
+        runner = SubagentRunner(
+            load_subagents(str(workdir), on_warn=on_warn), max_parallel=config.max_parallel
+        )
+        tools += [task_tool(runner), task_status_tool(), task_cancel_tool()]
+        roles = _roles(config, registry)
+        if manager is not None:
+            _merge_tools(tools, await manager.start(), on_warn)
+    except BaseException:
+        if manager is not None:
+            await manager.close()
+        raise
+    all_hooks = Hooks()
+    if hooks is not None:
+        all_hooks.extend(hooks)
+    all_hooks.extend(load_command_hooks(config.hooks, workdir))
+    if config.sandbox == "docker":
+        sandbox = DockerSandbox(workdir, image=config.sandbox_image, network=config.sandbox_network)
+    else:
+        sandbox = LocalSandbox()
+    summarize_provider, summarize_model = roles.get("summarize", provider, model)
+
+    def system(session) -> str:
+        return build_system_prompt(
+            LUNA_SYSTEM_PROMPT, root=workdir, skills=core_skills.discover(skill_dirs(workdir))
+        )
+
+    agent = Agent(
+        provider,
+        model,
+        tools=tools,
+        system=system,
+        policy=policy,
+        workspace=workspace,
+        sandbox=sandbox,
+        hooks=all_hooks,
+        max_tokens=config.max_tokens,
+        temperature=config.temperature,
+        reasoning=config.reasoning,
+        max_cost=config.max_cost,
+        compactor=Compactor(provider=summarize_provider, model=summarize_model),
+        services={"background": background or BackgroundTasks(config.max_parallel)},
+        model_overrides=config.pricing or None,
+        roles=roles,
     )
-    interrupt_on = None if config.yolo else {**INTERRUPT_TOOLS, **EXTENSION_INTERRUPTS}
-    return create_deep_agent(
-        model=model
-        or build_model(
-            config.provider,
-            config.model,
-            config.model_kwargs,
-            registry=merge_providers(config.custom_providers),
-        ),
-        system_prompt=LUNA_SYSTEM_PROMPT,
-        backend=backend,
-        memory=memory,
-        tools=[*EXTENSION_TOOLS, *mcp_tools, *lsp_tools],
-        skills=skill_dirs or None,
-        subagents=subs or None,
-        interrupt_on=interrupt_on,
-        middleware=[guard],
-        checkpointer=checkpointer or InMemorySaver(),
-        name="luna",
-    )
+    return AgentBundle(agent, manager)
 
 
-def describe_capabilities(config: LunaConfig) -> dict:
+async def describe_capabilities(config: LunaConfig) -> dict:
     """Summarise what ``build_agent`` would wire in right now (for ``/reload``)."""
-    _skill_dirs, servers, mcp_tools, subs = _extension_bits(config, lambda *_: None)
+    from luna.extensions import skills as skills_mod
+
+    workdir = str(Path(config.workdir).resolve())
     return {
-        "tools": len(EXTENSION_TOOLS) + len(mcp_tools),
-        "mcp": servers,
-        "skills": [name for _, name, _ in skills_mod.list_skills(config.workdir)],
-        "subagents": [s["name"] for s in subs],
+        "mcp": list(mcp_mod.load_mcp_config(workdir)),
+        "skills": [name for _, name, _ in skills_mod.list_skills(workdir)],
+        "subagents": list(load_subagents(workdir)),
     }

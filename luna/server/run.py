@@ -152,7 +152,9 @@ def make_agent_factory(*, model=None) -> Callable[[str], object]:
 
     def agent_factory(workdir: str):
         from luna.config.config import load_config
-        from luna.core.agent import build_agent
+
+        # TEMPORARY until Task 30 ports the server onto luna-core.
+        from luna.core._legacy_agent import build_agent_legacy as build_agent
         from luna.core.persistence import checkpointer
 
         resolved = str(Path(workdir).resolve())
@@ -186,7 +188,8 @@ def make_session_agent_factory(*, model=None) -> Callable[[object], object]:
             return shared[0]
 
     def build(runtime) -> object:
-        from luna.core.agent import build_agent
+        # TEMPORARY until Task 30 ports the server onto luna-core.
+        from luna.core._legacy_agent import build_agent_legacy as build_agent
 
         return build_agent(
             runtime.config(),

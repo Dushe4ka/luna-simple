@@ -1,11 +1,9 @@
 import json
 
-from luna.extensions.mcp import (
-    add_server,
-    load_mcp_config,
-    remove_server,
-    to_connections,
-)
+import pytest
+
+from luna.config.providers import LunaConfigError
+from luna.extensions.mcp import MCP_AVAILABLE, add_server, load_mcp_config, remove_server
 
 
 def _user_mcp(tmp_path, monkeypatch):
@@ -35,19 +33,6 @@ def test_env_substitution_and_merge(tmp_path, monkeypatch):
     assert cfg["gh"]["env"]["T"] == "tok123"
 
 
-def test_translation_shapes():
-    conns = to_connections(
-        {
-            "a": {"command": "npx", "args": ["x"]},
-            "b": {"type": "http", "url": "https://h/mcp"},
-            "c": {"type": "sse", "url": "https://h/sse"},
-        }
-    )
-    assert conns["a"]["transport"] == "stdio"
-    assert conns["b"]["transport"] == "streamable_http"
-    assert conns["c"]["transport"] == "sse"
-
-
 def test_add_remove_roundtrip(tmp_path, monkeypatch):
     _user_mcp(tmp_path, monkeypatch)
     add_server("fs", {"command": "npx", "args": ["-y", "srv-fs"]}, workdir=str(tmp_path))
@@ -63,10 +48,14 @@ def test_project_scope_wins(tmp_path, monkeypatch):
     assert load_mcp_config(str(tmp_path))["s"]["command"] == "p"
 
 
-def test_load_tools_without_adapter_returns_empty(monkeypatch):
-    import luna.extensions.mcp as m
+def test_mcp_available_is_a_flag():
+    assert isinstance(MCP_AVAILABLE, bool)
 
-    monkeypatch.setattr(m, "MCP_AVAILABLE", False)
-    warned = []
-    assert m.load_mcp_tools({"x": {}}, on_warn=warned.append) == []
-    assert warned and "luna-simple[mcp]" in warned[0]
+
+def test_invalid_json_is_a_config_error(tmp_path, monkeypatch):
+    f = _user_mcp(tmp_path, monkeypatch)
+    f.write_text("{not json")
+    with pytest.raises(LunaConfigError):
+        load_mcp_config(str(tmp_path))
+    with pytest.raises(LunaConfigError):
+        add_server("x", {"command": "y"}, workdir=str(tmp_path))

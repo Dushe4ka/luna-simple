@@ -41,3 +41,14 @@ def fake_model():
         return FakeToolCallingModel(responses=list(messages) or [AIMessage(content="ok")])
 
     return _make
+
+
+@pytest.fixture
+def fake_provider():
+    """Build a scripted provider: fake_provider(FakeProvider.text("hi"), FakeProvider.call(...))."""
+    from luna_core.providers.fake import FakeProvider
+
+    def _make(*script):
+        return FakeProvider(list(script) or [FakeProvider.text("ok")])
+
+    return _make

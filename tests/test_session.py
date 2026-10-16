@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 from rich.console import Console
 
 from luna.config.config import LunaConfig
-from luna.core.agent import build_agent
+from luna.core._legacy_agent import build_agent_legacy as build_agent
 from luna.core.session import SLASH_COMMANDS, collect_decisions, run_once
 
 
