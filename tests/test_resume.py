@@ -48,10 +48,14 @@ def test_resume_list_non_interactive_returns_none(tmp_path):
 
 
 def test_repl_continue_opens_the_resumed_session(tmp_path, monkeypatch):
+    from luna_core.messages import Message, message_to_dict
+
     import luna.cli as cli
     from luna.core.store import open_log
 
-    open_log().create(str(tmp_path.resolve()), title="earlier work", session_id="thread-abc")
+    log = open_log()
+    log.create(str(tmp_path.resolve()), title="earlier work", session_id="thread-abc")
+    log.append("thread-abc", "user", {"message": message_to_dict(Message.user("earlier work"))})
     seen: dict = {}
 
     class _Bundle:

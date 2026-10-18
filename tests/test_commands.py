@@ -234,15 +234,21 @@ async def test_sessions_lists_only_this_folders_top_level_sessions(make_ctx, tmp
     ctx = await make_ctx()
     log = ctx.log
     workdir = ctx.session.workdir
-    log.create(workdir, title="older task")
-    log.create(workdir, title="newer task")
-    log.create(workdir, title="a subagent run", parent_id=ctx.session.id)
-    log.create(str(tmp_path / "elsewhere"), title="other project")
+    for title, folder, parent in (
+        ("older task", workdir, None),
+        ("newer task", workdir, None),
+        ("a subagent run", workdir, ctx.session.id),
+        ("other project", str(tmp_path / "elsewhere"), None),
+    ):
+        sid = log.create(folder, title=title, parent_id=parent)
+        _turn(Session(log, sid, workdir=folder, undo=False), "t", title, "ok")
+    log.create(workdir, title="never used")  # an empty REPL start
     res = await dispatch("/sessions", ctx)
     assert res.handled is True
     out = _out(ctx)
     assert "older task" in out and "newer task" in out
     assert "subagent run" not in out and "other project" not in out
+    assert "never used" not in out and "(untitled)" not in out  # empty sessions are skipped
 
 
 async def test_resume_by_number_switches_session_and_prints_a_recap(make_ctx):
@@ -254,9 +260,10 @@ async def test_resume_by_number_switches_session_and_prints_a_recap(make_ctx):
     saved = store.load(old.id, workdir)
     saved.pinned.add("kept.py")
     store.save(saved)
-    Session.create(log, workdir, title="newer")
+    newer = Session.create(log, workdir, title="newer")
+    _turn(newer, "t1", "newer question", "newer answer")
     active = ctx.session.id
-    # newest first → [1] = newer, [2] = older (its turns bumped it), [3] = the active one
+    # newest first, empty sessions (the active one) skipped → [1] = newer, [2] = older
     await dispatch("/resume 2", ctx)
     out = _out(ctx)
     assert ctx.session.id == old.id != active
@@ -267,7 +274,7 @@ async def test_resume_by_number_switches_session_and_prints_a_recap(make_ctx):
 
 async def test_resume_no_arg_lists_and_hints(make_ctx):
     ctx = await make_ctx(input_fn=None)
-    Session.create(ctx.log, ctx.session.workdir, title="one")
+    _turn(Session.create(ctx.log, ctx.session.workdir, title="one"), "t1", "q", "a")
     before = ctx.session.id
     await dispatch("/resume", ctx)
     assert ctx.session.id == before
@@ -395,3 +402,23 @@ async def test_dispatch_goes_through_the_shared_registry(make_ctx, monkeypatch):
     monkeypatch.setattr(repl, "run_line", lambda line, env: seen.append(line) or real(line, env))
     await dispatch("/tools", await make_ctx())
     assert seen == ["/tools"]
+
+
+async def test_reload_rereads_custom_commands(make_ctx, tmp_path):
+    ctx = await make_ctx(user_commands={})
+    ctx.bundle = _Stub("first")
+    (tmp_path / ".luna" / "commands").mkdir(parents=True)
+    (tmp_path / ".luna" / "commands" / "greet.md").write_text("hi $ARGUMENTS\n")
+    await dispatch("/reload", ctx)
+    assert "greet" in ctx.user_commands
+    assert (await dispatch("/greet you", ctx)).prompt == "hi you"
+
+
+async def test_env_rebuild_on_the_loop_thread_raises_instead_of_deadlocking(make_ctx):
+    import asyncio
+
+    from luna.repl.commands import _ReplEnv
+
+    env = _ReplEnv(await make_ctx(), asyncio.get_running_loop())
+    with pytest.raises(RuntimeError, match="worker thread"):
+        env.rebuild()

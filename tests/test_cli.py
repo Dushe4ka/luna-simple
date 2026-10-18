@@ -223,9 +223,11 @@ def test_continue_reuses_the_latest_session_of_this_folder(tmp_path, monkeypatch
     monkeypatch.setattr(cli, "run_once", fake_once)
     log = open_log()
     workdir = str(tmp_path.resolve())
-    log.create(workdir, title="older", session_id="s-old")
-    log.create(workdir, title="newer", session_id="s-new")
-    log.create(workdir, title="child", parent_id="s-new", session_id="s-child")
+    from luna_core.messages import Message, message_to_dict
+
+    for sid, parent in (("s-old", None), ("s-new", None), ("s-child", "s-new")):
+        log.create(workdir, title=sid, session_id=sid, parent_id=parent)
+        log.append(sid, "user", {"message": message_to_dict(Message.user("hi"))})
     assert cli.main(["-c", "-p", "more", "--workdir", workdir, "--no-splash"]) == 0
     assert seen["session"].id == "s-new"  # the newest top-level one, never the child
     assert cli.main(["--resume", "nope", "-p", "x", "--workdir", workdir]) == 2
@@ -259,3 +261,29 @@ def test_a_failed_one_shot_turn_exits_1(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "build_agent", build)
     assert cli.main(["-p", "hi", "--workdir", str(tmp_path), "--no-splash"]) == 1
+
+
+def test_continue_skips_empty_sessions(tmp_path, monkeypatch):
+    from luna_core.messages import Message, message_to_dict
+    from luna_core.session import Session
+
+    import luna.cli as cli
+    from luna.core.store import open_log
+
+    seen = {}
+
+    async def fake_once(bundle, prompt, **kw):
+        seen["session"] = kw["session"]
+        return ""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(cli, "build_agent", _fake_build)
+    monkeypatch.setattr(cli, "run_once", fake_once)
+    log = open_log()
+    workdir = str(tmp_path.resolve())
+    real = Session.create(log, workdir, title="real work")
+    real.append("user", {"message": message_to_dict(Message.user("hi"))})
+    Session.create(log, workdir)  # an empty REPL start, newer
+    assert [r.thread_id for r in cli._LogIndex(log).list(workdir)] == [real.id]
+    assert cli.main(["-c", "-p", "more", "--workdir", workdir, "--no-splash"]) == 0
+    assert seen["session"].id == real.id

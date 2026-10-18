@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
-from luna_core.session import EventLog
+from luna_core.session import EventLog, SessionInfo
 
 from luna.config.config import config_dir
 
@@ -58,3 +58,17 @@ def make_title(text: str) -> str:
     """Collapse whitespace and truncate for the session list."""
     clean = _WS.sub(" ", text).strip()
     return clean if len(clean) <= _TITLE_MAX else clean[:_TITLE_MAX] + "…"
+
+
+def conversations(log: EventLog, workdir: str, limit: int = 100) -> list[SessionInfo]:
+    """Top-level sessions of ``workdir`` that hold a conversation, newest first.
+
+    Subagent/background/fork children and sessions nobody typed into (an
+    empty REPL start or ``/new``) are skipped, so ``-c`` and the pickers
+    land on real work.
+    """
+    out = []
+    for info in log.list(workdir, limit=limit):
+        if info.parent_id is None and any(r.type == "user" for r in log.records(info.id)):
+            out.append(info)
+    return out

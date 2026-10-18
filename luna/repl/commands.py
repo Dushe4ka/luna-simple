@@ -36,6 +36,8 @@ from luna.config.credentials import get_api_key
 from luna.config.providers import merge_providers
 from luna.config.usage import SessionUsage, TurnUsage
 from luna.core.session_state import SessionState, SessionStateStore
+from luna.core.store import conversations
+from luna.repl import usercmd
 from luna.repl.setup_wizard import choose_model
 from luna.turn.engine import Notice
 from luna.ui.interact import arrow_confirm, arrow_pick, in_thread
@@ -85,8 +87,8 @@ def _workdir(ctx: CommandContext) -> str:
 
 
 def _session_rows(ctx: CommandContext) -> list:
-    """Top-level sessions of this folder, newest first (no subagent/background children)."""
-    return [i for i in ctx.log.list(_workdir(ctx)) if i.parent_id is None]
+    """Conversations of this folder, newest first (no children, no empty sessions)."""
+    return conversations(ctx.log, _workdir(ctx))
 
 
 def _help(ctx: CommandContext, arg: str) -> None:
@@ -252,12 +254,17 @@ def _usage_of(session: Session) -> SessionUsage:
     return SessionUsage(turns=turns)
 
 
-async def _swap_bundle(ctx: CommandContext) -> None:
-    """Build a new bundle; on success it replaces (and closes) the old one."""
+async def swap_bundle(ctx: CommandContext) -> None:
+    """Build a new bundle; on success it replaces (and closes) the old one.
+
+    Custom ``.luna/commands/*.md`` are re-read too, like everything else a
+    reload picks up.
+    """
     new = await ctx.rebuild()
     old, ctx.bundle = ctx.bundle, new
     if old is not None and old is not new:
         await old.aclose()
+    ctx.user_commands = usercmd.load(_workdir(ctx))
 
 
 class _ReplEnv:
@@ -305,7 +312,13 @@ class _ReplEnv:
     def rebuild(self) -> None:
         if self._ctx.rebuild is None:
             raise RuntimeError("not available here")
-        asyncio.run_coroutine_threadsafe(_swap_bundle(self._ctx), self._loop).result()
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self._loop:  # waiting on our own loop would deadlock
+            raise RuntimeError("rebuild() must be called from a worker thread, not the event loop")
+        asyncio.run_coroutine_threadsafe(swap_bundle(self._ctx), self._loop).result()
 
     def _switch(self, provider, model) -> None:
         cfg = self._ctx.config

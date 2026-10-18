@@ -405,3 +405,41 @@ async def test_ctrl_c_cancels_the_turn_and_keeps_the_repl_alive(tmp_path):
     assert code == 0 and "turn cancelled" in text and "second answer" in text
     assert any(r.type == "cancelled" for r in session.records())
     assert signal.getsignal(signal.SIGINT) == before  # the REPL's handler is restored
+
+
+async def test_ctrl_c_at_an_approval_prompt_never_runs_the_tool(tmp_path):
+    """SIGINT while the prompt blocks: the late answer (Enter = approve) is discarded."""
+    import threading
+    import time
+
+    script = [
+        FakeProvider.call("write_file", {"file_path": "a.txt", "content": "x"}),
+        FakeProvider.text("unreachable"),
+    ]
+    cfg = _cfg(tmp_path)
+    bundle = await build_agent(cfg, provider=FakeProvider(script))
+    out = console(no_color=True)
+    log = open_log()
+    session = Session.create(log, str(Path(tmp_path).resolve()))
+    lines = iter(["write it", "/exit"])
+    printed_before_answer = threading.Event()
+
+    def input_fn(prompt):
+        if "approve" in prompt or "›" not in prompt:  # the approval prompt
+            os.kill(os.getpid(), signal.SIGINT)
+            for _ in range(100):  # the user presses Enter only after seeing the notice
+                if "turn cancelled" in out.file.getvalue():
+                    printed_before_answer.set()
+                    break
+                time.sleep(0.01)
+            return ""
+        return next(lines)
+
+    code = await asyncio.wait_for(
+        run_repl(bundle, console=out, input_fn=input_fn, log=log, session=session, config=cfg),
+        timeout=10,
+    )
+    await bundle.aclose()
+    assert code == 0 and printed_before_answer.is_set()
+    assert not (tmp_path / "a.txt").exists()  # the tool never ran
+    assert out.file.getvalue().count("turn cancelled") == 1

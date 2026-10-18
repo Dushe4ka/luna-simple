@@ -169,21 +169,34 @@ def make_hooks(state_fn: Callable[[], object], cfg_fn: Callable[[], object]) -> 
     """Build the format/diagnose/verify pipeline as luna-core hooks for one session.
 
     ``state_fn`` returns the current :class:`~luna.core.session_state.SessionState`
-    (``None`` disables the pipeline), ``cfg_fn`` the current config. A failed
+    (``None`` disables the pipeline), ``cfg_fn`` the current config. Only
+    events of that state's own session (``thread_id``) count, never a
+    subagent's. A failed
     verify on a turn's first ``turn_end`` blocks with the fix-up prompt (the
     core loop feeds it back); the next ``turn_end`` of that turn re-checks
     once and never asks again.
     """
     hooks = Hooks()
 
-    async def post_tool(payload: dict) -> HookResult | None:
+    def own_state(payload: dict):
+        """Return the session state, but only for the top-level session's own events.
+
+        Subagents run with the parent's hooks; their tool calls and turn ends
+        (another session id, maybe another worktree) must not touch it.
+        """
         state = state_fn()
+        if state is None or payload.get("session_id") != state.thread_id:
+            return None
+        return state
+
+    async def post_tool(payload: dict) -> HookResult | None:
+        state = own_state(payload)
         if state is not None and payload.get("ok") and payload.get("tool") in MUTATING:
             state.mutated = True
         return None
 
     async def turn_end(payload: dict) -> HookResult | None:
-        state, cfg = state_fn(), cfg_fn()
+        state, cfg = own_state(payload), cfg_fn()
         if state is None:
             return None
         turn_id = payload.get("turn_id")

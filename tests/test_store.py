@@ -33,3 +33,15 @@ def test_open_log_drops_the_legacy_langgraph_tables_once():
 def test_make_title_collapses_and_truncates():
     assert store.make_title("  hello   world\n") == "hello world"
     assert len(store.make_title("x" * 100)) == 73 and store.make_title("x" * 100).endswith("…")
+
+
+def test_conversations_skip_children_and_empty_sessions():
+    from luna_core.messages import Message, message_to_dict
+
+    log = store.open_log()
+    real = log.create("/repo", title="real")
+    log.append(real, "user", {"message": message_to_dict(Message.user("hi"))})
+    log.create("/repo", title="empty")
+    child = log.create("/repo", title="child", parent_id=real)
+    log.append(child, "user", {"message": message_to_dict(Message.user("sub"))})
+    assert [i.id for i in store.conversations(log, "/repo")] == [real]

@@ -35,7 +35,7 @@ from luna.core.store import make_title
 from luna.extensions.subagents import subagent_summaries
 from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
-from luna.repl.commands import CommandContext, dispatch
+from luna.repl.commands import CommandContext, dispatch, swap_bundle
 from luna.turn import engine
 from luna.ui.answer import AnswerRenderer
 from luna.ui.approve import prompt_decision
@@ -80,8 +80,8 @@ def _request_dict(request) -> dict:
 
 
 @contextlib.contextmanager
-def _ctrl_c_cancels(session: Session):
-    """While the block runs, Ctrl-C cancels the session's turn instead of killing the REPL.
+def _ctrl_c_cancels(on_sigint: Callable[[], None]):
+    """While the block runs, Ctrl-C calls ``on_sigint`` instead of killing the REPL.
 
     The previous SIGINT handler (e.g. ``asyncio.run``'s) is restored afterwards.
     """
@@ -89,7 +89,7 @@ def _ctrl_c_cancels(session: Session):
     previous = signal.getsignal(signal.SIGINT)
     installed = False
     try:
-        loop.add_signal_handler(signal.SIGINT, session.cancel_turn)
+        loop.add_signal_handler(signal.SIGINT, on_sigint)
         installed = True
     except (NotImplementedError, RuntimeError, ValueError):
         pass  # not the main thread, or a platform without loop signal handlers
@@ -117,9 +117,20 @@ async def render_turn(
     progress = ToolProgress(console)
     answer = AnswerRenderer(console)
     calls = _Calls()
+
+    def on_sigint() -> None:
+        session.cancel_turn()
+        if calls.prompt_open and not calls.interrupted:
+            # the prompt's thread keeps blocking on stdin: say so now, and drop
+            # whatever it answers later (the call must not run)
+            calls.interrupted = True
+            answer.stop()
+            console.print("\nturn cancelled", style=PALETTE["mauve"])
+            calls.announced = True
+
     open_turn(console)
     try:
-        with _ctrl_c_cancels(session):
+        with _ctrl_c_cancels(on_sigint):
             run = agent.run(session, text, images=images)
             async with contextlib.aclosing(run) as events:
                 async for event in events:
@@ -127,6 +138,7 @@ async def render_turn(
                     if isinstance(event, NeedsApproval):
                         progress.pause()
                         console.print()
+                        calls.prompt_open, calls.interrupted = True, False
                         try:
                             raw = await in_thread(
                                 prompt_decision,
@@ -137,9 +149,19 @@ async def render_turn(
                         except (EOFError, KeyboardInterrupt):
                             session.cancel_turn()  # nobody left to answer: stop the turn
                             continue
+                        finally:
+                            calls.prompt_open = False
+                        if calls.interrupted:
+                            continue  # Ctrl-C while asking: never deliver the late answer
                         # the id may be "<child session>:<call id>" — pass it through
-                        with contextlib.suppress(LunaCoreError):
+                        try:
                             session.decide(event.request.call_id, Decision.from_dict(raw))
+                        except LunaCoreError as exc:
+                            console.print(
+                                f"approval not delivered: {exc}",
+                                style=PALETTE["mauve"],
+                                markup=False,
+                            )
                         progress.resume()
     finally:
         answer.stop()
@@ -151,10 +173,13 @@ async def render_turn(
 
 @dataclass
 class _Calls:
-    """Tool calls seen this turn: which started, and the arguments approvals showed."""
+    """Per-turn render state: tool calls seen, approval prompt and Ctrl-C bookkeeping."""
 
     started: set[str] = field(default_factory=set)
     requested: dict[str, dict] = field(default_factory=dict)
+    prompt_open: bool = False  # an approval prompt is waiting for the user
+    interrupted: bool = False  # Ctrl-C arrived while it was open
+    announced: bool = False  # "turn cancelled" was already printed
 
 
 def _render_event(event, summary, parts, console, progress, answer, calls: _Calls) -> None:
@@ -199,7 +224,8 @@ def _render_event(event, summary, parts, console, progress, answer, calls: _Call
     elif isinstance(event, Cancelled):
         answer.stop()
         summary.cancelled = True
-        console.print("turn cancelled", style=PALETTE["mauve"])
+        if not calls.announced:
+            console.print("turn cancelled", style=PALETTE["mauve"])
 
 
 async def run_once(
@@ -276,13 +302,10 @@ def print_recap(session: Session, console: Console, keep: int = 6) -> None:
 async def _rebuild_bundle(ctx: CommandContext, console: Console) -> None:
     """Auto-reload after a turn: the new bundle replaces the old one only when it builds."""
     try:
-        new = await ctx.rebuild()
+        await swap_bundle(ctx)
     except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
         console.print(f"[{PALETTE['mauve']}]auto-reload failed: {exc}[/]")
         return
-    old, ctx.bundle = ctx.bundle, new
-    if old is not None and old is not new:
-        await old.aclose()
     console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")
 
 

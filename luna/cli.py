@@ -488,14 +488,16 @@ _ENDS = ("turn_done", "turn_error", "cancelled")
 
 
 class _LogIndex:
-    """The event log in the shape :func:`_resolve_resume` reads (top-level sessions only)."""
+    """The event log in the shape :func:`_resolve_resume` reads (real conversations only)."""
 
     def __init__(self, log) -> None:
         self._log = log
 
     def list(self, workdir: str) -> list[_LogRow]:
-        rows = self._log.list(str(Path(workdir).resolve()))
-        return [_LogRow(i.id, i.title or "(untitled)") for i in rows if i.parent_id is None]
+        from luna.core.store import conversations
+
+        rows = conversations(self._log, str(Path(workdir).resolve()))
+        return [_LogRow(i.id, i.title or "(untitled)") for i in rows]
 
     def latest_for(self, workdir: str) -> _LogRow | None:
         rows = self.list(workdir)

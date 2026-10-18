@@ -139,3 +139,19 @@ async def test_an_unexpected_turn_failure_does_not_kill_the_repl(tmp_path, monke
     monkeypatch.setattr(session, "render_turn", boom)
     code, out, _ = await _run(tmp_path, ["one", "two", "/exit"])
     assert code == 0 and out.count("turn failed: db is gone") == 2
+
+
+async def test_auto_reload_rereads_custom_commands(tmp_path, monkeypatch):
+    from luna.core import session
+
+    async def fake_render(*a, **k):
+        (tmp_path / ".luna" / "commands").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".luna" / "commands" / "fresh.md").write_text("fresh $ARGUMENTS\n")
+        return TurnSummary(reload=True)
+
+    async def rebuild():
+        return _Bundle(None, 1)
+
+    monkeypatch.setattr(session, "render_turn", fake_render)
+    code, out, _ = await _run(tmp_path, ["install it", "/commands", "/exit"], rebuild=rebuild)
+    assert code == 0 and "/fresh" in out
