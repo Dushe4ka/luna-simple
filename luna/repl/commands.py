@@ -226,8 +226,8 @@ async def _compact(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(notices=notices)
 
 
-#: Commands that act on the core session in the REPL (see the module docstring).
-_CORE: dict[str, Callable] = {
+#: Commands that act on the core session (REPL and server; see the module docstring).
+CORE_COMMANDS: dict[str, Callable] = {
     "/undo": _undo,
     "/redo": _redo,
     "/diff": _diff,
@@ -243,7 +243,7 @@ _STYLE = {
 }
 
 
-def _usage_of(session: Session) -> SessionUsage:
+def usage_of(session: Session) -> SessionUsage:
     """Per-turn usage from the event log, in the shape the shared ``/usage`` reads."""
     turns = []
     for rec in session.records():
@@ -285,7 +285,7 @@ class _ReplEnv:
         # what the not-yet-ported shared handlers still read
         self.thread_id = self.session_id = ctx.session.id
         self.index = None
-        self.usage = _usage_of(ctx.session)
+        self.usage = usage_of(ctx.session)
 
     @property
     def config(self) -> LunaConfig:
@@ -380,8 +380,8 @@ async def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
         if inspect.isawaitable(res):
             res = await res
         return res or DispatchResult()
-    if name in _CORE:
-        return await _render(await _CORE[name](ctx, arg), ctx)
+    if name in CORE_COMMANDS:
+        return await _render(await CORE_COMMANDS[name](ctx, arg), ctx)
     if name == "/model" and not arg and ctx.input_fn is None:
         # nobody to pick from a list: just say which model is in use (no network)
         ctx.console.print(

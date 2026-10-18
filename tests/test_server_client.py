@@ -1,60 +1,70 @@
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from luna_core.providers.fake import FakeProvider
 
-from luna.config.config import LunaConfig
-from luna.core._legacy_agent import build_agent_legacy as build_agent
-from luna.server.app import create_app
 from luna.server.client import ServerClient
+from tests.server_helpers import StreamingASGITransport, make_app
 
 
-@pytest.fixture
-def transport(tmp_path, monkeypatch, fake_model):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    calls = [AIMessage(content="hi back")]
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
-    agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
-    return httpx.ASGITransport(app=app), str(tmp_path)
+def _client(app) -> ServerClient:
+    client = ServerClient(base_url="http://test", token="t")
+    client._http = httpx.AsyncClient(transport=StreamingASGITransport(app), base_url="http://test")
+    return client
 
 
-async def test_client_send_message_yields_parsed_events(transport):
-    asgi_transport, workdir = transport
-    client = ServerClient(base_url="http://test", token="secret-token")
-    client._http = httpx.AsyncClient(transport=asgi_transport, base_url="http://test")
-    events = [e async for e in client.send_message("t1", "hi", workdir)]
-    assert {"event": "text_delta", "text": "hi back"} in events
-    assert events[-1] == {"event": "turn_done"}
+async def test_client_send_message_yields_parsed_events(tmp_path):
+    client = _client(make_app(default=[FakeProvider.text("hi back")]))
+    events = [e async for e in client.send_message("t1", "hi", str(tmp_path))]
+    assert any(e["event"] == "text_delta" and e["text"] == "hi back" for e in events)
+    assert events[-1]["event"] == "turn_done"
 
 
-async def test_client_get_history_returns_prior_turns(transport):
-    asgi_transport, workdir = transport
-    client = ServerClient(base_url="http://test", token="secret-token")
-    client._http = httpx.AsyncClient(transport=asgi_transport, base_url="http://test")
-    async for _ in client.send_message("t1", "hi", workdir):
+async def test_client_get_history_returns_prior_turns_in_the_tuis_roles(tmp_path):
+    client = _client(make_app(default=[FakeProvider.text("hi back")]))
+    async for _ in client.send_message("t1", "hi", str(tmp_path)):
         pass
-    messages = await client.get_history("t1", workdir)
-    assert {"role": "human", "content": "hi"} in messages
-    assert {"role": "ai", "content": "hi back"} in messages
+    messages = await client.get_history("t1", str(tmp_path))
+    assert messages == [{"role": "human", "content": "hi"}, {"role": "ai", "content": "hi back"}]
 
 
-async def test_client_create_and_list_sessions(transport):
-    asgi_transport, workdir = transport
-    client = ServerClient(base_url="http://test", token="secret-token")
-    client._http = httpx.AsyncClient(transport=asgi_transport, base_url="http://test")
-    thread_id = await client.create_session(workdir)
+async def test_client_create_and_list_sessions(tmp_path):
+    client = _client(make_app())
+    thread_id = await client.create_session(str(tmp_path))
     assert thread_id
-    async for _ in client.send_message(thread_id, "hi", workdir):
+    async for _ in client.send_message(thread_id, "hi", str(tmp_path)):
         pass
-    sessions = await client.list_sessions(workdir)
-    assert any(s["thread_id"] == thread_id for s in sessions)
+    sessions = await client.list_sessions(str(tmp_path))
+    assert [s["thread_id"] for s in sessions] == [thread_id]
+    assert sessions[0]["id"] == thread_id
+
+
+async def test_an_approval_ends_the_stream_and_approve_follows_the_same_run(tmp_path):
+    app = make_app(
+        default=[
+            FakeProvider.call("write_file", {"file_path": "a.txt", "content": "x"}, "w1"),
+            FakeProvider.text("written"),
+        ]
+    )
+    client = _client(app)
+    first = [e async for e in client.send_message("t1", "write", str(tmp_path))]
+    assert first[-1]["event"] == "approval_needed"
+    rest = [e async for e in client.approve("t1", {"type": "approve"}, str(tmp_path))]
+    assert [e["event"] for e in rest][-1] == "turn_done"
+    assert any(e["event"] == "tool_finished" and e["ok"] for e in rest)
+    assert (tmp_path / "a.txt").read_text() == "x"
+    assert not any(e["event"] in ("turn_started", "approval_needed") for e in rest)
+
+
+async def test_approve_without_a_pending_request_is_a_readable_error(tmp_path):
+    from luna.server.client import ServerError
+
+    client = _client(make_app())
+    with pytest.raises(ServerError, match="ожидающего подтверждения"):
+        [e async for e in client.approve("t1", {"type": "approve"}, str(tmp_path))]
 
 
 def _untrusted_client() -> ServerClient:
-    app = create_app(agent_factory=lambda _w: None, token="t", trust_check=lambda _w: False)
-    client = ServerClient(base_url="http://test", token="t")
-    client._http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
-    return client
+    return _client(make_app(trust_check=lambda _w: False))
 
 
 async def test_http_errors_become_a_readable_server_error(tmp_path):

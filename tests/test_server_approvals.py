@@ -1,192 +1,80 @@
-import json
+from luna_core.policy import Rules
+from luna_core.providers.fake import FakeProvider
 
-import httpx
-from langchain_core.messages import AIMessage
-
-from luna.config.config import LunaConfig
-from luna.core._legacy_agent import build_agent_legacy as build_agent
-from luna.server.app import create_app
+from tests.server_helpers import client, make_app, turn
 
 
-def _parse_sse(raw: str) -> list[dict]:
-    events = []
-    for block in raw.strip().split("\n\n"):
-        for line in block.splitlines():
-            if line.startswith("data:"):
-                events.append(json.loads(line[len("data:") :].strip()))
-    return events
+def _edit(old: str, new: str, call_id: str = "e1"):
+    args = {"file_path": "a.py", "old_string": old, "new_string": new}
+    return FakeProvider.call("edit_file", args, call_id)
 
 
-async def test_approve_with_always_persists_a_project_rule(tmp_path, monkeypatch, fake_model):
-    from luna.core import permissions
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+async def test_approve_with_always_persists_a_project_rule(tmp_path):
     (tmp_path / "a.py").write_text("original\n")
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "edit_file",
-                    "id": "1",
-                    "args": {
-                        "file_path": "/a.py",
-                        "old_string": "original",
-                        "new_string": "changed",
-                    },
-                }
-            ],
-        ),
-        AIMessage(content="done"),
-    ]
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
-    agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        headers={"Authorization": "Bearer secret-token"},
-    ) as c:
-        async with c.stream(
-            "POST",
-            "/sessions/t2/messages",
-            json={"content": "edit it", "workdir": str(tmp_path)},
-        ) as resp:
-            async for _ in resp.aiter_text():
-                pass
-        async with c.stream(
-            "POST",
-            "/sessions/t2/approve",
-            json={
-                "decision": {"type": "approve", "always": "edit_file:a.py"},
-                "workdir": str(tmp_path),
-            },
-        ) as resp:
-            events = _parse_sse("".join([chunk async for chunk in resp.aiter_text()]))
-    assert (tmp_path / "a.py").read_text() == "changed\n"
-    rules = permissions.load_rules(str(tmp_path))
-    assert "edit_file:a.py" in rules.allow
-    # the graph's resume payload must never see the "always" key
-    assert {"event": "turn_done"} == events[-1]
-
-
-async def test_always_allow_is_honoured_on_the_next_identical_action(
-    tmp_path, monkeypatch, fake_model
-):
-    """Regression (I1): the whole point of the modal's "Always allow" button.
-
-    The rule was persisted correctly, but nothing server-side consulted it on
-    a later interrupt, so the TUI re-prompted for the identical action on
-    every occurrence — a user-facing no-op. The second message below must go
-    straight through with no ``approval_needed`` event at all.
-    """
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    (tmp_path / "a.py").write_text("original\n")
-
-    def edit(old: str, new: str) -> AIMessage:
-        return AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "edit_file",
-                    "id": "1",
-                    "args": {"file_path": "/a.py", "old_string": old, "new_string": new},
-                }
-            ],
+    app = make_app(default=[_edit("original", "changed"), FakeProvider.text("done")])
+    async with client(app) as c:
+        _, events = await turn(
+            c, "t2", tmp_path, "edit it", decide={"type": "approve", "always": "edit_file:a.py"}
         )
+    assert (tmp_path / "a.py").read_text() == "changed\n"
+    rules = Rules.load([tmp_path / ".luna" / "permissions.toml"])
+    assert "edit_file:a.py" in rules.allow
+    assert events[-1]["event"] == "turn_done"
 
-    calls = [
-        edit("original", "changed"),
-        AIMessage(content="done"),
-        edit("changed", "again"),
-        AIMessage(content="done again"),
-    ]
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
-    agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        headers={"Authorization": "Bearer secret-token"},
-    ) as c:
-        async with c.stream(
-            "POST",
-            "/sessions/t9/messages",
-            json={"content": "edit it", "workdir": str(tmp_path)},
-        ) as resp:
-            first = _parse_sse("".join([chunk async for chunk in resp.aiter_text()]))
+
+async def test_always_allow_is_honoured_on_the_next_identical_action(tmp_path):
+    """The whole point of the modal's "Always allow" button: no second prompt."""
+    (tmp_path / "a.py").write_text("original\n")
+    app = make_app(
+        default=[
+            _edit("original", "changed"),
+            FakeProvider.text("done"),
+            _edit("changed", "again", "e2"),
+            FakeProvider.text("done again"),
+        ]
+    )
+    async with client(app) as c:
+        _, first = await turn(
+            c, "t9", tmp_path, "edit it", decide={"type": "approve", "always": "edit_file:a.py"}
+        )
         assert any(e["event"] == "approval_needed" for e in first)
-
-        async with c.stream(
-            "POST",
-            "/sessions/t9/approve",
-            json={
-                "decision": {"type": "approve", "always": "edit_file:a.py"},
-                "workdir": str(tmp_path),
-            },
-        ) as resp:
-            async for _ in resp.aiter_text():
-                pass
         assert (tmp_path / "a.py").read_text() == "changed\n"
-
-        # Same action again, in a new message: the persisted rule must apply.
-        async with c.stream(
-            "POST",
-            "/sessions/t9/messages",
-            json={"content": "edit it again", "workdir": str(tmp_path)},
-        ) as resp:
-            second = _parse_sse("".join([chunk async for chunk in resp.aiter_text()]))
-
+        _, second = await turn(c, "t9", tmp_path, "edit it again")
     assert not any(e["event"] == "approval_needed" for e in second)
-    assert {"event": "turn_done"} == second[-1]
+    assert second[-1]["event"] == "turn_done"
     assert (tmp_path / "a.py").read_text() == "again\n"
 
 
-async def test_approve_resumes_a_blocked_edit(tmp_path, monkeypatch, fake_model):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+async def test_approve_resumes_a_blocked_edit(tmp_path):
     (tmp_path / "a.py").write_text("original\n")
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "edit_file",
-                    "id": "1",
-                    "args": {
-                        "file_path": "/a.py",
-                        "old_string": "original",
-                        "new_string": "changed",
-                    },
-                }
-            ],
-        ),
-        AIMessage(content="done"),
-    ]
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=False)
-    agent = build_agent(cfg, model=fake_model(*calls))
-    app = create_app(agent_factory=lambda _workdir: agent, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        headers={"Authorization": "Bearer secret-token"},
-    ) as c:
-        async with c.stream(
-            "POST",
-            "/sessions/t1/messages",
-            json={"content": "edit it", "workdir": str(tmp_path)},
-        ) as resp:
-            first_pass = _parse_sse("".join([chunk async for chunk in resp.aiter_text()]))
-        assert any(e["event"] == "approval_needed" for e in first_pass)
+    app = make_app(default=[_edit("original", "changed"), FakeProvider.text("done")])
+    async with client(app) as c:
+        _, first = await turn(c, "t1", tmp_path, "edit it")
+        assert first[-1]["event"] == "approval_needed"
         assert (tmp_path / "a.py").read_text() == "original\n"
-
+        call_id = first[-1]["value"]["action_requests"][0]["call_id"]
+        ok = await c.post(
+            "/sessions/t1/approve", json={"call_id": call_id, "decision": {"type": "approve"}}
+        )
+        assert ok.json() == {"ok": True}
+        # the client left before deciding: it re-attaches to the same run
         async with c.stream(
-            "POST",
-            "/sessions/t1/approve",
-            json={"decision": {"type": "approve"}, "workdir": str(tmp_path)},
+            "GET", "/sessions/t1/events", params={"after": first[-1]["index"]}
         ) as resp:
-            second_pass = _parse_sse("".join([chunk async for chunk in resp.aiter_text()]))
+            rest = [line async for line in resp.aiter_lines() if line.startswith("data:")]
     assert (tmp_path / "a.py").read_text() == "changed\n"
-    assert {"event": "turn_done"} == second_pass[-1]
+    assert '"turn_done"' in rest[-1]
+
+
+async def test_reject_with_a_message_reaches_the_model(tmp_path):
+    (tmp_path / "a.py").write_text("original\n")
+    app = make_app(default=[_edit("original", "changed"), FakeProvider.text("ok, left it")])
+    async with client(app) as c:
+        _, events = await turn(
+            c, "t1", tmp_path, "edit it", decide={"type": "reject", "message": "not now"}
+        )
+        provider = (await app.state.runtimes.peek("t1").bundle()).agent.provider
+    assert events[-1]["event"] == "turn_done"
+    assert (tmp_path / "a.py").read_text() == "original\n"
+    results = provider.requests[-1].messages[-1].results
+    assert "not now" in results[0].text

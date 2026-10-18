@@ -1,34 +1,28 @@
 import time
 
 import httpx
-from langchain_core.messages import AIMessage
 from textual.widgets import Input, Label
 
-from luna.config.config import LunaConfig
-from luna.core._legacy_agent import build_agent_legacy as build_agent
-from luna.core.persistence import SessionIndex
-from luna.server.app import create_app
+from luna.core.store import open_log
 from luna.tui.app import LunaApp
 from luna.tui.chat import ChatPane
 from luna.tui.sidebar_sessions import SessionsSidebar, short_path
+from tests.server_helpers import StreamingASGITransport, make_app, seed
 
 
-def _app(tmp_path, fake_model, thread_id="t1") -> LunaApp:
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
-    agent = build_agent(cfg, model=fake_model(AIMessage(content="ok")))
-    transport = httpx.ASGITransport(app=create_app(agent_factory=lambda _w: agent, token="t"))
+def _app(tmp_path, thread_id="t1") -> LunaApp:
+    transport = StreamingASGITransport(make_app())
     app = LunaApp(base_url="http://test", token="t", workdir=str(tmp_path), thread_id=thread_id)
     app.client._http = httpx.AsyncClient(transport=transport, base_url="http://test")
     return app
 
 
 def _age(thread_id: str, seconds: float) -> None:
-    idx = SessionIndex()
-    idx._conn.execute(
-        "UPDATE luna_sessions SET updated = ? WHERE thread_id = ?",
-        (time.time() - seconds, thread_id),
-    )
-    idx._conn.commit()
+    log = open_log()
+    with log._lock:
+        log._conn.execute(
+            "UPDATE sessions SET updated = ? WHERE id = ?", (time.time() - seconds, thread_id)
+        )
 
 
 def test_short_path_uses_tilde_and_truncates_from_the_left(monkeypatch, tmp_path):
@@ -38,12 +32,11 @@ def test_short_path_uses_tilde_and_truncates_from_the_left(monkeypatch, tmp_path
     assert len(long) == 20 and long.startswith("…")
 
 
-async def test_sidebar_groups_sessions_and_skips_empty_groups(tmp_path, fake_model):
-    idx = SessionIndex()
-    idx.record("t1", str(tmp_path), "fix the bug in toolguard")
-    idx.record("t2", str(tmp_path), "old question")
+async def test_sidebar_groups_sessions_and_skips_empty_groups(tmp_path):
+    seed(open_log(), tmp_path, "fix the bug in toolguard", session_id="t1")
+    seed(open_log(), tmp_path, "old question", session_id="t2")
     _age("t2", 30 * 86400)
-    app = _app(tmp_path, fake_model)
+    app = _app(tmp_path)
     async with app.run_test():
         sidebar = app.query_one(SessionsSidebar)
         await sidebar.refresh_sessions()
@@ -54,11 +47,10 @@ async def test_sidebar_groups_sessions_and_skips_empty_groups(tmp_path, fake_mod
         assert titles == ["t1", "t2"]
 
 
-async def test_current_session_is_highlighted_and_follows_set_current(tmp_path, fake_model):
-    idx = SessionIndex()
-    idx.record("t1", str(tmp_path), "one")
-    idx.record("t2", str(tmp_path), "two")
-    app = _app(tmp_path, fake_model, thread_id="t1")
+async def test_current_session_is_highlighted_and_follows_set_current(tmp_path):
+    seed(open_log(), tmp_path, "one", session_id="t1")
+    seed(open_log(), tmp_path, "two", session_id="t2")
+    app = _app(tmp_path, thread_id="t1")
     async with app.run_test():
         sidebar = app.query_one(SessionsSidebar)
         await sidebar.refresh_sessions()
@@ -69,8 +61,8 @@ async def test_current_session_is_highlighted_and_follows_set_current(tmp_path, 
         assert current == ["t2"]
 
 
-async def test_ctrl_n_starts_a_fresh_session(tmp_path, fake_model):
-    app = _app(tmp_path, fake_model, thread_id="t1")
+async def test_ctrl_n_starts_a_fresh_session(tmp_path):
+    app = _app(tmp_path, thread_id="t1")
     async with app.run_test() as pilot:
         await pilot.press("ctrl+n")
         await pilot.pause()
@@ -79,8 +71,8 @@ async def test_ctrl_n_starts_a_fresh_session(tmp_path, fake_model):
         assert app.query_one(SessionsSidebar).current_thread_id == chat.thread_id
 
 
-async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path, fake_model):
-    app = _app(tmp_path, fake_model, thread_id="t-new")
+async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path):
+    app = _app(tmp_path, thread_id="t-new")
     async with app.run_test() as pilot:
         chat = app.query_one(ChatPane)
         chat.query_one("#chat-input", Input)
@@ -90,14 +82,12 @@ async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path, fake_mod
         assert "t-new" in ids
 
 
-async def test_header_shows_the_real_folder_name_for_a_relative_workdir(
-    tmp_path, monkeypatch, fake_model
-):
+async def test_header_shows_the_real_folder_name_for_a_relative_workdir(tmp_path, monkeypatch):
     """Regression: the CLI passes `workdir="."`, which rendered as "◐ ." / "."."""
     project = tmp_path / "Luna_pi"
     project.mkdir()
     monkeypatch.chdir(project)
-    app = _app(project, fake_model)
+    app = _app(project)
     app._workdir = "."
     async with app.run_test():
         sidebar = app.query_one(SessionsSidebar)
@@ -105,12 +95,13 @@ async def test_header_shows_the_real_folder_name_for_a_relative_workdir(
         assert name == "◐ Luna_pi"
 
 
-async def test_switching_sessions_is_blocked_while_a_turn_is_running(tmp_path, fake_model):
-    app = _app(tmp_path, fake_model, thread_id="t1")
+async def test_switching_sessions_is_blocked_while_a_turn_is_running(tmp_path):
+    app = _app(tmp_path, thread_id="t1")
     async with app.run_test() as pilot:
         chat = app.query_one(ChatPane)
         chat.busy = True
         await pilot.press("ctrl+n")
         await pilot.pause()
         assert chat.thread_id == "t1"
-        assert SessionIndex().list(str(tmp_path)) == []  # no orphan session created
+        # no orphan session created (t1 itself was opened by the history request)
+        assert [i.id for i in open_log().list(str(tmp_path.resolve()))] == ["t1"]

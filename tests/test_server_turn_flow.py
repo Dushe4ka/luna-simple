@@ -1,110 +1,73 @@
-import json
+import asyncio
 
-import httpx
-import pytest
-from langchain_core.messages import AIMessage
+from luna_core.providers.fake import FakeProvider
 
-from luna.server.app import create_app
-from luna.server.run import make_session_agent_factory
-
-
-def _parse(raw: str) -> list[dict]:
-    return [
-        json.loads(line[5:].strip())
-        for block in raw.strip().split("\n\n")
-        for line in block.splitlines()
-        if line.startswith("data:")
-    ]
+from tests.server_helpers import client, make_app, strip_index, turn
 
 
 def _write_call(path="a.txt", call_id="w1"):
-    return AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "id": call_id,
-                "name": "write_file",
-                "args": {"file_path": f"/{path}", "content": "x"},
-            }
-        ],
+    return FakeProvider.call("write_file", {"file_path": path, "content": "x"}, call_id)
+
+
+def _project(tmp_path, *, verify="", yolo=False):
+    (tmp_path / ".luna.toml").write_text(
+        "[agent]\n"
+        f'verify_command = "{verify}"\nformat_command = ""\ndiagnose_command = ""\n'
+        f"yolo = {'true' if yolo else 'false'}\n"
     )
 
 
-@pytest.fixture
-def client_for(tmp_path):
-    def make(*responses, verify="", yolo=False):
-        (tmp_path / ".luna.toml").write_text(
-            "[agent]\n"
-            f'verify_command = "{verify}"\nformat_command = ""\ndiagnose_command = ""\n'
-            f"yolo = {'true' if yolo else 'false'}\n"
-        )
-        from tests.conftest import FakeToolCallingModel
-
-        model = FakeToolCallingModel(responses=list(responses))
-        app = create_app(token="t", session_agent_factory=make_session_agent_factory(model=model))
-        return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://test",
-            headers={"Authorization": "Bearer t"},
-        ), app
-
-    return make
-
-
-async def _say(c, tmp_path, text, thread="t1"):
-    resp = await c.post(
-        f"/sessions/{thread}/messages", json={"content": text, "workdir": str(tmp_path)}
-    )
-    return resp, _parse(resp.text)
-
-
-async def test_two_sessions_in_one_workdir_are_isolated(client_for, tmp_path):
-    c, app = client_for(AIMessage(content="ok"))
-    async with c:
-        one = app.state.runtimes.get("t1", str(tmp_path))
+async def test_two_sessions_in_one_workdir_are_isolated(tmp_path):
+    app = make_app()
+    async with client(app):
+        one = await app.state.runtimes.get("t1", str(tmp_path))
         one.set_plan(True)
-        two = app.state.runtimes.get("t2", str(tmp_path))
+        two = await app.state.runtimes.get("t2", str(tmp_path))
         assert two.state.plan is False
-        assert one.agent is not two.agent
+        assert (await one.bundle()).agent is not (await two.bundle()).agent
+        assert (await one.bundle()).agent.policy.planning is True
+        assert (await two.bundle()).agent.policy.planning is False
 
 
-async def test_second_turn_while_streaming_is_409(client_for, tmp_path):
-    c, app = client_for(AIMessage(content="ok"))
-    async with c:
-        runtime = app.state.runtimes.get("t1", str(tmp_path))
+async def test_second_turn_while_the_session_lock_is_held_is_409(tmp_path):
+    app = make_app()
+    async with client(app) as c:
+        runtime = await app.state.runtimes.get("t1", str(tmp_path))
         await runtime.lock.acquire()
         try:
-            resp, _ = await _say(c, tmp_path, "hi")
+            resp, _ = await turn(c, "t1", tmp_path, "hi")
         finally:
             runtime.lock.release()
     assert resp.status_code == 409 and resp.json() == {"error": "session_busy"}
 
 
-async def test_new_message_after_abandoned_approval_is_accepted(client_for, tmp_path):
-    c, app = client_for(AIMessage(content="ok"))
-    async with c:
-        runtime = app.state.runtimes.get("t1", str(tmp_path))
-        runtime.phase = "turn"  # paused on an approval nobody will answer
-        resp, events = await _say(c, tmp_path, "hi")
-    assert resp.status_code == 200 and events[-1] == {"event": "turn_done"}
+async def test_abandoned_approval_keeps_the_session_busy_until_cancelled(tmp_path):
+    """The client left while a turn waits for approval: it is still that turn."""
+    app = make_app(default=[_write_call(), FakeProvider.text("done"), FakeProvider.text("ok")])
+    async with client(app) as c:
+        _, first = await turn(c, "t1", tmp_path, "write")
+        assert first[-1]["event"] == "approval_needed"
+        busy, _ = await turn(c, "t1", tmp_path, "hi")
+        assert busy.status_code == 409
+        assert (await c.post("/sessions/t1/cancel")).json() == {"cancelled": True}
+        await app.state.manager.wait("t1")
+        resp, events = await turn(c, "t1", tmp_path, "hi")
+    assert resp.status_code == 200 and events[-1]["event"] == "turn_done"
+    assert not (tmp_path / "a.txt").exists()
 
 
-async def test_mutating_turn_with_failing_verify_streams_notices_and_fixup(
-    client_for, tmp_path, monkeypatch
-):
-    from luna.turn import _legacy_engine as engine
+async def test_mutating_turn_with_failing_verify_streams_notices_and_fixup(tmp_path, monkeypatch):
+    from luna.turn import engine
 
     results = iter([(False, "boom"), (True, "")])
     monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: next(results))
-    c, _ = client_for(
-        _write_call(),
-        AIMessage(content="wrote it"),
-        AIMessage(content="fixed it"),
-        verify="make check",
-        yolo=True,  # no approval pause: this test is about the post-turn pipeline
+    _project(tmp_path, verify="make check", yolo=True)
+    app = make_app(
+        default=[_write_call(), FakeProvider.text("wrote it"), FakeProvider.text("fixed it")]
     )
-    async with c:
-        _, events = await _say(c, tmp_path, "write a file")
+    async with client(app) as c:
+        _, events = await turn(c, "t1", tmp_path, "write a file")
+    events = strip_index(events)
     notices = [e for e in events if e["event"] == "notice"]
     assert {"event": "notice", "level": "warn", "text": "verify failed\nboom"} in notices
     assert {"event": "notice", "level": "ok", "text": "✓ verify ok"} in notices
@@ -113,79 +76,112 @@ async def test_mutating_turn_with_failing_verify_streams_notices_and_fixup(
     assert [e["event"] for e in events].count("turn_done") == 1
 
 
-async def test_approve_after_runtime_loss_still_finishes(client_for, tmp_path):
-    c, app = client_for(_write_call(), AIMessage(content="done"))
-    async with c:
-        # make the write_file call require approval (no yolo, no allow rule)
-        _, first = await _say(c, tmp_path, "write")
-        assert first[-1]["event"] == "approval_needed"
-        app.state.runtimes._items.clear()  # server restart / eviction
-        resp = await c.post(
-            "/sessions/t1/approve",
-            json={"decision": {"type": "approve"}, "workdir": str(tmp_path)},
-        )
-    assert _parse(resp.text)[-1] == {"event": "turn_done"}
-
-
-async def test_pinned_files_reach_the_model(client_for, tmp_path):
+async def test_pinned_files_reach_the_model(tmp_path):
     (tmp_path / "keep.md").write_text("PINNED-CONTENT\n")
-    c, app = client_for(AIMessage(content="ok"))
-    async with c:
-        runtime = app.state.runtimes.get("t1", str(tmp_path))
+    app = make_app()
+    async with client(app) as c:
+        runtime = await app.state.runtimes.get("t1", str(tmp_path))
         runtime.state.pinned.add("keep.md")
-        await _say(c, tmp_path, "hi")
-        messages = runtime.agent.get_state({"configurable": {"thread_id": "t1"}}).values["messages"]
-    assert "PINNED-CONTENT" in messages[0].content
+        await turn(c, "t1", tmp_path, "hi")
+        provider = (await runtime.bundle()).agent.provider
+    assert "PINNED-CONTENT" in provider.requests[0].messages[-1].text
 
 
-async def test_turn_is_prepared_only_while_holding_the_session_lock(
-    client_for, tmp_path, monkeypatch
-):
+async def test_turn_is_prepared_only_while_holding_the_session_lock(tmp_path, monkeypatch):
     """No TOCTOU: two racing messages must never prepare concurrently."""
-    from luna.turn import _legacy_engine as engine
+    from luna.turn import engine
 
-    c, app = client_for(AIMessage(content="ok"))
+    app = make_app()
     seen = []
     real = engine.prepare_turn
 
     def spy(state, *a, **k):
-        seen.append(app.state.runtimes.get("t1", str(tmp_path)).lock.locked())
+        seen.append(app.state.runtimes.peek("t1").lock.locked())
         return real(state, *a, **k)
 
     monkeypatch.setattr(engine, "prepare_turn", spy)
-    async with c:
-        await _say(c, tmp_path, "hi")
+    async with client(app) as c:
+        await turn(c, "t1", tmp_path, "hi")
     assert seen == [True]
 
 
-async def test_a_failing_prepare_reports_a_readable_error(client_for, tmp_path, monkeypatch):
-    from luna.turn import _legacy_engine as engine
+async def test_racing_messages_get_one_turn_and_one_409(tmp_path):
+    app = make_app()
+    async with client(app) as c:
+        results = await asyncio.gather(
+            turn(c, "t1", tmp_path, "one"), turn(c, "t1", tmp_path, "two")
+        )
+    assert sorted(resp.status_code for resp, _ in results) == [200, 409]
+
+
+async def test_a_failing_prepare_reports_a_readable_error(tmp_path, monkeypatch):
+    from luna.turn import engine
 
     def boom(*a, **k):
         raise ValueError("bad .luna.toml")
 
     monkeypatch.setattr(engine, "prepare_turn", boom)
-    c, app = client_for(AIMessage(content="ok"))
-    async with c:
-        _, events = await _say(c, tmp_path, "hi")
-        runtime = app.state.runtimes.get("t1", str(tmp_path))
-    assert events[-1] == {
-        "event": "error",
-        "message": "Не удалось подготовить ход: ValueError: bad .luna.toml",
-    }
-    assert runtime.phase == "idle" and not runtime.lock.locked()
+    app = make_app()
+    async with client(app) as c:
+        _, events = await turn(c, "t1", tmp_path, "hi")
+        runtime = app.state.runtimes.peek("t1")
+    assert events == [
+        {
+            "event": "error",
+            "message": "Не удалось подготовить ход: ValueError: bad .luna.toml",
+            "kind": "error",
+        }
+    ]
+    assert not runtime.lock.locked() and not app.state.runtimes.running("t1")
 
 
-async def test_client_disconnect_mid_turn_returns_the_session_to_idle(client_for, tmp_path):
-    """Closing the TUI mid-stream cancels the SSE generator (BaseException)."""
-    from luna.core.persistence import SessionIndex
-    from luna.server.turns import stream_turn
+async def test_client_disconnect_mid_turn_lets_the_turn_finish(tmp_path):
+    """Closing the TUI mid-stream only unsubscribes; the session ends idle."""
+    _project(tmp_path, yolo=True)
+    app = make_app(
+        default=[
+            FakeProvider.call("execute", {"command": "sleep 0.2"}, "c1"),
+            FakeProvider.text("a"),
+        ]
+    )
+    async with client(app) as c:
+        async with c.stream(
+            "POST", "/sessions/t1/messages", json={"workdir": str(tmp_path), "content": "hi"}
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("data:"):
+                    break  # first event arrives, then the client goes away
+        info = await app.state.manager.wait("t1")
+        runtime = app.state.runtimes.peek("t1")
+    assert info.status == "done"
+    assert not runtime.lock.locked() and not runtime.session.busy
 
-    _, app = client_for(AIMessage(content="a long answer"))
-    runtime = app.state.runtimes.get("t1", str(tmp_path))
-    runtime.phase = "turn"
-    payload = {"messages": [{"role": "user", "content": "hi"}]}
-    gen = stream_turn(runtime, payload, SessionIndex())
-    await gen.__anext__()  # first SSE event arrives, then the client goes away
-    await gen.aclose()
-    assert runtime.phase == "idle" and not runtime.lock.locked()
+
+async def test_reload_after_flag_on_a_message_rebuilds_after_the_turn(tmp_path):
+    built = []
+    app = make_app(built=built)
+    async with client(app) as c:
+        _, events = await turn(c, "t1", tmp_path, "WRITE AGENTS.md", reload_after=True)
+        await asyncio.gather(*app.state.finishing)
+    assert events[-1]["event"] == "turn_done"
+    assert built == ["t1", "t1"]
+
+
+async def test_reload_requested_by_a_tool_rebuilds_after_the_turn(tmp_path):
+    skill = tmp_path / ".luna" / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\nbody\n")
+    _project(tmp_path, yolo=True)
+    built = []
+    app = make_app(
+        default=[
+            FakeProvider.call("manage_skills", {"action": "remove", "name": "demo"}, "m1"),
+            FakeProvider.text("removed"),
+        ],
+        built=built,
+    )
+    async with client(app) as c:
+        _, events = await turn(c, "t1", tmp_path, "drop the demo skill")
+        await asyncio.gather(*app.state.finishing)
+    assert any(e["event"] == "reload_requested" for e in events)
+    assert not skill.exists() and built == ["t1", "t1"]

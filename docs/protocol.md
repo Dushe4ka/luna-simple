@@ -66,6 +66,12 @@ Any endpoint can fail with a `4xx`/`5xx` status and a JSON body:
 {"error": "no session s9"}
 ```
 
+Machine-readable codes the app server uses: `unauthorized` (401),
+`workdir_required` / `workdir_not_absolute` / `workdir_mismatch` (400 — the
+session belongs to another project) / `workdir_not_trusted` (403),
+`session_busy` (409 — a turn or a mutating command is running),
+`client_command` (400 — a command the client handles itself).
+
 `LunaClient` raises `luna_core.client.ServerError` with that message (or the
 raw response text/reason when the body is not JSON) for every non-2xx
 response, including transport failures (`ServerError` wraps
@@ -83,14 +89,14 @@ an absolute, trusted project path.
 | GET | `/sessions` | `?workdir=` | `{"sessions": [{"id", "title", "created", "updated", "group", "relative_time", "running", "background"}]}` |
 | POST | `/sessions` | `{"workdir"}` | `{"id"}` |
 | DELETE | `/sessions/{id}` | — | `{"deleted": bool}` |
-| GET | `/sessions/{id}/messages` | `?workdir=` | `{"messages": [{"role": "user" \| "assistant", "content"} \| {"role": "tool", "name", "args_preview", "ok", "detail"}]}` |
+| GET | `/sessions/{id}/messages` | `?workdir=` | `{"messages": [{"role": "user" \| "assistant", "content"} \| {"role": "tool", "name", "args_preview", "ok", "detail"} \| {"role": "notice", "level", "text"}]}` |
 | POST | `/sessions/{id}/messages` | `{"workdir", "content", "images"?: [{"media_type", "data"}], "reload_after"?}` | SSE of turn events until `turn_done` / `error` / `cancelled` |
 | POST | `/sessions/{id}/approve` | `{"call_id", "decision"}` | `{"ok": true}` (the open turn stream continues) |
 | POST | `/sessions/{id}/cancel` | — | `{"cancelled": bool}` |
 | GET | `/sessions/{id}/state` | `?workdir=` | status-bar state |
 | GET | `/commands` | `?workdir=` | `{"commands": [...]}` |
 | POST | `/sessions/{id}/command` | `{"workdir", "line"}` | command result JSON |
-| POST | `/sessions/{id}/background` | `{"workdir", "content"}` | run info |
+| POST | `/sessions/{id}/background` | `{"workdir", "content", "images"?, "reload_after"?}` | run info |
 | GET | `/agents` | — | `{"runs": [...], "tasks": [...]}` |
 | GET | `/sessions/{id}/events` | `?after=` | SSE: buffered then live events of a background run |
 
@@ -106,15 +112,21 @@ sent. No body.
 
 ### `GET /sessions`
 
-Lists sessions of one project, most recently updated first. `group` buckets
-sessions for UI headers (e.g. `"today"`, `"earlier"`); `relative_time` is a
-pre-rendered string (`"2m ago"`); `running` is true while a turn is in
-flight; `background` is true for a detached run (see `/agents`).
+Lists the conversations of one project, most recently updated first:
+top-level sessions that hold at least one user message (subagent,
+background-task and fork children, and sessions nobody typed into yet, are
+not listed). `group` buckets sessions by local calendar day for UI headers
+(`"today"`, `"yesterday"`, `"week"`, `"older"`); `relative_time` is a
+pre-rendered label matching the group (`"сейчас"`, `"11м"`, `"3ч"` today,
+`"14:02"` yesterday, `"вт"` this week, `"25 сен"` earlier); `running` is
+true while a turn is in flight (or waits for an approval); `background` is
+true when it runs with no client attached (see `/agents`). An untitled
+session shows `"(new session)"`.
 
 ```json
 → GET /sessions?workdir=/repo
 ← 200 {"sessions": [{"id": "s1", "title": "fix the build", "created": 1760000000.0,
-                      "updated": 1760000120.0, "group": "today", "relative_time": "2m ago",
+                      "updated": 1760000120.0, "group": "today", "relative_time": "2м",
                       "running": false, "background": false}]}
 ```
 
@@ -132,7 +144,8 @@ arbitrary string, not a UUID.
 
 Deletes a session and its event log. Deleting an id that does not exist (or
 already ran) returns `{"deleted": false}`, not a `404` — delete is
-idempotent.
+idempotent. A session whose turn is running is refused with `409
+session_busy` (cancel it first).
 
 ```json
 → DELETE /sessions/s1
@@ -143,7 +156,13 @@ idempotent.
 
 The rendered transcript, oldest first — not the raw event log. A `"tool"`
 entry summarises one finished tool call (`args_preview` is the same
-truncated, human-readable string a `tool_started` event carries).
+truncated, human-readable string a `tool_started` event carries; `detail`
+is the first line of the result). A `"notice"` entry is a run's completion
+notice, logged when the run finished with no client attached (a background
+run, or a turn whose client disconnected), so a client reopening the session
+sees it after the finished transcript. The whole conversation is shown —
+compaction only shortens the model's context — except undone turns. An id
+the server has never seen is created (empty) in that `workdir`.
 
 ```json
 → GET /sessions/s1/messages?workdir=/repo
@@ -165,12 +184,25 @@ decision (see "Approval flow"). `images` is a list of
 `reload_after` asks the agent to be rebuilt once the turn finishes (used
 after a config or MCP-server change).
 
+The turn runs in the server, not in the request: the stream only
+*follows* it. A client that disconnects merely unsubscribes — the turn
+finishes, is logged, and can be replayed with `GET /sessions/{id}/events`.
+Each event of the run carries an extra `"index"` (see `/events`), so a
+dropped client can resume from the last one it saw. Out-of-turn events of
+the session (`background_done` of a `task(background=true)`, an
+`approval_needed` asked by a background subagent) are interleaved as they
+happen and carry no `index`. A second message while a turn runs is `409
+session_busy`; a turn that cannot be prepared (e.g. a broken project
+config) streams a single `error` event.
+
 ```json
 → POST /sessions/s1/messages {"workdir": "/repo", "content": "look", "images": [], "reload_after": false}
 ← 200 text/event-stream
-data: {"event": "text_delta", "text": "Looking..."}
+data: {"event": "turn_started", "turn_id": "t1", "index": 0}
 
-data: {"event": "turn_done", "usage": {"input": 120, "output": 8, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "cost": 0.0003, "stop_reason": "end"}
+data: {"event": "text_delta", "text": "Looking...", "index": 1}
+
+data: {"event": "turn_done", "usage": {"input": 120, "output": 8, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "cost": 0.0003, "stop_reason": "end", "index": 2}
 
 ```
 
@@ -181,7 +213,9 @@ carried (see "Approval flow" for its format when it names a subagent's
 call). `decision` is the wire form of a `luna_core.policy.Decision` (see
 "Decision format"). The call itself only acknowledges receipt — the
 decision's effect (more events, or the turn finishing) arrives on the
-still-open `/messages` stream.
+still-open `/messages` stream (or on `/events`, for a client that
+re-attached). `404` when the session is not loaded or nothing is pending
+for that `call_id`; `400` for a malformed decision.
 
 ```json
 → POST /sessions/s1/approve {"call_id": "c2", "decision": {"type": "approve"}}
@@ -201,13 +235,16 @@ running (not an error) — the stream, if one is open, will still end with a
 
 ### `GET /sessions/{id}/state`
 
-Status-bar state: current provider/model, plan-mode flag, pinned files and
-a pre-rendered usage summary line.
+Status-bar state: current provider/model, plan-mode flag, pinned files, a
+pre-rendered usage summary line (thousands of tokens, then the cost when one
+is known; `""` before the first model call), how many turns `/undo` can
+revert, and whether a turn is running.
 
 ```json
 → GET /sessions/s1/state?workdir=/repo
 ← 200 {"provider": "anthropic", "model": "claude-opus-4", "plan": false,
-        "pinned": ["src/main.py"], "usage_summary": "120 in · 8 out · $0.0003"}
+        "pinned": ["src/main.py"], "usage_summary": "12k in · 3k out · $0.04",
+        "undo_depth": 1, "running": false}
 ```
 
 ### `GET /commands`
@@ -230,17 +267,22 @@ directly. The shape mirrors `luna.commands.base.CommandResult.to_json()`:
 `confirm` (yes/no), an optional `prompt` (re-submit as a message) and
 `effects` (side effects the client should reflect, e.g. a plan-mode flip).
 
+Commands of kind `"mutate"` are refused with `409 session_busy` while a
+turn runs; `"read"` commands answer mid-turn.
+
 ```json
 → POST /sessions/s1/command {"workdir": "/repo", "line": "/plan on"}
-← 200 {"text": "plan mode on", "notices": [], "choice": null, "confirm": null,
-        "prompt": null, "effects": {"plan": true}}
+← 200 {"text": "", "notices": [{"level": "info", "text": "plan mode: on"}], "choice": null,
+        "confirm": null, "prompt": null, "effects": {"plan": true}}
 ```
 
 ### `POST /sessions/{id}/background`
 
 Starts a turn detached from the calling client: the session keeps running
 after this request returns, and any client can attach to it later with
-`GET /sessions/{id}/events`. The response is run info, not a stream.
+`GET /sessions/{id}/events`. The response is run info, not a stream. The
+body takes the same optional `images` / `reload_after` as `/messages`; a
+session that already runs is `409 session_busy`.
 
 ```json
 → POST /sessions/s1/background {"workdir": "/repo", "content": "run the full test suite"}
@@ -273,7 +315,12 @@ start") is the last `index` the client already has. The response is
 immediately, followed by live events as they happen, until the run ends or
 the connection is dropped. Each event carries an extra `"index"` field (a
 monotonic counter per session, across runs) so a client can resume with a
-later `after` if the connection drops.
+later `after` if the connection drops. After the replay come the session's
+out-of-turn approvals still waiting for a decision (background subagents;
+no `index`), then — while the run is live — new events, until its final
+one. For a session that is not running the response ends after the replay.
+A run that died without a final event (an unexpected server-side
+exception) is closed with a synthetic `error` (or `cancelled`) event.
 
 ```json
 → GET /sessions/s1/events?after=2
@@ -299,8 +346,8 @@ prefix and surrounding whitespace, and `json.loads`s the rest; blank lines
 are frame separators and are otherwise ignored. This is exactly what
 `LunaClient._stream` does, and is deliberately simpler than full SSE (no
 reconnection ids, no named events) because reconnection is handled instead
-by `GET /sessions/{id}/events?after=` for background runs, and a dropped
-`/messages` stream is not resumed — the client re-sends if needed.
+by `GET /sessions/{id}/events?after=`, which replays any run — a dropped
+`/messages` stream is resumed there, never by re-sending the message.
 
 ## Event catalogue
 
@@ -505,11 +552,10 @@ A turn can pause more than once; a turn can also have several pending
 requests at once (batched tool calls) — `action_requests` is a list for
 exactly that reason, though today's agent asks one at a time in practice.
 If the client's connection to the `/messages` stream drops while a
-decision is pending, the decision can still be submitted (the session
-holds it) but the client will not see what happened next — there is no
-replay for a plain turn stream in v1 (background runs, started with
-`/background`, are built for exactly this: attach and replay with
-`/sessions/{id}/events`).
+decision is pending, the turn keeps waiting: the decision can still be
+submitted (the session holds it), and the client re-attaches with
+`GET /sessions/{id}/events?after=<last index seen>` to see what happens
+next — every turn runs in the server, streamed or not.
 
 ## Cancellation
 

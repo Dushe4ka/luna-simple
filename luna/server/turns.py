@@ -1,308 +1,364 @@
-"""Turn endpoint: runs iter_turn and streams its events as SSE."""
+"""Turn endpoints: start runs in the AgentManager and stream their events.
+
+Every turn — a streamed message or a background run — is started with
+``AgentManager.start``. ``POST /messages`` only *subscribes* to that run, so a
+client that disconnects (TUI closed, network drop) just unsubscribes: the
+turn finishes, is logged, and its completion runs ``after_turn``.
+Approvals are a plain JSON call (``POST /approve``); the open stream continues.
+"""
 
 from __future__ import annotations
 
-import functools
+import asyncio
+import dataclasses
 import json
 import logging
 
-from langgraph.types import Command
+from luna_core.errors import LunaCoreError
+from luna_core.messages import Image, message_from_dict
+from luna_core.policy import Decision
+from luna_core.tools.base import args_preview
 from sse_starlette.sse import EventSourceResponse
-from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from luna.config.providers import LunaConfigError
-from luna.core import permissions
-from luna.core.persistence import SessionIndex
 from luna.core.store import make_title
-from luna.core.turn_events import (
-    Interrupted,
-    ReloadRequested,
-    TextDelta,
-    ToolFinished,
-    ToolStarted,
-    UsageDelta,
-    args_preview,
-    iter_turn,
-    text_of,
-    tool_outcome,
-)
 from luna.extensions.subagents import subagent_summaries
-from luna.server.runtime import runtime_for
+from luna.server.runtime import LIVE, relevel, runtime_for
 from luna.server.trust import trust_error
-from luna.turn import _legacy_engine as engine
+from luna.turn import engine
 
-
-def _event_dict(event) -> dict:
-    if isinstance(event, TextDelta):
-        return {"event": "text_delta", "text": event.text}
-    if isinstance(event, UsageDelta):
-        return {"event": "usage_delta", "usage_metadata": event.usage_metadata}
-    if isinstance(event, ToolStarted):
-        return {
-            "event": "tool_started",
-            "call_id": event.call_id,
-            "name": event.name,
-            "args": event.args,
-            "args_preview": args_preview(event.args),
-        }
-    if isinstance(event, ToolFinished):
-        return {
-            "event": "tool_finished",
-            "call_id": event.call_id,
-            "name": event.name,
-            "ok": event.ok,
-            "detail": event.detail,
-        }
-    if isinstance(event, ReloadRequested):
-        return {"event": "reload_requested"}
-    if isinstance(event, Interrupted):
-        return {"event": "approval_needed", "value": event.value}
-    raise TypeError(f"unknown turn event: {event!r}")
-
-
-def _rule_decision(interrupt_value: dict, rules) -> dict | None:
-    """Auto-answer an interrupt from project permission rules, else ``None``."""
-    requests = interrupt_value.get("action_requests") or [interrupt_value.get("action_request")]
-    request = requests[0] or {}
-    name = request.get("action") or request.get("name")
-    args = request.get("args", {}) or {}
-    verdict = rules.match(name, args)
-    if verdict == "allow":
-        return {"type": "approve"}
-    if verdict == "deny":
-        return {"type": "reject", "message": f"blocked by a Luna permission rule ({name})"}
-    return None
-
-
-def _graph_events(agent, payload, config: dict, rules, outcome: engine.TurnOutcome):
-    """Run the graph (sync; called in a worker thread) and yield SSE dicts.
-
-    Yields ``("interrupt", value)`` last when the turn pauses for a human
-    decision that no permission rule answers. Usage, tool names and reload
-    requests are folded into ``outcome`` for :func:`engine.finish_turn`.
-    """
-    while True:
-        interrupt_value = None
-        for event in iter_turn(agent, payload, config):
-            if isinstance(event, Interrupted):
-                interrupt_value = event.value
-                break
-            if isinstance(event, UsageDelta):
-                outcome.usage.merge(event.usage_metadata)
-            elif isinstance(event, ToolFinished) and event.name:
-                outcome.tool_names.add(event.name)
-            elif isinstance(event, ReloadRequested):
-                outcome.reload_requested = True
-            yield _event_dict(event)
-        if interrupt_value is None:
-            return
-        decision = _rule_decision(interrupt_value, rules)
-        if decision is None:
-            yield ("interrupt", interrupt_value)
-            return
-        payload = Command(resume={"decisions": [decision]})
+_log = logging.getLogger(__name__)
+_FINAL = ("turn_done", "error", "cancelled")
+_MESSAGE_TYPES = ("user", "assistant", "tool_results")
+#: Log record the server writes when a run finished with no client attached.
+RUN_DONE = "run_done"
 
 
 def _sse(obj: dict) -> dict:
-    return {"data": json.dumps(obj)}
+    return {"data": json.dumps(obj, ensure_ascii=False)}
 
 
-def _notice(notice: engine.Notice) -> dict:
-    return _sse({"event": "notice", "level": notice.level, "text": notice.text})
+def _prepare(runtime, content: str):
+    """Blocking part of a turn start (config files, @mentions, git): run in a thread."""
+    try:
+        names = {n for n, _ in subagent_summaries(runtime.workdir)}
+    except LunaConfigError:
+        names = set()
+    prepared = engine.prepare_turn(
+        runtime.state, content, workdir=runtime.workdir, subagent_names=names
+    )
+    engine.before_turn(runtime.state)
+    return prepared
 
 
-async def stream_turn(runtime, payload, index, *, prepare=None):
-    """Stream a turn (or a resumed one) through the whole REPL-equivalent pipeline.
+async def _start(request: Request, body: dict, session_id: str):
+    """Start a turn: the common part of /messages and /background.
 
-    Holds the session lock while streaming, so a second turn gets 409. The
-    graph runs in a worker thread, keeping the event loop free for read-only
-    commands mid-turn. When the graph finishes without a pending approval:
-    ``finish_turn`` (usage, index, format/diagnose, verify), auto-reload, and
-    at most one fix-up turn streamed in this same response, then
-    ``finish_fixup``. ``turn_done`` is sent once, at the very end. With
-    ``prepare`` (a fresh message) the turn is built under the lock and
-    ``payload`` is ignored.
+    Returns ``(runtime, info)``, a ``JSONResponse`` refusal, or an ``str``
+    error message when the turn could not be prepared.
     """
-    config = {"configurable": {"thread_id": runtime.thread_id}}
-    rules = permissions.load_rules(runtime.workdir)
-    paused_for_approval = False
-    async with runtime.lock:
+    if (error := trust_error(request, body.get("workdir"))) is not None:
+        return error
+    runtime = await runtime_for(request, session_id, body.get("workdir", "."))
+    if isinstance(runtime, JSONResponse):
+        return runtime
+    registry = request.app.state.runtimes
+    if runtime.lock.locked() or registry.running(session_id):
+        return JSONResponse({"error": "session_busy"}, status_code=409)
+    async with runtime.lock:  # a free lock is taken without yielding: no TOCTOU
         try:
-            if prepare is not None:
-                # Prepared only while holding the lock: a racing second message
-                # must never overwrite this turn's PreparedTurn / outcome.
-                try:
-                    runtime.prepared = await run_in_threadpool(prepare)
-                except Exception as exc:  # noqa: BLE001 - reported to the user, turn not started
-                    log = logging.getLogger(__name__)
-                    log.exception("prepare failed for %s", runtime.thread_id)
-                    runtime.finish()
-                    message = f"Не удалось подготовить ход: {type(exc).__name__}: {exc}"
-                    yield _sse({"event": "error", "message": message})
-                    return
-                runtime.phase = "turn"
-                runtime.outcome = engine.TurnOutcome()
-                payload = {"messages": [{"role": "user", "content": runtime.prepared.content}]}
-            while True:
-                paused = None
-                events = _graph_events(runtime.agent, payload, config, rules, runtime.outcome)
-                async for item in iterate_in_threadpool(events):
-                    if isinstance(item, tuple):
-                        paused = item[1]
-                        break
-                    yield _sse(item)
-                if paused is not None:
-                    paused_for_approval = True
-                    yield _sse({"event": "approval_needed", "value": paused})
-                    return
-                cfg = await run_in_threadpool(runtime.config)
-                if runtime.phase == "fixup":
-                    for notice in await run_in_threadpool(engine.finish_fixup, cfg):
-                        yield _notice(notice)
-                else:
-                    prepared = runtime.prepared or engine.PreparedTurn("", "", [])
-                    result = await run_in_threadpool(
-                        functools.partial(
-                            engine.finish_turn,
-                            runtime.state,
-                            prepared,
-                            runtime.outcome,
-                            cfg=cfg,
-                            index=index,
-                            thread_id=runtime.thread_id,
-                            workdir=runtime.workdir,
-                            usage=runtime.usage,
-                        )
-                    )
-                    for notice in result.notices:
-                        yield _notice(notice)
-                    if result.reload or runtime.reload_after_turn:
-                        runtime.reload_after_turn = False
-                        try:
-                            await run_in_threadpool(runtime.rebuild)
-                            yield _notice(
-                                engine.Notice("info", "auto-reloaded — new capabilities are live")
-                            )
-                        except Exception as exc:  # noqa: BLE001 - a bad config must not end the turn
-                            yield _notice(engine.Notice("error", f"auto-reload failed: {exc}"))
-                    if result.fixup_prompt is not None:
-                        runtime.phase = "fixup"
-                        runtime.outcome = engine.TurnOutcome()
-                        payload = {"messages": [{"role": "user", "content": result.fixup_prompt}]}
-                        continue
-                runtime.finish()
-                yield _sse({"event": "turn_done"})
-                return
-        except Exception as exc:
-            logging.getLogger(__name__).exception("turn failed for thread %s", runtime.thread_id)
-            runtime.finish()
-            yield _sse({"event": "error", "message": f"{type(exc).__name__}: {exc}"})
-        finally:
-            # A client that disconnects mid-stream cancels this generator with a
-            # BaseException: still return the session to idle (an approval pause
-            # is the one exit that deliberately keeps the turn open).
-            if runtime.phase != "idle" and not paused_for_approval:
-                runtime.finish()
+            prepared = await asyncio.to_thread(_prepare, runtime, body["content"])
+            bundle = await runtime.bundle()
+        except Exception as exc:  # noqa: BLE001 - reported to the user, turn not started
+            _log.exception("could not prepare a turn for %s", session_id)
+            return f"Не удалось подготовить ход: {type(exc).__name__}: {exc}"
+        images = prepared.images + [
+            Image(i["media_type"], i["data"]) for i in body.get("images") or []
+        ]
+        runtime.reload_after_turn = bool(body.get("reload_after"))
+        runtime.reload_requested = False
+        if not runtime.session.title:
+            runtime.session.log.set_title(session_id, make_title(prepared.title_line))
+        try:
+            info = request.app.state.manager.start(
+                bundle.agent,
+                runtime.session,
+                prepared.text,
+                images=images,
+                label=make_title(prepared.title_line),
+            )
+        except LunaCoreError:
+            return JSONResponse({"error": "session_busy"}, status_code=409)
+    return runtime, info
 
 
-def history_entries(raw_messages: list) -> list[dict]:
-    """Turn a thread's raw messages into the transcript the TUI replays.
+def closing_event(info, events: list[dict]) -> dict | None:
+    """Return a final event for a run that ended without one (an unexpected exception)."""
+    if events and events[-1]["event"] in _FINAL:
+        return None
+    if info.status == "failed":
+        return {"event": "error", "message": info.error or "the turn failed", "kind": "error"}
+    return {"event": "cancelled"}
 
-    Human and AI text plus one entry per finished tool call, in order, with
-    the same ``ok``/``detail`` the live ``tool_finished`` event carries
-    (:func:`luna.core.turn_events.tool_outcome`). Durations are not stored,
-    so replayed tool rows have none.
+
+class _Follower:
+    """One client's view of a session: run events plus out-of-turn events.
+
+    Queue items are ``(is_run_event, event)``; only a run's own final event
+    (or :func:`closing_event`, via :func:`end_followers`) ends a stream.
     """
+
+    def __init__(self, request: Request, session_id: str) -> None:
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self._session_id = session_id
+        self._all = request.app.state.followers
+        self._all.setdefault(session_id, set()).add(self)
+        manager = request.app.state.manager
+        self._unsubscribe = [manager.subscribe(session_id, self.run_event)]
+
+    def run_event(self, event: dict) -> None:
+        """Queue an event of the session's run."""
+        self.queue.put_nowait((True, event))
+
+    def _out_of_turn(self, event: dict) -> None:
+        self.queue.put_nowait((False, event))
+
+    def attach(self, runtime) -> None:
+        """Also receive the session's out-of-turn events."""
+        self._unsubscribe.append(runtime.listen(self._out_of_turn))
+
+    def close(self) -> None:
+        """Stop receiving (the run itself goes on)."""
+        for unsubscribe in self._unsubscribe:
+            unsubscribe()
+        self._unsubscribe.clear()
+        followers = self._all.get(self._session_id)
+        if followers is not None:
+            followers.discard(self)
+            if not followers:
+                del self._all[self._session_id]
+
+
+def end_followers(app, info, events: list[dict]) -> None:
+    """Close the streams of a run that ended without a final event."""
+    event = closing_event(info, events)
+    if event is None:
+        return
+    for follower in list(app.state.followers.get(info.session_id, ())):
+        follower.run_event(event)
+
+
+async def post_message(request: Request):
+    """Run a turn and stream it (the run continues if the client disconnects)."""
+    session_id = request.path_params["session_id"]
+    body = await request.json()
+    # Subscribe before the run starts so no event is missed.
+    follower = _Follower(request, session_id)
+    started = await _start(request, body, session_id)
+    if isinstance(started, JSONResponse):
+        follower.close()
+        return started
+    if isinstance(started, str):
+        follower.close()
+
+        async def failed():
+            yield _sse({"event": "error", "message": started, "kind": "error"})
+
+        return EventSourceResponse(failed())
+    runtime, _info = started
+    follower.attach(runtime)
+
+    async def stream():
+        try:
+            while True:
+                is_run, event = await follower.queue.get()
+                yield _sse(relevel(event))
+                if is_run and event["event"] in _FINAL:
+                    return
+        finally:
+            follower.close()
+
+    return EventSourceResponse(stream())
+
+
+async def post_background(request: Request) -> JSONResponse:
+    """Run a turn detached from any client."""
+    session_id = request.path_params["session_id"]
+    started = await _start(request, await request.json(), session_id)
+    if isinstance(started, JSONResponse):
+        return started
+    if isinstance(started, str):
+        return JSONResponse({"error": started}, status_code=500)
+    _runtime, info = started
+    return JSONResponse(dataclasses.asdict(info))
+
+
+async def get_events(request: Request):
+    """Replay a run's buffered events, then follow it live.
+
+    Out-of-turn approvals still waiting for a decision (background
+    subagents) are sent after the replay; while a run is live, out-of-turn
+    events are forwarded as they happen. Those carry no ``index``.
+    """
+    session_id = request.path_params["session_id"]
+    try:
+        after = int(request.query_params.get("after", -1))
+    except ValueError:
+        return JSONResponse({"error": "after must be an integer"}, status_code=400)
+    manager = request.app.state.manager
+    follower = _Follower(request, session_id)
+    runtime = request.app.state.runtimes.peek(session_id)
+    if runtime is not None:
+        follower.attach(runtime)
+    backlog = manager.events(session_id, after)
+    info = manager.get(session_id)
+    pending = runtime.pending_out_of_turn() if runtime is not None else []
+
+    async def stream():
+        try:
+            last = after
+            for event in backlog:
+                last = event["index"]
+                yield _sse(relevel(event))
+                if event["event"] in _FINAL:
+                    return
+            for event in pending:
+                yield _sse(event)
+            if info is None:
+                return
+            if info.status not in LIVE:
+                if backlog and (closing := closing_event(info, backlog)) is not None:
+                    yield _sse(closing)
+                return
+            while True:
+                is_run, event = await follower.queue.get()
+                if is_run and "index" in event:
+                    if event["index"] <= last:
+                        continue
+                    last = event["index"]
+                yield _sse(relevel(event))
+                if is_run and event["event"] in _FINAL:
+                    return
+        finally:
+            follower.close()
+
+    return EventSourceResponse(stream())
+
+
+async def post_approve(request: Request) -> JSONResponse:
+    """Answer a pending approval; the open stream continues."""
+    session_id = request.path_params["session_id"]
+    body = await request.json()
+    runtime = request.app.state.runtimes.peek(session_id)
+    if runtime is None:
+        return JSONResponse({"error": "no running turn"}, status_code=404)
+    try:
+        call_id = body["call_id"]
+        decision = Decision.from_dict(body["decision"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return JSONResponse({"error": f"bad decision: {exc}"}, status_code=400)
+    try:
+        runtime.session.decide(call_id, decision)
+    except LunaCoreError as exc:  # nothing pending for that call
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    runtime.answered(call_id)
+    return JSONResponse({"ok": True})
+
+
+async def post_cancel(request: Request) -> JSONResponse:
+    """Cancel the running turn."""
+    return JSONResponse(
+        {"cancelled": request.app.state.manager.cancel(request.path_params["session_id"])}
+    )
+
+
+def _hidden_turns(records) -> set[str]:
+    hidden: set[str] = set()
+    for rec in records:
+        if rec.type == "rewound":
+            hidden.add(rec.payload["turn_id"])
+        elif rec.type == "restored":
+            hidden.discard(rec.payload["turn_id"])
+    return hidden
+
+
+def history_entries(records) -> list[dict]:
+    """Build the transcript the TUI replays from a session's log records.
+
+    User/assistant text, one row per finished tool call and the completion
+    notice of a run that finished while no client watched. The whole
+    conversation is shown (compaction only shortens the model's context);
+    undone turns are not.
+    """
+    hidden = _hidden_turns(records)
     calls: dict[str, dict] = {}
     entries: list[dict] = []
-    for m in raw_messages:
-        kind = getattr(m, "type", None)
-        if kind in ("human", "ai"):
-            text = text_of(m.content)
-            if text:
-                entries.append({"role": kind, "content": text})
-            for call in getattr(m, "tool_calls", None) or []:
-                if call.get("id"):
-                    calls[call["id"]] = call
-        elif kind == "tool":
-            call = calls.get(getattr(m, "tool_call_id", None), {})
-            ok, detail = tool_outcome(m)
+    turn = None
+    for rec in records:
+        if rec.type == "turn_started":
+            turn = rec.payload["turn_id"]
+        if turn in hidden:
+            continue
+        if rec.type == RUN_DONE:
+            entries.append(
+                {"role": "notice", "level": rec.payload["level"], "text": rec.payload["text"]}
+            )
+            continue
+        if rec.type not in _MESSAGE_TYPES:
+            continue
+        message = message_from_dict(rec.payload["message"])
+        if message.role in ("user", "assistant"):
+            if message.text:
+                entries.append({"role": message.role, "content": message.text})
+            for call in message.tool_calls:
+                calls[call.id] = {"name": call.name, "args": call.args}
+            continue
+        for result in message.results:
+            call = calls.get(result.call_id, {})
+            text = result.text.strip()
             entries.append(
                 {
                     "role": "tool",
-                    "name": getattr(m, "name", None) or call.get("name", ""),
+                    "name": result.name or call.get("name", ""),
                     "args_preview": args_preview(call.get("args") or {}),
-                    "ok": ok,
-                    "detail": detail,
+                    "ok": not result.is_error,
+                    "detail": text.splitlines()[0][:120] if text else "",
                 }
             )
     return entries
 
 
+def completion_notice(info) -> tuple[str, str]:
+    """``(level, text)`` announcing a finished run (shown when the session is reopened)."""
+    label = info.label or "без названия"
+    if info.status == "done":
+        return "ok", f"фоновая сессия «{label}» завершена"
+    if info.status == "failed":
+        return "error", f"фоновая сессия «{label}» — ошибка: {info.error}"
+    return "dim", f"фоновая сессия «{label}» прервана"
+
+
 async def get_history(request: Request) -> JSONResponse:
-    """Return the thread's prior turns, oldest first.
-
-    Includes finished tool calls (see :func:`history_entries`) so a replayed
-    session shows the same inline tool rows the live transcript did.
-    A thread the agent has never seen resolves to an empty snapshot (same
-    behaviour ``session.py``'s resume recap already relies on), not an
-    error, so a brand-new session's history is just ``[]``.
-    """
-    thread_id = request.path_params["thread_id"]
-    raw_workdir = request.query_params.get("workdir")
-    if (error := trust_error(request, raw_workdir)) is not None:
+    """Return the session's transcript, oldest first."""
+    session_id = request.path_params["session_id"]
+    workdir = request.query_params.get("workdir")
+    if (error := trust_error(request, workdir)) is not None:
         return error
-    runtime = runtime_for(request, thread_id, raw_workdir or ".")
+    runtime = await runtime_for(request, session_id, workdir or ".")
     if isinstance(runtime, JSONResponse):
         return runtime
-    config = {"configurable": {"thread_id": thread_id}}
-
-    def _read() -> list[dict]:
-        # agent build + checkpoint read are blocking: keep them off the event loop
-        raw_messages = runtime.agent.get_state(config).values.get("messages", [])
-        return history_entries(raw_messages)
-
-    messages = await run_in_threadpool(_read)
-    return JSONResponse({"messages": messages})
+    records = await asyncio.to_thread(runtime.session.records)
+    return JSONResponse({"messages": history_entries(records)})
 
 
-async def post_message(request: Request) -> EventSourceResponse | JSONResponse:
-    """Prepare a turn like the REPL does and stream it as SSE."""
-    thread_id = request.path_params["thread_id"]
-    body = await request.json()
-    if (error := trust_error(request, body.get("workdir"))) is not None:
-        return error
-    content = body["content"]
-    workdir = body.get("workdir", ".")
-    reload_after = bool(body.get("reload_after"))
-    runtime = runtime_for(request, thread_id, workdir)
-    if isinstance(runtime, JSONResponse):
-        return runtime
-    if runtime.lock.locked():
-        return JSONResponse({"error": "session_busy"}, status_code=409)
-
-    def _prepare():
-        # runs under the session lock, as part of this very turn
-        runtime.reload_after_turn = reload_after
-        try:
-            names = {n for n, _ in subagent_summaries(runtime.workdir)}
-        except LunaConfigError:
-            names = set()
-        return engine.prepare_turn(
-            runtime.state,
-            content,
-            agent=runtime.agent,
-            thread_id=thread_id,
-            workdir=runtime.workdir,
-            session_id=thread_id,
-            subagent_names=names,
-        )
-
-    index = SessionIndex()
-    existing = {r.thread_id for r in index.list(workdir=runtime.workdir)}
-    if thread_id not in existing:
-        index.record(thread_id, runtime.workdir, make_title(content))
-    index.touch(thread_id)
-    return EventSourceResponse(stream_turn(runtime, None, index, prepare=_prepare))
+async def get_agents(request: Request) -> JSONResponse:
+    """Background runs and background tasks of loaded sessions."""
+    runs = [dataclasses.asdict(r) for r in request.app.state.manager.list()]
+    tasks = [
+        dataclasses.asdict(t)
+        for runtime in request.app.state.runtimes.all()
+        for t in runtime.background.list()
+    ]
+    return JSONResponse({"runs": runs, "tasks": tasks})

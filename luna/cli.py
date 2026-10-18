@@ -447,9 +447,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_tui_path(args, config, console) -> int:
-    """Launch the full-screen TUI (still served by the LangGraph server until it is ported)."""
-    from luna.core.persistence import SessionIndex
-    from luna.turn import undo
+    """Launch the full-screen TUI (served by the local server on luna-core)."""
+    from luna_core.undo import gc
+
+    from luna.core.store import open_log
 
     try:  # fail fast on a bad provider/model/key instead of inside the server
         build_provider(
@@ -458,18 +459,18 @@ def _run_tui_path(args, config, console) -> int:
     except LunaConfigError as exc:
         print(f"luna: {exc}", file=sys.stderr)
         return 2
-    index = SessionIndex()
+    log = open_log()
     start_thread = uuid.uuid4().hex
     if args.cont or args.resume:
         try:
-            target = _resolve_resume(args, index, config.workdir, console, True)
+            target = _resolve_resume(args, _LogIndex(log), config.workdir, console, True)
         except (KeyboardInterrupt, EOFError):
             print()
             return 130
         if target is None:
             return 2
         start_thread = target
-    undo.gc(config.workdir, keep=start_thread)  # never gc the journal we resume
+    gc(config.workdir, keep=start_thread)  # never gc the journal we resume
     try:
         # Absolute: the shared server would resolve a relative "." against
         # its own cwd, i.e. whichever project happened to start it.

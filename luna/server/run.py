@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from luna.server.auth import read_token_file, token_path, write_token_file
+
+_log = logging.getLogger(__name__)
 
 
 def log_path(env=None) -> Path:
@@ -129,74 +131,25 @@ def ensure_running(
     return data or {"port": port, "token": token, "pid": 0}
 
 
-def make_agent_factory(*, model=None) -> Callable[[str], object]:
-    """Build the server's per-workdir agent registry.
+def make_session_build(*, provider_factory: Callable[[object], object] | None = None):
+    """One agent bundle per session: its config, plan flag, pipeline hooks and background tasks.
 
-    One agent per project directory, not one per server process: a single
-    server is reused across projects (see :func:`ensure_running`), and
-    ``build_agent`` pins ``LocalShellBackend(root_dir=...)`` to
-    ``config.workdir`` permanently — one shared agent would keep reading and
-    writing the *first* project's files no matter which project asked.
-
-    ``load_config`` needs both arguments: ``{"workdir": ...}`` is the only
-    thing that sets ``LunaConfig.workdir``, while ``cwd=`` is what makes that
-    project's own ``.luna.toml`` apply. Agents are built with a real
-    :func:`luna.core.persistence.checkpointer` (the SqliteSaver on the shared
-    ``sessions.db`` the CLI already uses), not ``build_agent``'s in-memory
-    default — otherwise every session's history would die with the server.
-
-    ``model`` is forwarded to ``build_agent`` to inject a fake model in
-    tests, exactly like ``build_agent``'s own parameter of that name.
+    ``provider_factory(runtime)`` injects a provider (tests pass a
+    ``FakeProvider``); by default the session's configured provider is used.
     """
-    agents: dict[str, object] = {}
 
-    def agent_factory(workdir: str):
-        from luna.config.config import load_config
+    async def build(runtime):
+        from luna.core.agent import build_agent
+        from luna.turn import engine
 
-        # TEMPORARY until Task 30 ports the server onto luna-core.
-        from luna.core._legacy_agent import build_agent_legacy as build_agent
-        from luna.core.persistence import checkpointer
-
-        resolved = str(Path(workdir).resolve())
-        if resolved not in agents:
-            cfg = load_config({"workdir": resolved}, cwd=resolved)
-            agents[resolved] = build_agent(cfg, model=model, checkpointer=checkpointer())
-        return agents[resolved]
-
-    return agent_factory
-
-
-def make_session_agent_factory(*, model=None) -> Callable[[object], object]:
-    """Build one agent per *session* (not per workdir).
-
-    Each agent gets the session's own undo journal (``session_id`` =
-    thread id, as the REPL does), a plan-mode flag read from that session's
-    state on every tool call, and the session's provider/model overrides.
-    ``model`` injects a fake chat model in tests, like ``build_agent``'s.
-    """
-    # One SQLite checkpointer for the whole server process: every rebuild used
-    # to open a fresh connection to sessions.db and never close the old one.
-    shared: list = []
-    shared_lock = threading.Lock()
-
-    def _saver():
-        from luna.core.persistence import checkpointer
-
-        with shared_lock:
-            if not shared:
-                shared.append(checkpointer())
-            return shared[0]
-
-    def build(runtime) -> object:
-        # TEMPORARY until Task 30 ports the server onto luna-core.
-        from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-        return build_agent(
+        provider = provider_factory(runtime) if provider_factory else None
+        return await build_agent(
             runtime.config(),
-            model=model,
-            checkpointer=_saver(),
-            session_id=runtime.thread_id,
+            provider=provider,
+            on_warn=lambda text: _log.warning("%s: %s", runtime.id, text),
             plan_flag=lambda: runtime.state.plan,
+            hooks=engine.make_hooks(lambda: runtime.state, runtime.config),
+            background=runtime.background,
         )
 
     return build
@@ -237,8 +190,8 @@ def run_serve(argv: list[str]) -> int:
 
     app = create_app(
         token=token,
+        build=make_session_build(),
         trust_check=make_trust_check(),
-        session_agent_factory=make_session_agent_factory(),
     )
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0

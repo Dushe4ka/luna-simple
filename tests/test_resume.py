@@ -5,8 +5,17 @@ import io
 
 from rich.console import Console
 
-from luna.cli import _resolve_resume
-from luna.core.persistence import SessionIndex
+from luna.cli import _LogIndex, _resolve_resume
+from luna.core.store import open_log
+from tests.server_helpers import seed
+
+
+def _index() -> _LogIndex:
+    return _LogIndex(open_log())
+
+
+def _record(session_id: str, workdir, title: str) -> None:
+    seed(open_log(), workdir, title, session_id=session_id)
 
 
 def _console() -> Console:
@@ -18,29 +27,29 @@ def _args(cont: bool = False, resume: str | None = None) -> argparse.Namespace:
 
 
 def test_continue_returns_recorded_thread(tmp_path):
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
     got = _resolve_resume(_args(cont=True), idx, str(tmp_path), _console(), interactive=False)
     assert got == "thread-a"
 
 
 def test_resume_numeric_is_a_list_index(tmp_path):
-    idx = SessionIndex()
-    idx.record("thread-old", str(tmp_path), "older")
-    idx.record("thread-new", str(tmp_path), "newer")
+    idx = _index()
+    _record("thread-old", str(tmp_path), "older")
+    _record("thread-new", str(tmp_path), "newer")
     got = _resolve_resume(_args(resume="1"), idx, str(tmp_path), _console(), interactive=False)
     assert got == "thread-new"  # newest first → [1]
 
 
 def test_resume_non_digit_is_treated_as_raw_thread_id(tmp_path):
-    idx = SessionIndex()
+    idx = _index()
     got = _resolve_resume(_args(resume="nope"), idx, str(tmp_path), _console(), interactive=False)
     assert got == "nope"
 
 
 def test_resume_list_non_interactive_returns_none(tmp_path):
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
     got = _resolve_resume(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=False
     )
@@ -86,10 +95,9 @@ def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkey
     the real builtin. Confirms arrow_pick is consulted first, and that a
     stubbed arrow_pick's return value is used directly."""
     import luna.cli as cli
-    from luna.core.persistence import SessionIndex
 
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
 
     monkeypatch.setattr(
         cli, "arrow_pick", lambda console, input_fn, options, default=None: "thread-a"
@@ -104,10 +112,9 @@ def test_resume_list_interactive_falls_back_to_input_when_arrow_pick_declines(
     tmp_path, monkeypatch
 ):
     import luna.cli as cli
-    from luna.core.persistence import SessionIndex
 
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
 
     monkeypatch.setattr(cli, "arrow_pick", lambda console, input_fn, options, default=None: None)
     monkeypatch.setattr("builtins.input", lambda _prompt: "1")
@@ -124,11 +131,12 @@ def test_main_handles_keyboard_interrupt_during_resume_list(tmp_path, monkeypatc
     import sys
 
     import luna.cli as cli
-    from luna.core.persistence import SessionIndex
     from luna.ui.console import get_console
 
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    _record("thread-a", str(tmp_path), "a task")
+    from luna.core.projects import ProjectIndex
+
+    ProjectIndex().trust(str(tmp_path))
 
     # Make arrow_pick raise KeyboardInterrupt to simulate Ctrl-C
     def _raise_keyboard_interrupt(*args, **kwargs):

@@ -22,6 +22,17 @@ def transcript_text(transcript: VerticalScroll) -> str:
     return "\n".join(child.source for child in widgets)
 
 
+def test_render_history_shows_a_completion_notice_as_a_notice_row():
+    """A background run that finished while the TUI was closed (server ``notice`` entry)."""
+    from luna.tui.chat import NoticeRow
+
+    widgets = render_history(
+        [{"role": "notice", "level": "ok", "text": "фоновая сессия «go» завершена"}]
+    )
+    assert isinstance(widgets[0], NoticeRow)
+    assert (widgets[0].level, widgets[0].text) == ("ok", "фоновая сессия «go» завершена")
+
+
 async def test_render_history_labels_human_and_ai_turns_you_then_luna():
     """render_history builds one widget per turn — Markdown only parses its
     ``.source`` once mounted, so this must check the widgets live, inside a

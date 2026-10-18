@@ -56,25 +56,23 @@
   - `lspnav.py` — LSP-навигация (`goto_definition` / `find_references` /
     `hover` / `symbol_range`), extra `luna-simple[lsp]`
   - `initgen.py` — `luna init` / `/init`
-- `luna/server/` — локальный Starlette+SSE сервер, обёртка над
-  существующими session/agent/toolguard без изменения их логики
-  - `app.py` — сборка `Starlette`-приложения: маршруты + bearer-auth
-    middleware
+- `luna/server/` — локальный Starlette+SSE сервер протокола v1
+  (`docs/protocol.md`) поверх `luna-core`: каждый ход идёт в
+  `AgentManager` и переживает отключение клиента
+  - `app.py` — `create_app(token=, build=, trust_check=, log=)`: маршруты,
+    bearer-auth (чистый ASGI), `on_done` хода (уведомление о завершении,
+    авто-reload, `after_turn`)
   - `auth.py` — файл токена сервера (`~/.config/luna/server.json`, права
     0600), который читают TUI/CLI-клиенты
-  - `sessions.py` — `GET/POST /sessions` — тонкая обёртка над
-    `SessionIndex` (список сессий, относительное время активности)
-  - `turns.py` — `POST /sessions/{id}/messages`: гоняет `iter_turn` и
-    стримит его события как SSE
-  - `approvals.py` — `POST /sessions/{id}/approve`: возобновляет ход,
-    остановленный на `Interrupted`, через `Command(resume=...)`
-  - `run.py` — жизненный цикл процесса сервера: переиспользовать-или-
-    запустить (`ensure_running`), реестр агентов по рабочим директориям
-    (`make_agent_factory` — свой агент на каждый `workdir`, потому что
-    корень `LocalShellBackend` фиксируется при сборке, плюс общий
-    SQLite-чекпойнтер) и сама подкоманда `luna serve`
-  - `client.py` — асинхронный HTTP+SSE клиент к локальному серверу,
-    которым пользуется TUI
+  - `runtime.py` — `SessionRuntime` (сессия ядра + `SessionState` + бандл
+    агента + out-of-turn события `session.notify`) и LRU `RuntimeRegistry`
+  - `sessions.py` — `GET/POST/DELETE /sessions` над журналом событий
+  - `turns.py` — `/messages`, `/background`, `/events`, `/approve`,
+    `/cancel`, `/agents`, история
+  - `commands.py` — `/command`, `/commands`, `/state`
+  - `run.py` — жизненный цикл процесса сервера (`ensure_running`),
+    `make_session_build` (свой агент на каждую сессию) и `luna serve`
+  - `client.py` — HTTP+SSE клиент, которым пока пользуется TUI
 - `luna/tui/` — полноэкранный клиент на `Textual` поверх `luna/server/`
   - `app.py` — `LunaApp`: 3-зонная раскладка (сайдбары + чат + статус-бар),
     `Ctrl+B` скрывает/показывает сайдбары
@@ -114,15 +112,8 @@
   субагентов); `luna/turn/undo.py` — `undo()`/`redo()` принимают уже
   собранного агента параметром и лениво импортируют
   `langchain_core.messages` только внутри этих двух функций, остальной
-  модуль framework-free; `luna/server/approvals.py` и `luna/server/turns.py`
-  — модульный импорт `Command` из `langgraph.types` (зеркалит собственное
-  использование в `session.py`): в `approvals.py` он заворачивает решение
-  пользователя и возобновляет ход, в `turns.py` — автоматически
-  возобновляет ход по сработавшему правилу разрешений (`allow` / `deny`),
-  как это делает `collect_decisions` в REPL. Остальной `luna/server/`
-  (общается с движком только через `luna/core/turn_events.py`'s
-  `iter_turn`, который сам уже framework-free) и весь `luna/tui/` —
-  прямых импортов `deepagents`/`langgraph` не держат.
+  модуль framework-free. Весь `luna/server/` и `luna/tui/` работают на
+  `luna-core` и прямых импортов `deepagents`/`langgraph` не держат.
 - ID моделей — в `luna/config/providers.py` или конфиге, никогда в логике агента.
 - Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
 - `subagents.toml` получил ключ `unsafe` — opt-in для мутирующих инструментов

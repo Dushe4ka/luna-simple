@@ -1,42 +1,41 @@
 from datetime import datetime
 
-import httpx
 import pytest
 
-from luna.core.persistence import SessionIndex
-from luna.server.app import create_app
 from luna.server.sessions import relative_time, session_group
+from tests.server_helpers import client, make_app, seed
 
 
-@pytest.fixture
-async def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
-    headers = {"Authorization": "Bearer secret-token"}
-    async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
-        yield c
+def _age(log, session_id: str, updated: float) -> None:
+    with log._lock:
+        log._conn.execute("UPDATE sessions SET updated = ? WHERE id = ?", (updated, session_id))
 
 
-async def test_create_session_returns_a_thread_id(client):
-    resp = await client.post("/sessions", json={"workdir": "/repo"})
+async def test_create_session_returns_an_id(tmp_path):
+    app = make_app()
+    async with client(app) as c:
+        resp = await c.post("/sessions", json={"workdir": str(tmp_path)})
     assert resp.status_code == 200
     data = resp.json()
-    assert "thread_id" in data and len(data["thread_id"]) > 0
+    assert list(data) == ["id"] and data["id"]
+    assert app.state.log.info(data["id"]).workdir == str(tmp_path.resolve())
 
 
-async def test_list_sessions_newest_first(client, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    index = SessionIndex()
-    index.record("t1", "/repo", "first session")
-    index.record("t2", "/repo", "second session")
-    index.touch("t2")
-    resp = await client.get("/sessions", params={"workdir": "/repo"})
-    assert resp.status_code == 200
+async def test_list_sessions_newest_first(tmp_path):
+    import time
+
+    app = make_app()
+    log = app.state.log
+    seed(log, tmp_path, "first session", session_id="t1")
+    seed(log, tmp_path, "second session", session_id="t2")
+    _age(log, "t1", time.time() - 60)
+    async with client(app) as c:
+        resp = await c.get("/sessions", params={"workdir": str(tmp_path)})
     rows = resp.json()["sessions"]
-    assert [r["thread_id"] for r in rows] == ["t2", "t1"]
+    assert [r["id"] for r in rows] == ["t2", "t1"]
     assert rows[0]["title"] == "second session"
-    assert "relative_time" in rows[0]
+    assert rows[0]["relative_time"] == "сейчас" and rows[1]["relative_time"] == "1м"
+    assert rows[0]["running"] is False and rows[0]["background"] is False
 
 
 NOW = datetime(2026, 9, 28, 12, 0).timestamp()
@@ -75,17 +74,44 @@ def test_future_timestamp_is_treated_as_now():
     assert relative_time(NOW + 600, now=NOW) == "сейчас"
 
 
-async def test_list_sessions_includes_group(client, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    SessionIndex().record("t1", "/repo", "first session")
-    rows = (await client.get("/sessions", params={"workdir": "/repo"})).json()["sessions"]
+async def test_list_sessions_includes_group(tmp_path):
+    app = make_app()
+    seed(app.state.log, tmp_path, "first session")
+    async with client(app) as c:
+        rows = (await c.get("/sessions", params={"workdir": str(tmp_path)})).json()["sessions"]
     assert rows[0]["group"] == "today"
 
 
-async def test_list_sessions_returns_more_than_twenty(client, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    index = SessionIndex()
+async def test_list_sessions_returns_more_than_twenty(tmp_path):
+    app = make_app()
     for i in range(25):
-        index.record(f"t{i}", "/repo", f"session {i}")
-    rows = (await client.get("/sessions", params={"workdir": "/repo"})).json()["sessions"]
+        seed(app.state.log, tmp_path, f"session {i}")
+    async with client(app) as c:
+        rows = (await c.get("/sessions", params={"workdir": str(tmp_path)})).json()["sessions"]
     assert len(rows) == 25
+
+
+async def test_other_projects_sessions_are_not_listed(tmp_path):
+    app = make_app()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    seed(app.state.log, tmp_path / "a", "mine")
+    seed(app.state.log, tmp_path / "b", "theirs")
+    async with client(app) as c:
+        rows = (await c.get("/sessions", params={"workdir": str(tmp_path / "a")})).json()
+    assert [r["title"] for r in rows["sessions"]] == ["mine"]
+
+
+async def test_a_running_session_cannot_be_deleted(tmp_path):
+    from luna_core.providers.fake import FakeProvider
+
+    from tests.server_helpers import turn
+
+    (tmp_path / "a.py").write_text("x\n")
+    app = make_app(default=[FakeProvider.call("delete", {"file_path": "a.py"}, "d1")])
+    async with client(app) as c:
+        _, events = await turn(c, "t1", tmp_path, "delete it")
+        assert events[-1]["event"] == "approval_needed"
+        resp = await c.delete("/sessions/t1")
+    assert resp.status_code == 409 and resp.json() == {"error": "session_busy"}
+    assert (tmp_path / "a.py").exists()

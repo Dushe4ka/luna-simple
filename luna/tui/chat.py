@@ -83,6 +83,8 @@ def render_history(messages: list[dict]) -> list[Widget]:
             widgets.append(
                 ToolRow(m["name"], m.get("args_preview", ""), result=(m["ok"], m["detail"]))
             )
+        elif m["role"] == "notice":  # e.g. a background run that finished while away
+            widgets.append(NoticeRow(m["level"], m["text"]))
         else:
             widgets.append(LunaMessage(m["content"]))
     return widgets
