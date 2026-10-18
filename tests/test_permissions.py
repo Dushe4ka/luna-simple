@@ -93,29 +93,3 @@ def test_exact_tool_rules_unchanged():
     assert rs.match("write_file", {"file_path": "/.env"}) == "deny"
     assert rs.match("edit_file", {"file_path": ".env"}) is None  # exact tool only
     assert rs.match("execute", {"command": "pytest -q"}) == "allow"
-
-
-def test_guard_blocks_deny(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.config.config import LunaConfig
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    (tmp_path / ".luna").mkdir()
-    (tmp_path / ".luna" / "permissions.toml").write_text('deny = ["execute:rm *"]\n')
-    calls = [
-        AIMessage(
-            content="",
-            tool_calls=[{"name": "execute", "args": {"command": "rm x"}, "id": "1"}],
-        ),
-        AIMessage(content="stopped"),
-    ]
-    cfg = LunaConfig(workdir=str(tmp_path), yolo=True)
-    agent = build_agent(cfg, model=fake_model(*calls))
-    out = agent.invoke(
-        {"messages": [{"role": "user", "content": "go"}]},
-        config={"configurable": {"thread_id": "g"}},
-    )
-    assert any(
-        "blocked by a Luna permission rule" in getattr(m, "content", "") for m in out["messages"]
-    )

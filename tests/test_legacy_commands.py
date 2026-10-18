@@ -1,16 +1,17 @@
-"""TEMPORARY: the shared ``/undo`` and ``/compact`` handlers on the server's LangGraph agents.
+"""TEMPORARY: the shared registry's file-journal ``/undo`` and ``/compact`` handlers.
 
-The REPL runs these commands on luna-core (tests/test_commands.py); the
-server still reaches the old handlers through the registry until the
-commands are ported, so their behaviour stays covered here.
+The REPL and the server run these commands on luna-core
+(``luna.repl.commands.CORE_COMMANDS``); the registry handlers stay until
+Task 31 ports the commands.
 """
 
 from dataclasses import dataclass, field
 
+from luna_core.context import PinnedFiles
+
 from luna.commands import run_line
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage
-from luna.turn.context import PinnedFiles
 
 
 @dataclass
@@ -63,46 +64,3 @@ def test_compact_failure_does_not_raise(tmp_path):
 
     res = run_line("/compact", LegacyEnv(workdir=str(tmp_path), agent=_BoomAgent()))
     assert "/compact failed" in res.notices[0].text
-
-
-def test_compact_replaces_history_in_place(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path)),
-        model=fake_model(AIMessage(content="chatter"), AIMessage(content="SUMMARY: did X and Y")),
-    )
-    cfg = {"configurable": {"thread_id": "keep"}}
-    agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config=cfg)
-    run_line("/compact", LegacyEnv(workdir=str(tmp_path), agent=agent, thread_id="keep"))
-    msgs = agent.get_state(cfg).values["messages"]
-    assert len(msgs) == 1 and "did X and Y" in msgs[0].content and msgs[0].type == "human"
-
-
-def test_compact_no_summary_is_graceful(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    agent = build_agent(LunaConfig(workdir=str(tmp_path)), model=fake_model(AIMessage(content="")))
-    res = run_line("/compact", LegacyEnv(workdir=str(tmp_path), agent=agent))
-    assert res.notices[0].level == "error"
-
-
-def test_compact_empty_summary_trims_the_instruction_turn(tmp_path, fake_model):
-    from langchain_core.messages import AIMessage
-
-    from luna.core._legacy_agent import build_agent_legacy as build_agent
-
-    agent = build_agent(
-        LunaConfig(workdir=str(tmp_path)),
-        model=fake_model(AIMessage(content=""), AIMessage(content="")),
-    )
-    cfg = {"configurable": {"thread_id": "keep"}}
-    agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config=cfg)
-    before = len(agent.get_state(cfg).values["messages"])
-    res = run_line("/compact", LegacyEnv(workdir=str(tmp_path), agent=agent, thread_id="keep"))
-    assert len(agent.get_state(cfg).values["messages"]) == before
-    assert "no summary produced" in res.notices[0].text

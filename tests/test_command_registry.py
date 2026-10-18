@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
 
+from luna_core.context import PinnedFiles
+
 from luna.commands import REGISTRY, Choice, CommandResult, Confirm, list_commands, run_line
 from luna.config.config import LunaConfig
 from luna.config.usage import SessionUsage, TurnUsage
-from luna.turn.context import PinnedFiles
 from luna.turn.engine import Notice
 
 

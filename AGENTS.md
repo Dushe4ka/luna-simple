@@ -17,12 +17,7 @@
 - `luna/core/` — рантайм агента и его защита
   - `agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
   - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
-  - `turn_events.py` — `iter_turn`: чистый генератор типизированных событий
-    одного прохода `agent.stream(...)` (без `deepagents`/`langgraph`); из
-    него `session.py`'s `_stream_turn` строит REPL-рендер, а
-    `luna/server/turns.py` — SSE для TUI
-  - `persistence.py` — SqliteSaver + индекс сессий
-  - `toolguard.py` — middleware: deny-правила + снапшоты + `/plan`
+  - `store.py` — журнал событий сессий ядра (`sessions.db`), `conversations`
   - `permissions.py` — правила allow/deny
 - `luna/repl/` — интерактивный слой поверх core
   - `commands.py` — диспетчер slash-команд
@@ -36,16 +31,13 @@
   - `usage.py` — учёт токенов, `$`-стоимость (`models.toml`)
   - `models.toml` — реестр моделей: окно контекста, цена input/output
 - `luna/turn/` — всё, что крутится вокруг одного хода
-  - `context.py` — `@file` + закреплённые файлы
-  - `memory.py` — `.luna/memory/*.md`
+  - `engine.py` — подготовка хода и хуки format/diagnose/verify на `luna-core`
   - `undo.py` — журнал снапшотов, `/diff` `/undo` `/redo` (в git — снапшоты
     дерева + разговора через `git commit-tree`, вне git — файловый журнал)
   - `gitinfo.py` — проверка git-дерева
   - `fmt.py` — автоформатирование тронутых файлов после правок
   - `diagnose.py` — диагностика после правок, `/diagnose`
   - `verify.py` — verify-команда
-  - `anchor.py` — трекинг хешей содержимого прочитанных/записанных
-    файлов, staleness-check перед `write_file`/`edit_file`/`delete`
 - `luna/extensions/` — подключаемые возможности
   - `subagents.py` — встроенные субагенты + из `subagents.toml`
   - `extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills` /
@@ -105,8 +97,7 @@
 
 - Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
 - Все импорты `deepagents` / `langgraph` держать внутри `luna/core/agent.py`,
-  `luna/core/session.py`, `luna/core/persistence.py` и
-  `luna/core/toolguard.py`. Известные исключения:
+  `luna/core/session.py` и `luna/core/_legacy_session.py`. Известные исключения:
   `luna/extensions/subagents.py` держит модульные импорты `SubAgent` /
   `FilesystemMiddleware` из `deepagents` (нужны для сборки декларативных
   субагентов); `luna/turn/undo.py` — `undo()`/`redo()` принимают уже

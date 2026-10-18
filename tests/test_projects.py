@@ -1,7 +1,23 @@
+import sqlite3
 import time
 
-from luna.core.persistence import SessionIndex
 from luna.core.projects import ProjectIndex
+from luna.core.store import db_path
+
+
+def _legacy_session(thread_id: str, workdir: str) -> None:
+    """A row of the pre-luna-core ``luna_sessions`` table (what the migration reads)."""
+    conn = sqlite3.connect(db_path())
+    with conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS luna_sessions "
+            "(thread_id TEXT PRIMARY KEY, workdir TEXT, title TEXT, created REAL, updated REAL)"
+        )
+        now = time.time()
+        conn.execute(
+            "INSERT INTO luna_sessions VALUES (?, ?, ?, ?, ?)", (thread_id, workdir, "hi", now, now)
+        )
+    conn.close()
 
 
 def test_folder_is_untrusted_by_default(tmp_path):
@@ -27,13 +43,13 @@ def test_list_is_newest_opened_first(tmp_path):
 
 
 def test_migration_trusts_folders_that_already_have_sessions(tmp_path):
-    SessionIndex().record("t1", str(tmp_path), "hi")
+    _legacy_session("t1", str(tmp_path))
     assert ProjectIndex().is_trusted(str(tmp_path)) is True
 
 
 def test_migration_skips_folders_that_no_longer_exist(tmp_path):
     gone = tmp_path / "gone"
-    SessionIndex().record("t1", str(gone), "hi")
+    _legacy_session("t1", str(gone))
     assert ProjectIndex().is_trusted(str(gone)) is False
 
 
@@ -41,7 +57,7 @@ def test_migration_runs_only_when_the_table_is_first_created(tmp_path):
     ProjectIndex()  # creates luna_projects
     new = tmp_path / "new"
     new.mkdir()
-    SessionIndex().record("t2", str(new), "scripted -p run")
+    _legacy_session("t2", str(new))
     assert ProjectIndex().is_trusted(str(new)) is False
 
 

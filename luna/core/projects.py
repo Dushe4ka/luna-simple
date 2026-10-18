@@ -1,8 +1,8 @@
 """Persisted projects: exact launch directories and whether they are trusted.
 
-Lives in the same ``sessions.db`` as :class:`luna.core.persistence.SessionIndex`
-so a future desktop client can list projects and their sessions from one
-store. Best-effort like the session index: an unavailable database degrades
+Lives in the same ``sessions.db`` as the session event log
+(:mod:`luna.core.store`) so a future desktop client can list projects and
+their sessions from one store. Best-effort: an unavailable database degrades
 to a no-op index instead of breaking the CLI.
 """
 
