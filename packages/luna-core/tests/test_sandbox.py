@@ -14,7 +14,27 @@ def _docker_daemon_available() -> bool:
         return False
     try:
         return subprocess.run(["docker", "info"], capture_output=True, timeout=5).returncode == 0
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _docker_image_available(image: str, pull_timeout: float = 30) -> bool:
+    """True when ``image`` is present or can be pulled quickly (skip, not fail, otherwise)."""
+    try:
+        if (
+            subprocess.run(
+                ["docker", "image", "inspect", image], capture_output=True, timeout=10
+            ).returncode
+            == 0
+        ):
+            return True
+        return (
+            subprocess.run(
+                ["docker", "pull", image], capture_output=True, timeout=pull_timeout
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -89,6 +109,8 @@ async def test_docker_sandbox_lifecycle(tmp_path, fake_docker):
 )
 @pytest.mark.live
 async def test_docker_sandbox_real(tmp_path):
+    if not _docker_image_available("alpine:3.20"):
+        pytest.skip("alpine:3.20 is not available locally and could not be pulled quickly")
     (tmp_path / "f.txt").write_text("hi")
     box = DockerSandbox(tmp_path, image="alpine:3.20")
     await box.start()

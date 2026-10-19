@@ -50,6 +50,28 @@ uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"
 
 Требуется Python **3.11+**.
 
+## Luna как SDK
+
+Ядро — отдельный пакет [`luna-core`](packages/luna-core) (`pip install luna-core`):
+его можно встроить в своё приложение, не используя CLI.
+
+```python
+from luna_core import Agent, EventLog, Policy, Session, TextDelta, Workspace, providers
+
+provider, model = providers.resolve("anthropic")
+workspace = Workspace(".")
+agent = Agent(provider, model, workspace=workspace, policy=Policy(workspace=workspace))
+session = Session.create(EventLog(".luna/sessions.db"), str(workspace.root))
+async for event in agent.run(session, "Что это за проект?"):
+    if isinstance(event, TextDelta):
+        print(event.text, end="")
+```
+
+Документация: [`docs/sdk/`](docs/sdk/quickstart.md) (на английском), формат событий —
+[`docs/protocol.md`](docs/protocol.md), запускаемые примеры — [`examples/`](examples)
+(`python examples/minimal_agent.py --fake` работает без сети и ключей).
+Результаты приёмки ядра: [`docs/superpowers/acceptance/luna-core.md`](docs/superpowers/acceptance/luna-core.md).
+
 ## Быстрый старт
 
 ```bash
