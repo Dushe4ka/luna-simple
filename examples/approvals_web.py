@@ -3,6 +3,8 @@
 POST /run      {"text": "..."}                        -> SSE stream of wire events
 POST /approve  {"call_id": "...", "decision": {...}}  -> answers a pending approval
 
+Demo only: there is no authentication or origin check, so add both before exposing it.
+
 Needs ``starlette`` (``pip install starlette uvicorn``).
 
 Serve:      python examples/approvals_web.py --workdir . --port 8000
@@ -12,10 +14,11 @@ Self-test:  python examples/approvals_web.py --self-test --workdir .
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import httpx
-from luna_core import Agent, EventLog, Policy, Session, Workspace, providers, to_wire
+from luna_core import Agent, EventLog, LunaCoreError, Policy, Session, Workspace, providers, to_wire
 from luna_core.providers.fake import FakeProvider
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -100,7 +103,10 @@ def main() -> None:
         return
     import uvicorn
 
-    agent, session, _log = build(args.workdir, False, args.provider)
+    try:
+        agent, session, _log = build(args.workdir, False, args.provider)
+    except LunaCoreError as exc:
+        sys.exit(f"error: {exc}")
     uvicorn.run(make_app(agent, session), host="127.0.0.1", port=args.port)
 
 

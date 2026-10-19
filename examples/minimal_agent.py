@@ -6,12 +6,14 @@ Real:      ANTHROPIC_API_KEY=... python examples/minimal_agent.py "What is this 
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
 from luna_core import (
     Agent,
     Decision,
     EventLog,
+    LunaCoreError,
     NeedsApproval,
     Policy,
     Session,
@@ -62,4 +64,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except LunaCoreError as exc:
+        sys.exit(f"error: {exc}")

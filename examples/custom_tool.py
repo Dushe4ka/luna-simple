@@ -5,11 +5,13 @@ Offline:   python examples/custom_tool.py --fake --workdir .
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
 from luna_core import (
     Agent,
     EventLog,
+    LunaCoreError,
     Policy,
     Session,
     TextDelta,
@@ -81,4 +83,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except LunaCoreError as exc:
+        sys.exit(f"error: {exc}")

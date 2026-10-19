@@ -32,6 +32,8 @@ unless it says so.
 
 ## 3. Spec criteria (design spec, sections 2 to 4 and Testing)
 
+Suite state behind these rows: 1002 passed, 8 skipped (7 live provider tests without keys, `test_docker_sandbox_real` without the image); the skipped tests are the ones marked NOT VERIFIED for live providers and a real Docker daemon.
+
 | Criterion | Status |
 |---|---|
 | Own runtime, no deepagents / LangChain / LangGraph, no LiteLLM, no vendor SDKs | **verified by test**: `packages/luna-core/tests/test_package.py::test_core_never_imports_frameworks_or_vendor_sdks`, `tests/test_no_frameworks.py::*`; core dependencies are `httpx`, `httpx-sse`, `pyyaml` (`packages/luna-core/pyproject.toml`) |

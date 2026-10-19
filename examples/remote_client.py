@@ -9,9 +9,11 @@ Offline: ``--fake`` runs the server app in-process with a scripted model.
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 import httpx
+from luna_core import LunaCoreError
 from luna_core.client import LunaClient
 
 
@@ -76,4 +78,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except LunaCoreError as exc:
+        sys.exit(
+            f"error: {exc}\nstart a server with: luna serve --port 8765 --token SECRET "
+            "(then pass --url and --token), or use --fake"
+        )

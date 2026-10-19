@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from luna_core import Agent, EventLog, Policy, Workspace, providers
+from luna_core import Agent, EventLog, LunaCoreError, Policy, Workspace, providers
 from luna_core.acp import run_acp
 from luna_core.providers.fake import FakeProvider
 
@@ -93,8 +93,17 @@ def main() -> None:
     if args.self_test:
         asyncio.run(self_test(str(Path(args.workdir).resolve())))
         return
+    if sys.stdin.isatty():
+        sys.exit(
+            "error: ACP speaks JSON-RPC on stdio; start this from an editor (or use --self-test)"
+        )
+    make_agent = make_agent_factory(args.fake, args.provider)
+    try:
+        make_agent(str(Path(args.workdir).resolve()))  # fail fast on a missing key
+    except LunaCoreError as exc:
+        sys.exit(f"error: {exc}")
     log = EventLog(Path(args.workdir) / ".luna" / "acp.db")
-    asyncio.run(run_acp(make_agent_factory(args.fake, args.provider), log))
+    asyncio.run(run_acp(make_agent, log))
 
 
 if __name__ == "__main__":
