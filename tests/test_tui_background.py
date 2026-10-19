@@ -356,3 +356,39 @@ def test_compacted_notice_uses_the_right_plural():
         "сообщения",
         "сообщений",
     ]
+
+
+async def test_a_failed_decide_lets_the_same_approval_be_asked_again():
+    from luna_core.client import ServerError
+
+    class _Flaky(FakeLunaClient):
+        async def decide(self, session_id, call_id, decision):
+            self.decisions.append((call_id, decision))
+            if len(self.decisions) == 1:
+                raise ServerError("HTTP 500: boom")
+
+    client = _Flaky()
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        chat = app.query_one(ChatPane)
+        value = _approval("c1")["value"]
+        chat.run_worker(chat._answer("s1", value))
+        await pilot.pause(0.2)
+        await pilot.click("#approve-button")
+        await pilot.pause(0.2)
+        assert "c1" not in chat._asked
+        chat.run_worker(chat._answer("s1", value))
+        await pilot.pause(0.2)
+        await pilot.click("#approve-button")
+        await pilot.pause(0.2)
+    assert [d[0] for d in client.decisions] == ["c1", "c1"]
+
+
+async def test_pasting_a_path_of_an_unknown_user_home_is_pasted_as_text(tmp_path):
+    app = make_app(FakeLunaClient(), workdir=str(tmp_path))
+    async with app.run_test(size=(130, 36)) as pilot:
+        chat_input = app.query_one("#chat-input")
+        chat_input.focus()
+        chat_input.post_message(events.Paste("~nosuchuser_luna/x.png"))
+        await pilot.pause(0.1)
+        assert chat_input.value == "~nosuchuser_luna/x.png"

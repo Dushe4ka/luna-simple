@@ -146,3 +146,22 @@ async def test_escape_in_the_edit_field_goes_back_to_the_buttons():
 
     app = await _run_modal(request, steps)
     assert app.result == {"type": "approve"}
+
+
+async def test_an_empty_edited_command_is_refused_and_edit_mode_stays():
+    request = {"call_id": "c1", "name": "execute", "args": {"command": "ls"}}
+
+    async def steps(app, pilot):
+        await pilot.click("#edit-button")
+        await pilot.pause()
+        field = app.screen.query_one("#edit-command")
+        field.value = "   "
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen.query_one("#edit-command") is field
+        assert "пуст" in str(app.screen.query_one(".picker-hint").render())
+        field.value = " pwd "
+        await pilot.press("enter")
+
+    app = await _run_modal(request, steps)
+    assert app.result == {"type": "edit", "args": {"command": "pwd"}}

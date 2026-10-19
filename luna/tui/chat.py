@@ -94,7 +94,10 @@ class ChatInput(Input):
         raw = event.text.strip().strip("'\"").replace("\\ ", " ")
         if "\n" in raw or not raw:
             return
-        path = Path(raw).expanduser()
+        try:
+            path = Path(raw).expanduser()
+        except RuntimeError:  # "~user/..." for an unknown user: paste it as plain text
+            return
         if not path.is_absolute():
             path = Path(self._workdir) / path
         if path.suffix.lower() not in _IMAGE_SUFFIXES or not path.is_file():
@@ -726,6 +729,8 @@ class ChatPane(Widget):
             try:
                 await self.app.client.decide(session_id, call_id, decision)
             except ServerError as exc:
+                # not delivered: the stream/watcher may ask it again
+                self._asked.discard(call_id)
                 self.notify(
                     f"Решение не принято: {readable(exc)}", severity="warning", markup=False
                 )

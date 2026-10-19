@@ -85,4 +85,10 @@ class ApprovalModal(ModalScreen[dict]):
         if event.input.id != "edit-command":
             return
         event.stop()
-        self.dismiss({"type": "edit", "args": {**self._args, "command": event.value}})
+        command = event.value.strip()
+        if not command:
+            self.query_one(".picker-hint", Static).update(
+                "Команда пуста — введите команду или Esc — назад"
+            )
+            return
+        self.dismiss({"type": "edit", "args": {**self._args, "command": command}})
