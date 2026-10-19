@@ -531,6 +531,7 @@ def test_run_background_reports_a_server_that_cannot_start(monkeypatch, tmp_path
 
 
 def test_acp_on_eof_exits_cleanly_without_output(tmp_path):
+    import os
     import subprocess
     import sys
 
@@ -541,6 +542,56 @@ def test_acp_on_eof_exits_cleanly_without_output(tmp_path):
         capture_output=True,
         text=True,
         cwd=tmp_path,
-        env={**__import__("os").environ, "XDG_CONFIG_HOME": str(tmp_path / "cfg")},
+        env={**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "cfg")},
     )
     assert result.returncode == 0 and result.stdout == "" and "Traceback" not in result.stderr
+
+
+def _run_acp_cli(tmp_path, stdin, stdout):
+    import os
+    import subprocess
+    import sys
+
+    pytest.importorskip("acp")
+    return subprocess.run(
+        [sys.executable, "-m", "luna", "acp"],
+        stdin=stdin,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "cfg")},
+    )
+
+
+def test_acp_with_stdout_to_a_file_explains_instead_of_a_traceback(tmp_path):
+    import subprocess
+
+    with (tmp_path / "out.txt").open("w") as out:
+        result = _run_acp_cli(tmp_path, subprocess.DEVNULL, out)
+    assert result.returncode == 2
+    assert "must be pipes" in result.stderr and "Traceback" not in result.stderr
+
+
+def test_acp_closing_pipes_immediately_leaves_no_noise(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    pytest.importorskip("acp")
+    r, w = os.pipe()
+    os.write(w, b"\n")
+    os.close(w)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "luna", "acp"],
+        stdin=r,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "cfg")},
+    )
+    os.close(r)
+    out, err = proc.communicate(timeout=30)
+    assert proc.returncode == 0
+    assert "Traceback" not in err and "Exception ignored" not in err

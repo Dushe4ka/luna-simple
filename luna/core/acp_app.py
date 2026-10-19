@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,17 @@ def _stdin_is_readable_stream() -> bool:
     return True
 
 
+def _stdout_is_a_stream() -> bool:
+    """Return whether stdout is a pipe, socket or character device (the loop can write to it)."""
+    import stat
+
+    try:
+        mode = os.fstat(sys.stdout.fileno()).st_mode
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)
+
+
 def run(cwd: Path) -> int:
     """Serve ACP over stdio until the editor disconnects."""
     try:
@@ -27,6 +39,12 @@ def run(cwd: Path) -> int:
         print('luna: ACP support is not installed: pip install "luna-simple[acp]"', file=sys.stderr)
         return 2
 
+    if not _stdout_is_a_stream():
+        print(
+            "luna acp: stdin and stdout must be pipes; this command is launched by an editor",
+            file=sys.stderr,
+        )
+        return 2
     if not _stdin_is_readable_stream():  # EOF right away: the editor is gone, exit quietly
         return 0
 

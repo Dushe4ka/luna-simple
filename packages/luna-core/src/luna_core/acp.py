@@ -340,5 +340,16 @@ class LunaAcpAgent:
 async def run_acp(make_agent: Callable[[str], Any], log: EventLog) -> None:
     """Serve ACP over stdio until the editor closes the pipe."""
     from acp import run_agent
+    from acp.stdio import stdio_streams
 
-    await run_agent(LunaAcpAgent(make_agent, log))
+    # Own the streams so the stdout transport is closed while the loop is still alive; left to
+    # StreamWriter.__del__ it closes after the loop and prints "Event loop is closed".
+    reader, writer = await stdio_streams()
+    try:
+        await run_agent(LunaAcpAgent(make_agent, log), input_stream=writer, output_stream=reader)
+    finally:
+        try:
+            writer.close()  # the library's write protocol has no wait_closed(); one tick suffices
+            await asyncio.sleep(0)
+        except (OSError, RuntimeError):
+            pass  # the editor already closed its end
