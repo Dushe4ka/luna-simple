@@ -135,6 +135,20 @@ ChatPane PulseGlyph {
     margin: 0 1 1 2;
 }
 
+/* The model's latest reasoning line, dimmed, right under "Luna думает". */
+ChatPane PulseGlyph.-with-thought {
+    margin-bottom: 0;
+}
+
+ChatPane .thought-line {
+    height: 1;
+    margin: 0 1 1 4;
+    color: $moon-dim;
+    text-style: italic;
+    text-overflow: ellipsis;
+    text-wrap: nowrap;
+}
+
 /* --- Sessions sidebar ---------------------------------------------- */
 
 SessionsSidebar .project-name {
@@ -198,6 +212,18 @@ SessionsSidebar .session-title {
 SessionsSidebar .session-time {
     width: auto;
     padding-left: 1;
+    color: $moon-dim;
+}
+
+/* Run markers before a session title: ● a turn is running here, ◌ it runs
+   in the background with no client attached. */
+SessionsSidebar .session-running {
+    width: auto;
+    color: $peri;
+}
+
+SessionsSidebar .session-background {
+    width: auto;
     color: $moon-dim;
 }
 

@@ -18,7 +18,6 @@
   - `agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
   - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
   - `store.py` — журнал событий сессий ядра (`sessions.db`), `conversations`
-  - `permissions.py` — правила allow/deny
 - `luna/repl/` — интерактивный слой поверх core
   - `commands.py` — диспетчер slash-команд
   - `setup_wizard.py` — интерактивный мастер `luna setup`
@@ -62,14 +61,19 @@
   - `commands.py` — `/command`, `/commands`, `/state`
   - `run.py` — жизненный цикл процесса сервера (`ensure_running`),
     `make_session_build` (свой агент на каждую сессию) и `luna serve`
-  - `client.py` — HTTP+SSE клиент, которым пока пользуется TUI
 - `luna/tui/` — полноэкранный клиент на `Textual` поверх `luna/server/`
+  (через `luna_core.client.LunaClient`, протокол v1)
   - `app.py` — `LunaApp`: 3-зонная раскладка (сайдбары + чат + статус-бар),
     `Ctrl+B` скрывает/показывает сайдбары
   - `theme.py` — палитра `luna/ui/theme.py`, переведённая в CSS-переменные
     Textual
+  - `app.py` также: `Ctrl+G` — задача в фон, опрос `/agents` каждые 3 с
+    (тосты о завершении фоновых сессий/задач)
   - `chat.py` — центральная панель: стриминг ответа в Markdown-транскрипт,
-    автодополнение slash-команд, обработка approval-паузы
+    автодополнение slash-команд, подтверждения через `decide` (поток хода
+    продолжается), Esc/`Ctrl+C` — отмена хода, вставка пути картинки →
+    `@mention`, наблюдатель out-of-turn подтверждений (`/events`)
+  - `errors.py` — русский текст для `ServerError` клиента
   - `commands.py` — фильтрация списка slash-команд для автодополнения
     (переиспользует `luna/repl/commands.py`'s `HELP`)
   - `sidebar_sessions.py` — левый сайдбар: список сессий текущего
@@ -77,7 +81,7 @@
   - `sidebar_activity.py` — правый сайдбар: live-список инструментов,
     выполняющихся в текущем ходе
   - `approval_modal.py` — модальный диалог подтверждения мутирующих
-    действий (approve/always/reject) взамен блокирующего REPL-промпта
+    действий (approve/always/edit/reject) взамен блокирующего REPL-промпта
   - `status_bar.py` — нижняя строка статуса: модель, стоимость,
     закреплённый `@file`, режим `/plan`, глубина `/undo`
 - `luna/ui/` — тема `rich` и весь визуальный слой REPL

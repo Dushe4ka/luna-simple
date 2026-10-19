@@ -40,8 +40,8 @@ async def test_render_history_labels_human_and_ai_turns_you_then_luna():
     """
     widgets = render_history(
         [
-            {"role": "human", "content": "fix the bug"},
-            {"role": "ai", "content": "done"},
+            {"role": "user", "content": "fix the bug"},
+            {"role": "assistant", "content": "done"},
         ]
     )
     assert isinstance(widgets[0], UserMessage)
@@ -68,10 +68,13 @@ def test_filter_commands_matches_prefix():
 
 
 def test_filter_commands_empty_slash_returns_all():
-    results = filter_commands("/")
-    from luna.repl.commands import HELP
+    from luna.tui.commands import FALLBACK_COMMANDS
 
-    assert len(results) == len(HELP)
+    results = filter_commands("/")
+    assert len(results) == len(FALLBACK_COMMANDS)
+    assert {"/background", "/btw", "/steer", "/rewind", "/export", "/fork"} <= {
+        name for name, _ in results
+    }
 
 
 def test_filter_commands_no_match_returns_empty():
@@ -81,10 +84,10 @@ def test_filter_commands_no_match_returns_empty():
 class _BaseFakeClient:
     """Defaults for the server calls a ChatPane makes besides the turn itself."""
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def get_state(self, thread_id, workdir):
+    async def state(self, thread_id, workdir):
         return {
             "provider": "anthropic",
             "model": "claude-sonnet-5",
@@ -93,7 +96,7 @@ class _BaseFakeClient:
             "usage_summary": "",
         }
 
-    async def list_commands(self, workdir):
+    async def commands(self, workdir):
         from luna.tui.commands import FALLBACK_COMMANDS
 
         return FALLBACK_COMMANDS
@@ -105,10 +108,10 @@ class _BaseFakeClient:
 class _FakeClient(_BaseFakeClient):
     """Sends one text_delta then raises, mimicking a dropped SSE connection."""
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {"event": "text_delta", "text": "partial "}
         raise RuntimeError("connection dropped mid-stream")
 
@@ -125,12 +128,12 @@ class _HarnessApp(App):
 
 
 class _NeverCallMeClient(_BaseFakeClient):
-    """Fails the test the instant `send_message` is invoked."""
+    """Fails the test the instant `send` is invoked."""
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         raise AssertionError(f"a slash command must never be sent to the agent: {content!r}")
         yield  # pragma: no cover - unreachable, keeps this an async generator
 
@@ -140,7 +143,7 @@ async def test_quit_exits_the_app_without_ever_asking_the_agent():
     made the model role-play a reply ("Пока! Обращайся, когда
     понадобится.") instead of actually exiting — every "/" line was sent
     to the agent like any other message. `/quit` (and `/exit`) must close
-    the app and must never reach `send_message`.
+    the app and must never reach `send`.
     """
     app = _HarnessApp(_NeverCallMeClient())
     async with app.run_test():
@@ -247,9 +250,9 @@ async def test_slash_dropdown_reserves_real_visible_height_for_every_match():
         await pilot.press("/")
 
         dropdown = chat.query_one("#autocomplete", ListView)
-        from luna.repl.commands import HELP
+        from luna.tui.commands import FALLBACK_COMMANDS
 
-        expected_rows = min(len(HELP), 10)
+        expected_rows = min(len(FALLBACK_COMMANDS), 10)
         # border-box: the dropdown's 2-row round border comes on top of the rows
         assert dropdown.region.height == expected_rows + 2
 
@@ -335,10 +338,10 @@ async def test_enter_on_open_dropdown_fills_input_instead_of_sending_a_turn():
 class _ErrorFakeClient(_BaseFakeClient):
     """A turn that fails server-side: one text_delta, then an error event."""
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {"event": "text_delta", "text": "thinking... "}
         yield {"event": "error", "message": "RuntimeError: insufficient balance"}
 
@@ -362,35 +365,46 @@ async def test_error_event_is_rendered_visibly_not_silently_dropped():
         assert "insufficient balance" in transcript_text(transcript)
 
 
+def _approval(call_id, path):
+    return {
+        "event": "approval_needed",
+        "value": {
+            "action_requests": [
+                {
+                    "call_id": call_id,
+                    "name": "write_file",
+                    "args": {"file_path": path, "content": "x"},
+                    "description": path,
+                    "suggested_rule": f"write_file:{path}",
+                }
+            ]
+        },
+    }
+
+
 class _ApprovalFakeClient(_BaseFakeClient):
-    """Emits an approval_needed event, then (once resumed) a text_delta."""
+    """One stream: text, an approval_needed, then (after decide) more text."""
 
     def __init__(self) -> None:
-        self.approve_calls: list[tuple[str, dict, str]] = []
+        self.decide_calls: list[tuple[str, str, dict]] = []
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {"event": "text_delta", "text": "before "}
-        yield {
-            "event": "approval_needed",
-            "value": {
-                "action_requests": [
-                    {"action": "write_file", "args": {"file_path": "/a.py", "content": "x"}}
-                ]
-            },
-        }
-
-    async def approve(self, thread_id, decision, workdir):
-        self.approve_calls.append((thread_id, decision, workdir))
+        yield _approval("c1", "/a.py")
+        assert self.decide_calls, "the stream continues only after the decision"
         yield {"event": "text_delta", "text": "after "}
 
+    async def decide(self, thread_id, call_id, decision):
+        self.decide_calls.append((thread_id, call_id, decision))
 
-async def test_approval_needed_pushes_modal_and_resumes_with_decision():
-    """The approval_needed branch pushes ApprovalModal, then feeds the
-    resume stream's events into the same transcript — all still inside
-    on_input_submitted's try/finally (stream.stop() still runs once).
+
+async def test_approval_needed_pushes_modal_and_the_same_stream_continues():
+    """The approval_needed branch pushes ApprovalModal, answers via decide(),
+    and keeps reading the same stream — all inside one try/finally
+    (stream.stop() still runs once).
     """
     client = _ApprovalFakeClient()
     app = _HarnessApp(client)
@@ -417,58 +431,31 @@ async def test_approval_needed_pushes_modal_and_resumes_with_decision():
             MarkdownStream.stop = original_stop
 
         assert len(stop_calls) == 1
-        assert client.approve_calls == [("t1", {"type": "approve"}, ".")]
+        assert client.decide_calls == [("t1", "c1", {"type": "approve"})]
 
 
 class _TwoApprovalFakeClient(_BaseFakeClient):
-    """A turn that pauses for approval TWICE before finishing.
-
-    The server's SSE stream always ends after an ``Interrupted``, so a
-    resumed stream that hits a second interrupt ends on another
-    ``approval_needed`` — exactly what this fake reproduces.
-    """
+    """A turn that pauses for approval TWICE in one stream before finishing."""
 
     def __init__(self) -> None:
-        self.approve_calls: list[tuple[str, dict, str]] = []
+        self.decide_calls: list[tuple[str, str, dict]] = []
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {"event": "text_delta", "text": "first "}
-        yield {
-            "event": "approval_needed",
-            "value": {
-                "action_requests": [
-                    {"action": "write_file", "args": {"file_path": "/one.py", "content": "1"}}
-                ]
-            },
-        }
+        yield _approval("c1", "/one.py")
+        yield {"event": "text_delta", "text": "second "}
+        yield _approval("c2", "/two.py")
+        yield {"event": "text_delta", "text": "done"}
 
-    async def approve(self, thread_id, decision, workdir):
-        self.approve_calls.append((thread_id, decision, workdir))
-        if len(self.approve_calls) == 1:
-            yield {"event": "text_delta", "text": "second "}
-            yield {
-                "event": "approval_needed",
-                "value": {
-                    "action_requests": [
-                        {"action": "write_file", "args": {"file_path": "/two.py", "content": "2"}}
-                    ]
-                },
-            }
-        else:
-            yield {"event": "text_delta", "text": "done"}
+    async def decide(self, thread_id, call_id, decision):
+        self.decide_calls.append((thread_id, call_id, decision))
 
 
-async def test_two_sequential_approvals_in_one_turn_both_get_resumed():
-    """Regression (C2): a turn needing two approvals used to be stranded.
-
-    The old nested `async for` handled exactly one round: when the resumed
-    stream itself ended on a second ``approval_needed``, that event was
-    dropped on the floor, the already-exhausted outer loop ended, and the
-    graph stayed paused forever with nothing in the UI to resume it.
-    """
+async def test_two_sequential_approvals_in_one_turn_both_get_answered():
+    """Regression (C2): a turn needing two approvals must not be stranded."""
     client = _TwoApprovalFakeClient()
     app = _HarnessApp(client)
     async with app.run_test() as pilot:
@@ -502,9 +489,9 @@ async def test_two_sequential_approvals_in_one_turn_both_get_resumed():
             MarkdownStream.stop = original_stop
             MarkdownStream.write = original_write
 
-    assert client.approve_calls == [
-        ("t1", {"type": "approve"}, "."),
-        ("t1", {"type": "approve"}, "."),
+    assert client.decide_calls == [
+        ("t1", "c1", {"type": "approve"}),
+        ("t1", "c2", {"type": "approve"}),
     ]
     # the whole turn, including everything after the SECOND approval
     assert "".join(written) == "first second done"
@@ -527,17 +514,17 @@ class _UsageFakeClient(_BaseFakeClient):
     def __init__(self) -> None:
         self.turns = 0
 
-    async def get_state(self, thread_id, workdir):
-        state = await super().get_state(thread_id, workdir)
+    async def state(self, thread_id, workdir):
+        state = await super().state(thread_id, workdir)
         state["usage_summary"] = "ctx ~220/200k" if self.turns else ""
         return state
 
     """One turn: two usage_delta chunks, a reply, then turn_done."""
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {
             "event": "usage_delta",
             "usage_metadata": {"input_tokens": 100, "output_tokens": 0, "total_tokens": 100},
@@ -573,10 +560,10 @@ async def test_usage_delta_events_update_the_status_bar_once_the_turn_completes(
 
 
 class _ToolThenTextClient(_BaseFakeClient):
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {"event": "text_delta", "text": "Сейчас поищу."}
         yield {
             "event": "tool_started",
@@ -616,10 +603,10 @@ async def test_tool_row_sits_between_the_text_before_and_after_it():
 
 
 class _DiesMidToolClient(_BaseFakeClient):
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         yield {
             "event": "tool_started",
             "call_id": "c1",
@@ -653,35 +640,38 @@ def test_render_history_builds_tool_rows():
 
     widgets = render_history(
         [
-            {"role": "human", "content": "hi"},
+            {"role": "user", "content": "hi"},
             {"role": "tool", "name": "ls", "args_preview": "/", "ok": True, "detail": ""},
-            {"role": "ai", "content": "done"},
+            {"role": "assistant", "content": "done"},
         ]
     )
     assert isinstance(widgets[1], ToolRow)
 
 
 class _ApprovalClient(_BaseFakeClient):
-    """First stream pauses for approval; records which thread each call used."""
+    """The stream pauses for approval; records which session each call used."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def send_message(self, thread_id, content, workdir):
+    async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
         self.calls.append(("send", thread_id))
-        yield {"event": "approval_needed", "value": {"action_requests": [{"name": "execute"}]}}
-
-    async def approve(self, thread_id, decision, workdir):
-        self.calls.append(("approve", thread_id))
+        yield {
+            "event": "approval_needed",
+            "value": {"action_requests": [{"call_id": "c1", "name": "execute", "args": {}}]},
+        }
         yield {"event": "turn_done"}
 
+    async def decide(self, thread_id, call_id, decision):
+        self.calls.append(("decide", thread_id))
 
-async def test_approval_resumes_the_thread_the_turn_started_on():
+
+async def test_approval_is_decided_on_the_session_the_turn_started_on():
     """Regression: switching sessions while a turn waited for approval sent
-    the decision to the *new* thread, leaving the original paused forever."""
+    the decision to the *new* session, leaving the original paused forever."""
     client = _ApprovalClient()
     app = _HarnessApp(client)
     async with app.run_test():
@@ -695,7 +685,7 @@ async def test_approval_resumes_the_thread_the_turn_started_on():
         chat._await_approval_decision = lambda _req: _Decision()
         chat.query_one("#chat-input", Input)
         await chat.submit("run it")
-    assert client.calls == [("send", "t1"), ("approve", "t1")]
+    assert client.calls == [("send", "t1"), ("decide", "t1")]
 
 
 async def test_user_message_is_literal_text_with_a_peri_marker():
