@@ -1,3 +1,5 @@
+import pytest
+
 from luna.cli import build_parser, main
 
 
@@ -349,8 +351,11 @@ def test_sessions_rm_goes_through_a_live_server_and_respects_busy(tmp_path, monk
         def __init__(self, *a, **k):
             pass
 
+        async def agents(self):
+            return {"runs": [], "tasks": []}
+
         async def delete_session(self, session_id):
-            raise ServerError("HTTP 409: session_busy")
+            raise ServerError("HTTP 409: session_busy", 409)
 
         async def aclose(self):
             pass
@@ -403,6 +408,7 @@ def test_run_background_starts_a_server_run(monkeypatch, capsys, tmp_path):
         async def aclose(self):
             pass
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setattr("luna.server.run.ensure_running", lambda *a, **k: {"port": 1, "token": "t"})
     monkeypatch.setattr("luna_core.client.LunaClient", FakeClient)
     monkeypatch.setattr("luna.cli._trusted", lambda workdir: True)
@@ -448,3 +454,93 @@ def test_p_without_a_key_is_a_readable_error_not_a_traceback(monkeypatch, tmp_pa
     assert main(["-p", "hi", "--workdir", str(tmp_path)]) == 2
     err = capsys.readouterr().err
     assert err.startswith("luna:") and "Traceback" not in err
+
+
+@pytest.mark.parametrize("days", ["-1", "0", "nan", "inf", "-inf", "abc"])
+def test_sessions_prune_rejects_a_non_positive_or_non_finite_days(
+    days, tmp_path, monkeypatch, capsys
+):
+    from luna.core.store import open_log
+
+    monkeypatch.chdir(tmp_path)
+    log = open_log()
+    sid = _log_session(log, tmp_path.resolve(), "precious")
+    with pytest.raises(SystemExit) as exc:
+        main(["sessions", "prune", "--days", days])
+    assert exc.value.code == 2 and "--days" in capsys.readouterr().err
+    assert log.info(sid) is not None
+
+
+def test_server_error_carries_the_http_status():
+    import httpx
+    from luna_core.client import ServerError, _error
+
+    resp = httpx.Response(409, json={"error": "session_busy"})
+    assert _error(resp).status == 409 and ServerError("x").status is None
+
+
+def test_sessions_rm_refuses_when_a_descendant_runs_on_the_live_server(
+    tmp_path, monkeypatch, capsys
+):
+    from luna.core.store import open_log
+
+    monkeypatch.chdir(tmp_path)
+    log = open_log()
+    top = _log_session(log, tmp_path.resolve(), "top")
+    child = _log_session(log, tmp_path.resolve(), "child", parent_id=top)
+    monkeypatch.setattr("luna.cli._live_server", lambda: {"port": 1, "token": "t"})
+    deleted = []
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def agents(self):
+            return {"runs": [], "tasks": [{"session_id": child, "status": "running"}]}
+
+        async def delete_session(self, session_id):
+            deleted.append(session_id)
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("luna_core.client.LunaClient", Client)
+    assert main(["sessions", "rm", top]) == 1
+    assert deleted == [] and log.info(top) is not None and log.info(child) is not None
+
+
+def test_run_background_without_a_key_is_a_readable_error(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("luna.cli._trusted", lambda workdir: True)
+    monkeypatch.chdir(tmp_path)
+    assert main(["run", "--background", "x"]) == 2
+    err = capsys.readouterr().err
+    assert "No API key" in err and "Traceback" not in err
+
+
+def test_run_background_reports_a_server_that_cannot_start(monkeypatch, tmp_path, capsys):
+    def boom(*a, **k):
+        raise OSError("no port")
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr("luna.server.run.ensure_running", boom)
+    monkeypatch.setattr("luna.cli._trusted", lambda workdir: True)
+    monkeypatch.chdir(tmp_path)
+    assert main(["run", "--background", "x"]) == 1
+    assert "cannot start the local server" in capsys.readouterr().err
+
+
+def test_acp_on_eof_exits_cleanly_without_output(tmp_path):
+    import subprocess
+    import sys
+
+    pytest.importorskip("acp")
+    result = subprocess.run(
+        [sys.executable, "-m", "luna", "acp"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**__import__("os").environ, "XDG_CONFIG_HOME": str(tmp_path / "cfg")},
+    )
+    assert result.returncode == 0 and result.stdout == "" and "Traceback" not in result.stderr

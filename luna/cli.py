@@ -429,6 +429,8 @@ def _delete_conversation(log, session_id: str) -> str:
     info = _live_server()
     done = False
     if info is not None:
+        if _has_active_work(info, {session_id, *children}):
+            return "busy"
 
         async def remote() -> None:
             client = _client(info)
@@ -441,15 +443,38 @@ def _delete_conversation(log, session_id: str) -> str:
             asyncio.run(remote())
             done = True
         except ServerError as exc:
-            if "409" in str(exc):
+            if exc.status == 409:
                 return "busy"
-            if "cannot reach" not in str(exc):
+            if exc.status is not None:
                 raise
     if not done:
         log.delete(session_id)
     for child in children:
         log.delete(child)
     return "deleted"
+
+
+def _has_active_work(info: dict, ids: set[str]) -> bool:
+    """Return whether the server runs a turn or background task of a session in ``ids``."""
+    import asyncio
+
+    from luna_core.client import ServerError
+
+    async def fetch() -> dict:
+        client = _client(info)
+        try:
+            return await client.agents()
+        finally:
+            await client.aclose()
+
+    try:
+        agents = asyncio.run(fetch())
+    except ServerError:
+        return False  # unreachable: the delete below reports it
+    active = ("queued", "running", "waiting")
+    runs = (r for r in agents.get("runs", []) if r.get("id") in ids)
+    tasks = (t for t in agents.get("tasks", []) if t.get("session_id") in ids)
+    return any(x.get("status") in active for x in (*runs, *tasks))
 
 
 def _running_ids(workdir: str) -> set[str]:
@@ -475,6 +500,18 @@ def _running_ids(workdir: str) -> set[str]:
         return set()
 
 
+def _positive_days(value: str) -> float:
+    import math
+
+    try:
+        days = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number of days: {value!r}") from None
+    if not math.isfinite(days) or days <= 0:
+        raise argparse.ArgumentTypeError("--days must be a finite number greater than 0")
+    return days
+
+
 def _run_sessions(argv: list[str]) -> int:
     """``luna sessions [list|rm <id>|prune [--days N]]`` for the current folder."""
     import time
@@ -484,10 +521,14 @@ def _run_sessions(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="luna sessions")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("list", help="list this folder's sessions")
-    rm = sub.add_parser("rm", help="delete a session and its subagent/background runs")
+    rm = sub.add_parser(
+        "rm",
+        help="delete a session (any session id, not only this folder's) "
+        "and its subagent/background runs",
+    )
     rm.add_argument("session_id")
     prune = sub.add_parser("prune", help="delete sessions not touched for N days")
-    prune.add_argument("--days", type=float, default=30)
+    prune.add_argument("--days", type=_positive_days, default=30)
     args = parser.parse_args(argv)
     log = open_log()
     workdir = str(Path.cwd().resolve())
@@ -553,7 +594,22 @@ def _run_run(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    info = ensure_running(workdir)
+    from luna.config.config import load_config
+    from luna.config.providers import merge_providers
+
+    config = load_config({})
+    if not _has_api_key(config.provider, merge_providers(config.custom_providers)):
+        print(
+            f"luna: No API key for {config.provider}. Run 'luna setup' to configure one, "
+            f"export its API key, or pick another provider.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        info = ensure_running(workdir)
+    except Exception as exc:  # noqa: BLE001 - a spawn failure must read as an error, not a trace
+        print(f"luna: cannot start the local server: {exc}", file=sys.stderr)
+        return 1
 
     async def go() -> str:
         client = _client(info)

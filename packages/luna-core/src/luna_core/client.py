@@ -14,7 +14,15 @@ _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 
 
 class ServerError(LunaCoreError):
-    """The server answered with an error or could not be reached."""
+    """The server answered with an error or could not be reached.
+
+    ``status`` is the HTTP status of an error answer, ``None`` when the server was unreachable.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        """Build the error; ``status`` is the HTTP status, if the server answered."""
+        super().__init__(message)
+        self.status = status
 
 
 def _error(resp: httpx.Response) -> ServerError:
@@ -22,7 +30,7 @@ def _error(resp: httpx.Response) -> ServerError:
         message = resp.json().get("error") or resp.text
     except ValueError:
         message = resp.text or resp.reason_phrase
-    return ServerError(f"HTTP {resp.status_code}: {message}")
+    return ServerError(f"HTTP {resp.status_code}: {message}", resp.status_code)
 
 
 class LunaClient:

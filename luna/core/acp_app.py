@@ -7,6 +7,18 @@ import sys
 from pathlib import Path
 
 
+def _stdin_is_readable_stream() -> bool:
+    """Return False for a stdin the loop cannot poll (``/dev/null``, a file): nothing to serve."""
+    import selectors
+
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(sys.stdin.fileno(), selectors.EVENT_READ)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def run(cwd: Path) -> int:
     """Serve ACP over stdio until the editor disconnects."""
     try:
@@ -14,6 +26,9 @@ def run(cwd: Path) -> int:
     except ImportError:
         print('luna: ACP support is not installed: pip install "luna-simple[acp]"', file=sys.stderr)
         return 2
+
+    if not _stdin_is_readable_stream():  # EOF right away: the editor is gone, exit quietly
+        return 0
 
     from luna.config.config import load_config
     from luna.core.agent import build_agent
