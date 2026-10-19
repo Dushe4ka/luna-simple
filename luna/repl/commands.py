@@ -7,39 +7,27 @@ return a structured result, which is rendered here to the console; a
 re-dispatching the command. A few commands stay REPL-only (``/help``,
 ``/clear``, ``/new``, ``/sessions``, ``/resume``, ``/init``, and the
 interactive part of ``/model``).
-
-``/undo``, ``/redo``, ``/diff`` and ``/compact`` act on the luna-core session
-here (the shared handlers still drive the server's LangGraph agents).
-
-Registry handlers are still synchronous: they run in a worker thread, so a
-handler that rebuilds the agent (``/reload``, ``/model``, ``/provider``)
-schedules the async rebuild on the REPL's event loop and waits for it.
 """
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from luna_core.errors import LunaCoreError
-from luna_core.events import Compacted as CoreCompacted
-from luna_core.events import Notice as CoreNotice
 from luna_core.session import Session
 from rich.console import Console
 
-from luna.commands import REGISTRY, CommandResult, Confirm, run_line
+from luna.commands import REGISTRY, run_line
 from luna.config.config import LunaConfig
 from luna.config.credentials import get_api_key
 from luna.config.providers import merge_providers
-from luna.config.usage import SessionUsage, TurnUsage
 from luna.core.session_state import SessionState, SessionStateStore
 from luna.core.store import conversations
 from luna.repl import usercmd
 from luna.repl.setup_wizard import choose_model
-from luna.turn.engine import Notice
 from luna.ui.interact import arrow_confirm, arrow_pick, in_thread
 from luna.ui.theme import PALETTE
 
@@ -179,61 +167,6 @@ _UI: dict[str, Callable] = {
 }
 
 
-async def _undo(ctx: CommandContext, arg: str) -> CommandResult:
-    session = ctx.session
-    if not session.undo_depth:
-        return CommandResult(notices=[Notice("dim", "nothing to undo")])
-    if arg != "--yes":
-        return CommandResult(
-            confirm=Confirm(
-                "undo the last turn (files + conversation)?", "/undo --yes", "undo cancelled"
-            )
-        )
-    result = await asyncio.to_thread(session.undo)
-    if result is None:
-        return CommandResult(notices=[Notice("dim", "nothing to undo")])
-    return CommandResult(notices=[Notice("info", result.note)])
-
-
-async def _redo(ctx: CommandContext, arg: str) -> CommandResult:
-    result = await asyncio.to_thread(ctx.session.redo)
-    if result is None:
-        return CommandResult(notices=[Notice("dim", "nothing to redo")])
-    return CommandResult(notices=[Notice("info", result.note)])
-
-
-async def _diff(ctx: CommandContext, arg: str) -> CommandResult:
-    journal = ctx.session.undo_journal
-    text = await asyncio.to_thread(journal.diff) if journal is not None else ""
-    if not text:
-        return CommandResult(notices=[Notice("dim", "no changes this session")])
-    return CommandResult(text=f"```diff\n{text}\n```")
-
-
-async def _compact(ctx: CommandContext, arg: str) -> CommandResult:
-    agent = ctx.bundle.agent
-    if agent.compactor is None:
-        return CommandResult(notices=[Notice("error", "/compact is not available here")])
-    notices: list[Notice] = []
-    try:
-        async for event in agent.compactor.compact(agent, ctx.session, instructions=arg):
-            if isinstance(event, CoreCompacted):
-                notices.append(Notice("info", f"compacted {event.removed} messages into a summary"))
-            elif isinstance(event, CoreNotice):
-                notices.append(Notice(event.level, event.text))
-    except Exception as exc:  # noqa: BLE001 - a failed compact must not kill the session
-        return CommandResult(notices=[Notice("error", f"/compact failed: {exc}")])
-    return CommandResult(notices=notices)
-
-
-#: Commands that act on the core session (REPL and server; see the module docstring).
-CORE_COMMANDS: dict[str, Callable] = {
-    "/undo": _undo,
-    "/redo": _redo,
-    "/diff": _diff,
-    "/compact": _compact,
-}
-
 _STYLE = {
     "dim": "dim",
     "ok": "dim",
@@ -241,17 +174,6 @@ _STYLE = {
     "warn": "yellow",
     "error": PALETTE["mauve"],
 }
-
-
-def usage_of(session: Session) -> SessionUsage:
-    """Per-turn usage from the event log, in the shape the shared ``/usage`` reads."""
-    turns = []
-    for rec in session.records():
-        if rec.type == "turn_done":
-            usage = rec.payload.get("usage") or {}
-            tokens_in, tokens_out = int(usage.get("input", 0)), int(usage.get("output", 0))
-            turns.append(TurnUsage(tokens_in, tokens_out, tokens_in + tokens_out))
-    return SessionUsage(turns=turns)
 
 
 async def swap_bundle(ctx: CommandContext) -> None:
@@ -268,24 +190,17 @@ async def swap_bundle(ctx: CommandContext) -> None:
 
 
 class _ReplEnv:
-    """:class:`luna.commands.CommandEnv` over the REPL's mutable context.
+    """:class:`luna.commands.CommandEnv` over the REPL's mutable context."""
 
-    Runs in a worker thread (see :func:`dispatch`); ``loop`` is the REPL's
-    event loop, where the async rebuild is scheduled.
-    """
+    manager = None
 
-    def __init__(self, ctx: CommandContext, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, ctx: CommandContext) -> None:
         self._ctx = ctx
-        self._loop = loop
         self.session = ctx.session
         self.state = ctx.state
         self.workdir = ctx.session.workdir
         self.pinned = ctx.state.pinned
         self.user_commands = ctx.user_commands or {}
-        # what the not-yet-ported shared handlers still read
-        self.thread_id = self.session_id = ctx.session.id
-        self.index = None
-        self.usage = usage_of(ctx.session)
 
     @property
     def config(self) -> LunaConfig:
@@ -309,32 +224,26 @@ class _ReplEnv:
     def set_plan(self, on: bool) -> None:
         self._ctx.plan_state[0] = on
 
-    def rebuild(self) -> None:
+    async def rebuild(self) -> None:
         if self._ctx.rebuild is None:
             raise RuntimeError("not available here")
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is self._loop:  # waiting on our own loop would deadlock
-            raise RuntimeError("rebuild() must be called from a worker thread, not the event loop")
-        asyncio.run_coroutine_threadsafe(swap_bundle(self._ctx), self._loop).result()
+        await swap_bundle(self._ctx)
 
-    def _switch(self, provider, model) -> None:
+    async def _switch(self, provider, model) -> None:
         cfg = self._ctx.config
         previous = (cfg.provider, cfg.model)
         cfg.provider, cfg.model = provider, model
         try:
-            self.rebuild()
+            await self.rebuild()
         except Exception:
             cfg.provider, cfg.model = previous
             raise
 
-    def switch_model(self, model: str) -> None:
-        self._switch(self._ctx.config.provider, model)
+    async def switch_model(self, model: str) -> None:
+        await self._switch(self._ctx.config.provider, model)
 
-    def switch_provider(self, provider: str) -> None:
-        self._switch(provider, None)
+    async def switch_provider(self, provider: str) -> None:
+        await self._switch(provider, None)
 
 
 async def _render(result, ctx: CommandContext) -> DispatchResult:
@@ -380,8 +289,6 @@ async def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
         if inspect.isawaitable(res):
             res = await res
         return res or DispatchResult()
-    if name in CORE_COMMANDS:
-        return await _render(await CORE_COMMANDS[name](ctx, arg), ctx)
     if name == "/model" and not arg and ctx.input_fn is None:
         # nobody to pick from a list: just say which model is in use (no network)
         ctx.console.print(
@@ -398,8 +305,4 @@ async def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
             choose_model, ctx.console, ctx.input_fn, ctx.config.provider, spec, api_key=api_key
         )
         line = f"/model {arg}"
-    env = _ReplEnv(ctx, asyncio.get_running_loop())
-    result = await in_thread(run_line, line, env)
-    if inspect.isawaitable(result):  # run_line becomes async with the command port
-        result = await result
-    return await _render(result, ctx)
+    return await _render(await run_line(line, _ReplEnv(ctx)), ctx)

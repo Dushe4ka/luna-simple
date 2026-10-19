@@ -1,8 +1,7 @@
 """Slash commands over HTTP: one entry point, like opencode's /session/:id/command.
 
-``/undo``, ``/redo``, ``/diff`` and ``/compact`` act on the luna-core session
-(the REPL's core handlers); the other shared handlers are still synchronous
-and run in a worker thread over :class:`_ServerEnv` (Task 31 ports them).
+Every command is an async handler of the shared registry (:mod:`luna.commands`),
+run over :class:`_ServerEnv`; the REPL runs the very same handlers.
 """
 
 from __future__ import annotations
@@ -12,48 +11,27 @@ import asyncio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.commands import CommandResult, command_kind, list_commands, run_line
+from luna.commands import command_kind, list_commands, needs_agent, run_line
 from luna.repl import usercmd
-from luna.repl.commands import CORE_COMMANDS, usage_of
 from luna.server.runtime import runtime_for
 from luna.server.trust import trust_error
-from luna.turn.engine import Notice
 
 
 class _ServerEnv:
-    """:class:`luna.commands.CommandEnv` over a :class:`~luna.server.runtime.SessionRuntime`.
-
-    The shared handlers run in a worker thread; the async runtime calls
-    (build, rebuild, model switch) are scheduled on the server's loop.
-    """
+    """:class:`luna.commands.CommandEnv` over a :class:`~luna.server.runtime.SessionRuntime`."""
 
     can_rebuild = True
 
-    def __init__(self, runtime, manager, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, runtime, manager, bundle) -> None:
         self._rt = runtime
-        self._loop = loop
         self.session = runtime.session
         self.state = runtime.state
         self.manager = manager
+        self.bundle = bundle
         self.workdir = runtime.workdir
         self.pinned = runtime.state.pinned
         self.user_commands = usercmd.load(runtime.workdir)
-        # what the not-yet-ported shared handlers still read
-        self.thread_id = self.session_id = runtime.id
-        self.index = None
-        self.usage = usage_of(runtime.session)
         self._config = None
-        self._bundle = None
-
-    def _wait(self, coro):
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is self._loop:  # waiting on our own loop would deadlock
-            coro.close()
-            raise RuntimeError("must be called from a worker thread, not the event loop")
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
     @property
     def config(self):
@@ -62,13 +40,9 @@ class _ServerEnv:
         return self._config
 
     @property
-    def bundle(self):
-        if self._bundle is None:
-            self._bundle = self._wait(self._rt.bundle())
-        return self._bundle
-
-    @property
     def agent(self):
+        if self.bundle is None:
+            raise RuntimeError("the agent could not be built; fix the config and /reload")
         return self.bundle.agent
 
     def get_plan(self):
@@ -77,30 +51,37 @@ class _ServerEnv:
     def set_plan(self, on: bool) -> None:
         self._rt.set_plan(on)
 
-    def _after_rebuild(self) -> None:
+    async def _after_rebuild(self) -> None:
         self._config = None
-        self._bundle = None
+        self.bundle = await self._rt.bundle()
 
-    def rebuild(self) -> None:
-        self._wait(self._rt.rebuild())
-        self._after_rebuild()
+    async def rebuild(self) -> None:
+        await self._rt.rebuild()
+        await self._after_rebuild()
 
-    def switch_model(self, model: str) -> None:
-        self._wait(self._rt.switch_model(model))
-        self._after_rebuild()
+    async def switch_model(self, model: str) -> None:
+        await self._rt.switch_model(model)
+        await self._after_rebuild()
 
-    def switch_provider(self, provider: str) -> None:
-        self._wait(self._rt.switch_provider(provider))
-        self._after_rebuild()
+    async def switch_provider(self, provider: str) -> None:
+        await self._rt.switch_provider(provider)
+        await self._after_rebuild()
 
 
-async def _run_core(name: str, arg: str, env: _ServerEnv, runtime) -> CommandResult:
-    if name == "/compact":
+async def _env_for(runtime, manager, name: str) -> _ServerEnv:
+    """Build the command env; the agent is built only for commands that use it.
+
+    A failing build leaves ``bundle`` ``None``: the command reports it, and
+    commands that need no agent (``/plan``, ``/reload``...) keep working
+    when the config is broken.
+    """
+    bundle = None
+    if needs_agent(name):
         try:
-            env._bundle = await runtime.bundle()
-        except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
-            return CommandResult(notices=[Notice("error", f"/compact failed: {exc}")])
-    return await CORE_COMMANDS[name](env, arg)
+            bundle = await runtime.bundle()
+        except Exception:  # noqa: BLE001 - reported by the command that needs the agent
+            bundle = None
+    return _ServerEnv(runtime, manager, bundle)
 
 
 async def post_command(request: Request) -> JSONResponse:
@@ -113,31 +94,24 @@ async def post_command(request: Request) -> JSONResponse:
     if isinstance(runtime, JSONResponse):
         return runtime
     line = body["line"].strip()
-    name, _, arg = line.partition(" ")
-    arg = arg.strip()
+    name = line.partition(" ")[0]
     kind = command_kind(name, usercmd.load(runtime.workdir))
     if kind == "ui":
         return JSONResponse({"error": "client_command"}, status_code=400)
     busy = runtime.lock.locked() or request.app.state.runtimes.running(session_id)
     if kind != "read" and busy:
         return JSONResponse({"error": "session_busy"}, status_code=409)
-    env = _ServerEnv(runtime, request.app.state.manager, asyncio.get_running_loop())
 
     if kind == "read":
         # read-only: may run mid-turn, never writes state
-        if name in CORE_COMMANDS:
-            result = await _run_core(name, arg, env, runtime)
-        else:
-            result = await asyncio.to_thread(run_line, line, env)
-        return JSONResponse(result.to_json())
+        env = await _env_for(runtime, request.app.state.manager, name)
+        return JSONResponse((await run_line(line, env)).to_json())
 
     # Hold the session lock: /compact, /undo, /verify... must never run
     # alongside a turn on the same session (they rewrite history and files).
     async with runtime.lock:
-        if name in CORE_COMMANDS:
-            result = await _run_core(name, arg, env, runtime)
-        else:
-            result = await asyncio.to_thread(run_line, line, env)
+        env = await _env_for(runtime, request.app.state.manager, name)
+        result = await run_line(line, env)
         runtime.save()
     return JSONResponse(result.to_json())
 

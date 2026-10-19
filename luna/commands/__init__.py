@@ -2,7 +2,7 @@
 
 from luna.commands import builtin  # noqa: F401 - registers the built-ins
 from luna.commands.base import Choice, Command, CommandEnv, CommandResult, Confirm
-from luna.commands.registry import REGISTRY, command_kind, list_commands, run_line
+from luna.commands.registry import REGISTRY, command_kind, list_commands, needs_agent, run_line
 
 __all__ = [
     "REGISTRY",
@@ -13,5 +13,6 @@ __all__ = [
     "Confirm",
     "command_kind",
     "list_commands",
+    "needs_agent",
     "run_line",
 ]

@@ -70,7 +70,7 @@ async def test_confirm_round_trip_for_undo(api, tmp_path):
         second = (await _cmd(c, wd, first["confirm"]["resubmit"])).json()
         history = (await c.get("/sessions/t1/messages", params={"workdir": wd})).json()
     assert nothing["notices"] == [{"level": "dim", "text": "nothing to undo"}]
-    assert first["confirm"]["question"] == "undo the last turn (files + conversation)?"
+    assert first["confirm"]["question"] == "undo the last turn «write» (files + conversation)?"
     assert second["notices"][0]["level"] == "info"
     assert not (tmp_path / "a.txt").exists() and history["messages"] == []
 
@@ -199,3 +199,28 @@ async def test_diff_and_compact_act_on_the_core_session(api):
         compact = (await _cmd(c, wd, "/compact")).json()
     assert diff["notices"] == [{"level": "dim", "text": "no changes this session"}]
     assert compact["notices"][0]["level"] in ("dim", "info")
+
+
+async def test_new_core_commands_over_http(api):
+    c, _, wd = api(default=[FakeProvider.text("ok"), FakeProvider.text("side answer")])
+    async with c:
+        await turn(c, "t1", wd, "hello")
+        tools = (await _cmd(c, wd, "/tools")).json()
+        btw = (await _cmd(c, wd, "/btw and?")).json()
+        asked = (await _cmd(c, wd, "/rewind")).json()
+        done = (await _cmd(c, wd, "/rewind 1 --yes")).json()
+        history = (await c.get("/sessions/t1/messages", params={"workdir": wd})).json()
+        fork = (await _cmd(c, wd, "/fork")).json()
+    assert "write_todos" in tools["text"]
+    assert btw["text"] == "side answer"
+    assert asked["confirm"]["resubmit"] == "/rewind 1 --yes"
+    assert done["effects"] == {"undo_depth": 0} and history["messages"] == []
+    assert fork["effects"]["session"] != "t1"
+
+
+async def test_commands_that_need_no_agent_work_with_a_broken_config(api, tmp_path):
+    (tmp_path / ".luna.toml").write_text("[agent\n")  # unparsable
+    c, _, wd = api()
+    async with c:
+        plan = await _cmd(c, wd, "/plan")
+    assert plan.status_code == 200

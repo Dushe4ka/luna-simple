@@ -32,8 +32,6 @@
   - `models.toml` — реестр моделей: окно контекста, цена input/output
 - `luna/turn/` — всё, что крутится вокруг одного хода
   - `engine.py` — подготовка хода и хуки format/diagnose/verify на `luna-core`
-  - `undo.py` — журнал снапшотов, `/diff` `/undo` `/redo` (в git — снапшоты
-    дерева + разговора через `git commit-tree`, вне git — файловый журнал)
   - `gitinfo.py` — проверка git-дерева
   - `fmt.py` — автоформатирование тронутых файлов после правок
   - `diagnose.py` — диагностика после правок, `/diagnose`
@@ -96,17 +94,11 @@
 ## Соглашения
 
 - Python 3.11+, PEP 8 / PEP 257, чистый `ruff`.
-- Все импорты `deepagents` / `langgraph` держать внутри `luna/core/agent.py`,
-  `luna/core/session.py` и `luna/core/_legacy_session.py`. Известные исключения:
-  `luna/extensions/subagents.py` держит модульные импорты `SubAgent` /
-  `FilesystemMiddleware` из `deepagents` (нужны для сборки декларативных
-  субагентов); `luna/turn/undo.py` — `undo()`/`redo()` принимают уже
-  собранного агента параметром и лениво импортируют
-  `langchain_core.messages` только внутри этих двух функций, остальной
-  модуль framework-free. Весь `luna/server/` и `luna/tui/` работают на
-  `luna-core` и прямых импортов `deepagents`/`langgraph` не держат.
+- Прямых импортов `deepagents` / `langgraph` в приложении больше нет: всё работает на
+  `luna-core`. Slash-команды — одна реализация в `luna/commands` (async, общая для
+  REPL и сервера); откат/повтор/diff живут в `luna_core.undo` и `Session`.
 - ID моделей — в `luna/config/providers.py` или конфиге, никогда в логике агента.
-- Тесты не ходят в сеть — используйте фикстуру `FakeToolCallingModel`.
+- Тесты не ходят в сеть — используйте `FakeProvider` (`luna_core.providers.fake`).
 - `subagents.toml` получил ключ `unsafe` — opt-in для мутирующих инструментов
   (`write_file` / `edit_file` / `delete` / `execute`) у субагента; правки
   субагентов пишутся в общий журнал `/undo` сессии.

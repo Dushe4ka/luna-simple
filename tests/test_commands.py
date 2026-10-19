@@ -2,12 +2,15 @@ import io
 from pathlib import Path
 
 import pytest
+from luna_core.background import AgentManager
+from luna_core.errors import ProviderError
 from luna_core.messages import Message, Text, message_to_dict
 from luna_core.providers.fake import FakeProvider
-from luna_core.session import Session
+from luna_core.session import EventLog, Session
 from luna_core.usage import Usage
 from rich.console import Console
 
+from luna.commands import run_line
 from luna.config.config import LunaConfig
 from luna.core.agent import build_agent
 from luna.core.session_state import SessionState, SessionStateStore
@@ -363,7 +366,7 @@ async def test_usage_reads_the_event_log(make_ctx):
     _turn(ctx.session, "t1", "q", "a")
     _turn(ctx.session, "t2", "q", "a")
     await dispatch("/usage", ctx)
-    assert "turns: 2  in: 10  out: 2  total: 12" in _out(ctx)
+    assert "turns: 2  in: 10  out: 2  cached: 0  total: 12" in _out(ctx)
 
 
 async def test_add_drop_context_handlers(make_ctx, tmp_path):
@@ -399,7 +402,12 @@ async def test_dispatch_goes_through_the_shared_registry(make_ctx, monkeypatch):
 
     seen = []
     real = repl.run_line
-    monkeypatch.setattr(repl, "run_line", lambda line, env: seen.append(line) or real(line, env))
+
+    async def spy(line, env):
+        seen.append(line)
+        return await real(line, env)
+
+    monkeypatch.setattr(repl, "run_line", spy)
     await dispatch("/tools", await make_ctx())
     assert seen == ["/tools"]
 
@@ -414,11 +422,138 @@ async def test_reload_rereads_custom_commands(make_ctx, tmp_path):
     assert (await dispatch("/greet you", ctx)).prompt == "hi you"
 
 
-async def test_env_rebuild_on_the_loop_thread_raises_instead_of_deadlocking(make_ctx):
-    import asyncio
+# -- commands on the core (registry handlers, no REPL/server involved) ----------------------
 
-    from luna.repl.commands import _ReplEnv
 
-    env = _ReplEnv(await make_ctx(), asyncio.get_running_loop())
-    with pytest.raises(RuntimeError, match="worker thread"):
-        env.rebuild()
+class Env:
+    """A bare :class:`luna.commands.CommandEnv` over a core session."""
+
+    can_rebuild = False
+
+    def __init__(self, tmp_path, bundle, session, config=None):
+        self.workdir = str(tmp_path)
+        self.session = session
+        self.state = SessionState(session.id, str(tmp_path))
+        self.pinned = self.state.pinned
+        self.bundle = bundle
+        self.agent = bundle.agent
+        self.manager = AgentManager()
+        self.user_commands = {}
+        self.config = config or LunaConfig(workdir=str(tmp_path))
+
+    def get_plan(self):
+        return False
+
+
+@pytest.fixture
+async def env(tmp_path):
+    log = EventLog(tmp_path / "s.db")
+    session = Session.create(log, str(tmp_path), undo=False)
+    script = [FakeProvider.text("SUMMARY"), FakeProvider.text("side")]
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path), model="m"), provider=FakeProvider(script)
+    )
+    yield Env(tmp_path, bundle, session)
+    await bundle.aclose()
+    log.close()
+
+
+async def test_undo_confirms_then_rewinds(env):
+    _turn(env.session, "t1", "first", "a")
+    _turn(env.session, "t2", "second", "b")
+    asked = await run_line("/undo", env)
+    assert asked.confirm and "second" in asked.confirm.question
+    done = await run_line("/undo --yes", env)
+    assert "rewound" in done.notices[0].text
+    assert [m.text for m in env.session.messages()] == ["first", "a"]
+    assert "restored" in (await run_line("/redo", env)).notices[0].text
+
+
+async def test_rewind_n(env):
+    for i in range(3):
+        _turn(env.session, f"t{i}", f"q{i}", f"a{i}")
+    asked = await run_line("/rewind 2", env)
+    assert asked.confirm and asked.confirm.resubmit == "/rewind 2 --yes"
+    await run_line("/rewind 2 --yes", env)
+    assert [m.text for m in env.session.messages()] == ["q0", "a0"]
+
+
+async def test_compact_btw_steer_fork_export(env, tmp_path):
+    for i in range(6):
+        _turn(env.session, f"t{i}", f"q{i}", f"a{i}")
+    res = await run_line("/compact", env)
+    assert "compacted" in res.notices[0].text and "SUMMARY" in env.session.messages()[0].text
+    side = await run_line("/btw what is x?", env)
+    assert side.text == "side"
+    assert not any("what is x" in m.text for m in env.session.messages())
+    await run_line("/steer check tests too", env)
+    assert env.session.drain_queue() == ["check tests too"]
+    fork = await run_line("/fork", env)
+    assert fork.effects["session"] != env.session.id
+    out = await run_line("/export md", env)
+    text = (tmp_path / out.effects["path"]).read_text()
+    assert text.startswith("# ") and "## You" in text
+
+
+async def test_btw_turns_a_provider_error_into_a_readable_notice(tmp_path):
+    log = EventLog(tmp_path / "s.db")
+    session = Session.create(log, str(tmp_path), undo=False)
+    err = ProviderError("bad key", kind="auth")
+    bundle = await build_agent(
+        LunaConfig(workdir=str(tmp_path), model="m"), provider=FakeProvider([[err]])
+    )
+    try:
+        res = await run_line("/btw hi", Env(tmp_path, bundle, session))
+    finally:
+        await bundle.aclose()
+    assert res.notices[0].level == "error" and "rejected the API key" in res.notices[0].text
+
+
+async def test_agents_lists_subagents_and_runs(env):
+    res = await run_line("/agents", env)
+    assert "researcher" in res.text and "general-purpose" in res.text
+    assert "(no background work)" in res.text
+
+
+async def test_tools_lists_real_tools(env):
+    res = await run_line("/tools", env)
+    assert "write_todos" in res.text and "task_status" in res.text
+
+
+async def test_usage_and_diff_on_the_core_session(env):
+    assert (await run_line("/usage", env)).notices[0].text == "no usage recorded yet"
+    _turn(env.session, "t1", "q", "a")
+    assert "in: 5  out: 1" in (await run_line("/usage", env)).text
+    assert (await run_line("/diff", env)).notices[0].text == "no changes this session"
+
+
+async def test_unknown_command_without_a_user_command(env):
+    res = await run_line("/nope", env)
+    assert res.notices[0].level == "error" and "/nope" in res.notices[0].text
+
+
+async def test_a_crashing_handler_becomes_an_error_notice(env, monkeypatch):
+    monkeypatch.setattr(env.session, "fork", lambda: 1 / 0)
+    res = await run_line("/fork", env)
+    assert res.notices[0].level == "error" and "/fork failed" in res.notices[0].text
+
+
+async def test_reload_refreshes_the_allow_rules(make_ctx, tmp_path):
+    """A rule added to .luna/permissions.toml after the build takes effect after /reload."""
+    cfg = LunaConfig(workdir=str(tmp_path), model="m")
+
+    async def rebuild():
+        return await build_agent(cfg, provider=FakeProvider([FakeProvider.text("ok")]))
+
+    ctx = await make_ctx(config=cfg, rebuild=rebuild)
+    args = {"file_path": "a.py", "content": "x"}
+
+    def verdict():
+        agent = ctx.bundle.agent
+        return agent.policy.check(agent.tools["write_file"], args).action
+
+    assert verdict() == "ask"
+    (tmp_path / ".luna").mkdir(exist_ok=True)
+    (tmp_path / ".luna" / "permissions.toml").write_text('allow = ["write_file:a.py"]\n')
+    await dispatch("/reload", ctx)
+    assert verdict() == "allow"

@@ -278,7 +278,11 @@ directly. The shape mirrors `luna.commands.base.CommandResult.to_json()`:
 `effects` (side effects the client should reflect, e.g. a plan-mode flip).
 
 Commands of kind `"mutate"` are refused with `409 session_busy` while a
-turn runs; `"read"` commands answer mid-turn.
+turn runs; `"read"` commands answer mid-turn (`/steer` queues guidance for the
+running turn, `/btw` answers a side question without logging it). `/fork`
+answers `effects: {"session": "<new id>"}` — the client switches to it.
+`/background <prompt>` has kind `"ui"`: the client sends the prompt with
+`POST /background` instead.
 
 ```json
 → POST /sessions/s1/command {"workdir": "/repo", "line": "/plan on"}
