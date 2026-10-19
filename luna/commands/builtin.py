@@ -162,9 +162,12 @@ async def _redo(env, arg):
 @register("/rewind", "undo the last N turns (/rewind 3)", "mutate")
 async def _rewind(env, arg):
     parts = arg.split()
-    count = next((int(p) for p in parts if p.isdigit()), 1)
+    numbers = [p for p in parts if p != "--yes"]
+    if len(numbers) > 1 or (numbers and not numbers[0].isdigit()) or numbers[:1] == ["0"]:
+        return CommandResult(notices=[Notice("error", "/rewind: n must be a positive number")])
+    count = int(numbers[0]) if numbers else 1
     available = len(env.session.turn_ids())
-    if not available or count < 1:
+    if not available:
         return CommandResult(notices=[Notice("dim", "nothing to rewind")])
     count = min(count, available)
     if "--yes" not in parts:
@@ -175,10 +178,13 @@ async def _rewind(env, arg):
                 "rewind cancelled",
             )
         )
+    done = 0
     for _ in range(count):
-        await asyncio.to_thread(env.session.undo)
+        if await asyncio.to_thread(env.session.undo) is None:
+            break
+        done += 1
     return CommandResult(
-        notices=[Notice("info", f"rewound {count} turn(s)")],
+        notices=[Notice("info", f"rewound {done} turn(s)")],
         effects={"undo_depth": env.session.undo_depth},
     )
 
@@ -186,18 +192,59 @@ async def _rewind(env, arg):
 _EXPORT_FORMATS = ("md", "html", "json")
 
 
-@register("/export", "save the transcript (/export [md|html|json] [path])", "read", agent=True)
+def _parse_export(arg: str) -> tuple[str | None, str | None, bool]:
+    """Split ``/export`` args into ``(format, path, force)``; raises ValueError on bad input."""
+    import shlex
+    from pathlib import PurePosixPath
+
+    parts = shlex.split(arg)
+    force = "--force" in parts
+    parts = [p for p in parts if p != "--force"]
+    fmt = None
+    if parts and "." not in parts[0] and "/" not in parts[0]:
+        fmt = parts.pop(0)
+        if fmt not in _EXPORT_FORMATS:
+            raise ValueError(f"unknown format {fmt!r} (use md, html or json)")
+    if len(parts) > 1:
+        raise ValueError("usage: /export [md|html|json] [path] [--force]")
+    path = parts[0] if parts else None
+    if path is not None:
+        ext = PurePosixPath(path).suffix.lstrip(".").lower()
+        if ext not in _EXPORT_FORMATS:
+            raise ValueError(f"unsupported file extension {path!r} (use .md, .html or .json)")
+        if fmt is not None and fmt != ext:
+            raise ValueError(f"format {fmt} does not match the extension of {path!r}")
+        fmt = ext
+    return fmt, path, force
+
+
+# kind "mutate": it writes a project file, so it must not run mid-turn
+@register(
+    "/export",
+    "save the transcript (/export [md|html|json] [path] [--force])",
+    "mutate",
+    agent=True,
+)
 async def _export(env, arg):
     import time
 
-    parts = arg.split()
-    fmt = next((p for p in parts if p in _EXPORT_FORMATS), "md")
-    rest = [p for p in parts if p not in _EXPORT_FORMATS]
+    try:
+        fmt, rel, force = _parse_export(arg)
+    except ValueError as exc:
+        return CommandResult(notices=[Notice("error", f"/export: {exc}")])
+    fmt = fmt or "md"
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    rel = rest[0] if rest else f".luna/exports/{env.session.id[:8]}-{stamp}.{fmt}"
+    rel = rel or f".luna/exports/{env.session.id[:8]}-{stamp}.{fmt}"
     workspace = env.agent.workspace
     try:
         target = workspace.resolve(rel)
+        shown = workspace.rel(target)
+        if ".git" in shown.split("/"):
+            return CommandResult(notices=[Notice("error", "/export: refusing to write into .git")])
+        if target.exists() and not force:
+            return CommandResult(
+                notices=[Notice("error", f"/export: {shown} exists; add --force to overwrite")]
+            )
         text = await asyncio.to_thread(env.session.export, fmt)
 
         def write() -> None:
@@ -205,7 +252,6 @@ async def _export(env, arg):
             target.write_text(text, encoding="utf-8")
 
         await asyncio.to_thread(write)
-        shown = workspace.rel(target)
     except (LunaCoreError, OSError) as exc:
         return CommandResult(notices=[Notice("error", f"/export failed: {exc}")])
     return CommandResult(notices=[Notice("info", f"exported to {shown}")], effects={"path": shown})
@@ -232,7 +278,18 @@ def _steer(env, arg):
     if not arg:
         return CommandResult(notices=[Notice("dim", "usage: /steer <text>")])
     env.session.queue(arg)
-    return CommandResult(notices=[Notice("dim", "queued — the agent reads it at the next step")])
+    return CommandResult(
+        notices=[
+            Notice(
+                "dim",
+                (
+                    "queued — the agent reads it at the next step"
+                    if env.session.busy
+                    else "queued for the next turn"
+                ),
+            )
+        ]
+    )
 
 
 @register("/fork", "continue in a new session that copies this one", "mutate")

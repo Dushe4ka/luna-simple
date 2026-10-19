@@ -115,3 +115,15 @@ async def test_a_running_session_cannot_be_deleted(tmp_path):
         resp = await c.delete("/sessions/t1")
     assert resp.status_code == 409 and resp.json() == {"error": "session_busy"}
     assert (tmp_path / "a.py").exists()
+
+
+async def test_a_fork_is_listed(tmp_path):
+    from luna_core.session import Session
+
+    app = make_app()
+    log = app.state.log
+    parent = seed(log, tmp_path, "work", session_id="t1")
+    fork = Session(log, parent, workdir=str(tmp_path.resolve()), undo=False).fork()
+    async with client(app) as c:
+        rows = (await c.get("/sessions", params={"workdir": str(tmp_path)})).json()["sessions"]
+    assert {r["id"] for r in rows} == {parent, fork.id}

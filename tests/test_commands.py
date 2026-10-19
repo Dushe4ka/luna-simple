@@ -557,3 +557,52 @@ async def test_reload_refreshes_the_allow_rules(make_ctx, tmp_path):
     (tmp_path / ".luna" / "permissions.toml").write_text('allow = ["write_file:a.py"]\n')
     await dispatch("/reload", ctx)
     assert verdict() == "allow"
+
+
+async def test_export_rejects_unknown_formats_and_extensions(env):
+    for line in ("/export txt", "/export pdf", "/export out.txt"):
+        res = await run_line(line, env)
+        assert res.notices[0].level == "error", line
+
+
+async def test_export_infers_the_format_from_the_extension(env, tmp_path):
+    _turn(env.session, "t1", "q", "a")
+    res = await run_line("/export notes.html", env)
+    assert (tmp_path / "notes.html").read_text().startswith("<!doctype html>")
+    assert res.effects["path"] == "notes.html"
+    bad = await run_line("/export md notes.html", env)
+    assert bad.notices[0].level == "error" and "does not match" in bad.notices[0].text
+
+
+async def test_export_never_overwrites_without_force(env, tmp_path):
+    (tmp_path / "app.py").write_text("keep\n")
+    res = await run_line("/export app.md", env)  # fresh file is fine
+    assert res.notices[0].level == "info"
+    clash = await run_line("/export app.md", env)
+    assert clash.notices[0].level == "error" and "--force" in clash.notices[0].text
+    assert (await run_line("/export app.md --force", env)).notices[0].level == "info"
+    (tmp_path / "src.md").write_text("keep\n")
+    assert (await run_line("/export src.md", env)).notices[0].level == "error"
+    assert (tmp_path / "src.md").read_text() == "keep\n"
+
+
+async def test_export_stays_inside_the_workspace_and_handles_spaces(env, tmp_path):
+    outside = await run_line("/export ../escape.md", env)
+    assert outside.notices[0].level == "error" and not (tmp_path.parent / "escape.md").exists()
+    spaced = await run_line('/export "my notes.md"', env)
+    assert (tmp_path / "my notes.md").exists() and spaced.effects["path"] == "my notes.md"
+
+
+async def test_rewind_validates_and_clamps(env):
+    for i in range(2):
+        _turn(env.session, f"t{i}", f"q{i}", f"a{i}")
+    for line in ("/rewind 0", "/rewind -1", "/rewind abc"):
+        res = await run_line(line, env)
+        assert res.notices[0].level == "error", line
+    done = await run_line("/rewind 5 --yes", env)
+    assert "rewound 2 turn(s)" in done.notices[0].text and env.session.messages() == []
+
+
+async def test_steer_when_idle_says_next_turn(env):
+    res = await run_line("/steer more", env)
+    assert "next turn" in res.notices[0].text

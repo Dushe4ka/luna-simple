@@ -546,7 +546,11 @@ class Session:
         """Build a new session with this one's history up to ``at_seq``."""
         records = [r for r in self.records() if at_seq is None or r.seq <= at_seq]
         child_id = self.log.create(
-            self.workdir, title=self.title, parent_id=self.id, fork_seq=at_seq
+            self.workdir,
+            title=self.title,
+            parent_id=self.id,
+            fork_seq=at_seq,
+            meta={"kind": "fork"},
         )
         for rec in records:
             self.log.append(child_id, rec.type, rec.payload)

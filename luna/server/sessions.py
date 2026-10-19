@@ -10,7 +10,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.core.store import conversations
+from luna.core.store import conversations, is_conversation
 from luna.server.trust import trust_error
 
 _MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
@@ -67,14 +67,14 @@ def _conversations(log, workdir: str | None) -> list:
     return [
         info
         for info in log.list(None)
-        if info.parent_id is None and any(r.type == "user" for r in log.records(info.id))
+        if is_conversation(info) and any(r.type == "user" for r in log.records(info.id))
     ]
 
 
 async def list_sessions(request: Request) -> JSONResponse:
     """Sessions of a workdir, newest first.
 
-    Subagent/background/fork children and sessions nobody typed into yet are
+    Subagent/background children and sessions nobody typed into yet are
     skipped (the CLI's ``-c`` and pickers skip them the same way).
     """
     workdir = request.query_params.get("workdir")

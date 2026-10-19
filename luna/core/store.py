@@ -60,15 +60,20 @@ def make_title(text: str) -> str:
     return clean if len(clean) <= _TITLE_MAX else clean[:_TITLE_MAX] + "…"
 
 
+def is_conversation(info) -> bool:
+    """Top-level session or a fork (a fork is a conversation of its own); not a child run."""
+    return info.parent_id is None or info.meta.get("kind") == "fork"
+
+
 def conversations(log: EventLog, workdir: str, limit: int = 100) -> list[SessionInfo]:
     """Top-level sessions of ``workdir`` that hold a conversation, newest first.
 
-    Subagent/background/fork children and sessions nobody typed into (an
+    Subagent/background children and sessions nobody typed into (an
     empty REPL start or ``/new``) are skipped, so ``-c`` and the pickers
     land on real work.
     """
     out = []
     for info in log.list(workdir, limit=limit):
-        if info.parent_id is None and any(r.type == "user" for r in log.records(info.id)):
+        if is_conversation(info) and any(r.type == "user" for r in log.records(info.id)):
             out.append(info)
     return out

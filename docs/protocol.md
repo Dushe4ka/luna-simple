@@ -281,7 +281,7 @@ Commands of kind `"mutate"` are refused with `409 session_busy` while a
 turn runs; `"read"` commands answer mid-turn (`/steer` queues guidance for the
 running turn, `/btw` answers a side question without logging it). `/fork`
 answers `effects: {"session": "<new id>"}` — the client switches to it.
-`/background <prompt>` has kind `"ui"`: the client sends the prompt with
+`/export` writes a project file (refuses existing files without `--force`), so it has kind `"mutate"`. `/background <prompt>` has kind `"ui"`: the client sends the prompt with
 `POST /background` instead.
 
 ```json

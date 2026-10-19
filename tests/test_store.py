@@ -45,3 +45,19 @@ def test_conversations_skip_children_and_empty_sessions():
     child = log.create("/repo", title="child", parent_id=real)
     log.append(child, "user", {"message": message_to_dict(Message.user("sub"))})
     assert [i.id for i in store.conversations(log, "/repo")] == [real]
+
+
+def test_a_fork_is_a_conversation_but_a_subagent_is_not(tmp_path):
+    from luna_core.messages import Message, message_to_dict
+    from luna_core.session import EventLog, Session
+
+    from luna.core.store import conversations
+
+    log = EventLog(tmp_path / "s.db")
+    parent = Session.create(log, str(tmp_path), undo=False, title="work")
+    parent.append("user", {"message": message_to_dict(Message.user("hi"))})
+    fork = parent.fork()
+    sub = log.create(str(tmp_path), parent_id=parent.id, meta={"kind": "subagent"})
+    log.append(sub, "user", {"message": message_to_dict(Message.user("sub"))})
+    ids = {i.id for i in conversations(log, str(tmp_path))}
+    assert ids == {parent.id, fork.id}
