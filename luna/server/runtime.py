@@ -33,6 +33,10 @@ class WorkdirMismatch(Exception):
     """A session id was used with a different project folder than its own."""
 
 
+class SessionDeleting(Exception):
+    """The session is being deleted: no runtime may be created for it meanwhile."""
+
+
 def relevel(event: dict) -> dict:
     """Give an ``info`` notice the level its leading marker asks for (hook notices)."""
     if event.get("event") == "notice" and event.get("level") == "info":
@@ -212,6 +216,10 @@ class RuntimeRegistry:
         self._capacity = capacity
         self._items: OrderedDict[str, SessionRuntime] = OrderedDict()
         self._store = SessionStateStore()
+        #: sessions whose finished run still has to run ``after_turn``
+        self.finishing: set[str] = set()
+        #: sessions being deleted (``get`` refuses them)
+        self.deleting: set[str] = set()
 
     def peek(self, session_id: str) -> SessionRuntime | None:
         """Return the runtime if it is loaded."""
@@ -232,6 +240,7 @@ class RuntimeRegistry:
     def _evictable(self, runtime: SessionRuntime) -> bool:
         return not (
             self.running(runtime.id)
+            or runtime.id in self.finishing
             or runtime.lock.locked()
             or runtime.has_live_tasks
             or runtime.session.pending_approvals
@@ -239,6 +248,8 @@ class RuntimeRegistry:
 
     async def get(self, session_id: str, workdir: str) -> SessionRuntime:
         """Return the runtime for ``session_id`` (session created with that id when unknown)."""
+        if session_id in self.deleting:
+            raise SessionDeleting(session_id)
         resolved = str(Path(workdir).resolve())
         runtime = self._items.get(session_id)
         if runtime is not None:
@@ -286,3 +297,5 @@ async def runtime_for(
         return await request.app.state.runtimes.get(session_id, workdir)
     except WorkdirMismatch:
         return JSONResponse({"error": "workdir_mismatch"}, status_code=400)
+    except SessionDeleting:
+        return JSONResponse({"error": "session_busy"}, status_code=409)

@@ -111,9 +111,21 @@ async def create_session(request: Request) -> JSONResponse:
 
 
 async def delete_session(request: Request) -> JSONResponse:
-    """Delete a session (refused while it runs)."""
+    """Delete a session (refused while it runs or has background tasks).
+
+    While it is deleted no runtime can be created for it, so no turn can
+    start in a session whose log is about to go.
+    """
     session_id = request.path_params["session_id"]
-    if request.app.state.runtimes.running(session_id):
+    registry = request.app.state.runtimes
+    runtime = registry.peek(session_id)
+    busy = registry.running(session_id) or session_id in registry.deleting
+    if busy or (runtime is not None and (runtime.lock.locked() or runtime.has_live_tasks)):
         return JSONResponse({"error": "session_busy"}, status_code=409)
-    await request.app.state.runtimes.drop(session_id)
-    return JSONResponse({"deleted": request.app.state.log.delete(session_id)})
+    registry.deleting.add(session_id)
+    try:
+        await registry.drop(session_id)
+        deleted = request.app.state.log.delete(session_id)
+    finally:
+        registry.deleting.discard(session_id)
+    return JSONResponse({"deleted": deleted})

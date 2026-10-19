@@ -100,6 +100,16 @@ an absolute, trusted project path.
 | GET | `/agents` | — | `{"runs": [...], "tasks": [...]}` |
 | GET | `/sessions/{id}/events` | `?after=` | SSE: buffered then live events of a background run |
 
+`/approve`, `/cancel` and `/events` carry no `workdir`: they act only on a
+session the server has already loaded through a `workdir`-checked route
+(`/messages`, `/background`, `/state`, `/command`, history), so they do not
+re-check trust; for a session that is not loaded they answer `404`,
+`{"cancelled": false}` and an empty stream. `/events` for an idle session
+replays what is buffered (plus pending out-of-turn approvals) and ends — it
+does not follow `task(background=true)` work that outlives the run.
+`DELETE /sessions/{id}` is refused (`409`) while the session runs or has
+background tasks, and no request can load the session while it is deleted.
+
 ### `GET /health`
 
 Not authenticated gating, but still answered with the bearer header if

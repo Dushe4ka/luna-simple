@@ -19,6 +19,7 @@ from luna_core.messages import Image, message_from_dict
 from luna_core.policy import Decision
 from luna_core.tools.base import args_preview
 from sse_starlette.sse import EventSourceResponse
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -53,17 +54,20 @@ def _prepare(runtime, content: str):
     return prepared
 
 
-async def _start(request: Request, body: dict, session_id: str):
+async def _start(request: Request, body: dict, session_id: str, follower=None):
     """Start a turn: the common part of /messages and /background.
 
     Returns ``(runtime, info)``, a ``JSONResponse`` refusal, or an ``str``
-    error message when the turn could not be prepared.
+    error message when the turn could not be prepared. ``follower`` gets the
+    session's out-of-turn events from before the run starts.
     """
     if (error := trust_error(request, body.get("workdir"))) is not None:
         return error
     runtime = await runtime_for(request, session_id, body.get("workdir", "."))
     if isinstance(runtime, JSONResponse):
         return runtime
+    if follower is not None:
+        follower.attach(runtime)
     registry = request.app.state.runtimes
     if runtime.lock.locked() or registry.running(session_id):
         return JSONResponse({"error": "session_busy"}, status_code=409)
@@ -130,7 +134,7 @@ class _Follower:
         self._unsubscribe.append(runtime.listen(self._out_of_turn))
 
     def close(self) -> None:
-        """Stop receiving (the run itself goes on)."""
+        """Stop receiving (the run itself goes on); safe to call more than once."""
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe.clear()
@@ -156,7 +160,11 @@ async def post_message(request: Request):
     body = await request.json()
     # Subscribe before the run starts so no event is missed.
     follower = _Follower(request, session_id)
-    started = await _start(request, body, session_id)
+    try:
+        started = await _start(request, body, session_id, follower)
+    except BaseException:
+        follower.close()
+        raise
     if isinstance(started, JSONResponse):
         follower.close()
         return started
@@ -167,8 +175,6 @@ async def post_message(request: Request):
             yield _sse({"event": "error", "message": started, "kind": "error"})
 
         return EventSourceResponse(failed())
-    runtime, _info = started
-    follower.attach(runtime)
 
     async def stream():
         try:
@@ -180,7 +186,9 @@ async def post_message(request: Request):
         finally:
             follower.close()
 
-    return EventSourceResponse(stream())
+    # ``background`` also runs when the client left before the stream's first
+    # step (the generator's ``finally`` never runs then).
+    return EventSourceResponse(stream(), background=BackgroundTask(follower.close))
 
 
 async def post_background(request: Request) -> JSONResponse:
@@ -212,8 +220,10 @@ async def get_events(request: Request):
     runtime = request.app.state.runtimes.peek(session_id)
     if runtime is not None:
         follower.attach(runtime)
+    # one synchronous snapshot: the backlog and whether the run was live *then*
     backlog = manager.events(session_id, after)
     info = manager.get(session_id)
+    live = info is not None and info.status in LIVE
     pending = runtime.pending_out_of_turn() if runtime is not None else []
 
     async def stream():
@@ -228,10 +238,11 @@ async def get_events(request: Request):
                 yield _sse(event)
             if info is None:
                 return
-            if info.status not in LIVE:
+            if not live:
                 if backlog and (closing := closing_event(info, backlog)) is not None:
                     yield _sse(closing)
                 return
+            # live at the snapshot: everything after it is in the follower's queue
             while True:
                 is_run, event = await follower.queue.get()
                 if is_run and "index" in event:
@@ -244,7 +255,7 @@ async def get_events(request: Request):
         finally:
             follower.close()
 
-    return EventSourceResponse(stream())
+    return EventSourceResponse(stream(), background=BackgroundTask(follower.close))
 
 
 async def post_approve(request: Request) -> JSONResponse:

@@ -90,9 +90,14 @@ def create_app(
 
     log = log or open_log()
 
-    async def finished(info, watched: bool, events: list[dict]) -> None:
+    async def finished(info, watched: bool, events: list[dict], runtime) -> None:
         """Handle a finished run: completion notice, reload flags, ``after_turn``."""
-        runtime = app.state.runtimes.peek(info.session_id)
+        try:
+            await _finish(info, watched, events, runtime)
+        finally:
+            app.state.runtimes.finishing.discard(info.session_id)
+
+    async def _finish(info, watched: bool, events: list[dict], runtime) -> None:
         if not watched:
             # nobody watched the end: the notice is shown when the session is reopened
             level, text = completion_notice(info)
@@ -112,7 +117,11 @@ def create_app(
         watched = app.state.manager.has_listeners(info.session_id)
         events = app.state.manager.events(info.session_id)
         end_followers(app, info, events)
-        task = asyncio.get_running_loop().create_task(finished(info, watched, events))
+        # pinned now: an eviction before the task runs must not skip after_turn
+        runtime = app.state.runtimes.peek(info.session_id)
+        if runtime is not None:
+            app.state.runtimes.finishing.add(info.session_id)
+        task = asyncio.get_running_loop().create_task(finished(info, watched, events, runtime))
         app.state.finishing.add(task)
         task.add_done_callback(app.state.finishing.discard)
 
