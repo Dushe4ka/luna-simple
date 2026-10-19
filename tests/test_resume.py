@@ -80,8 +80,8 @@ def test_repl_continue_opens_the_resumed_session(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setattr(cli, "run_repl", _capture)
-    monkeypatch.setattr(cli, "build_agent", _build)
+    monkeypatch.setattr("luna.core.session.run_repl", _capture)
+    monkeypatch.setattr("luna.core.agent.build_agent", _build)
 
     assert cli.main(["-c"]) == 0
     assert seen["session"].id == "thread-abc"
@@ -94,13 +94,12 @@ def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkey
     input_fn), so this is the only way to exercise it in a test — patch
     the real builtin. Confirms arrow_pick is consulted first, and that a
     stubbed arrow_pick's return value is used directly."""
-    import luna.cli as cli
 
     idx = _index()
     _record("thread-a", str(tmp_path), "a task")
 
     monkeypatch.setattr(
-        cli, "arrow_pick", lambda console, input_fn, options, default=None: "thread-a"
+        "luna.ui.interact.arrow_pick", lambda console, input_fn, options, default=None: "thread-a"
     )
     got = _resolve_resume(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
@@ -111,12 +110,13 @@ def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkey
 def test_resume_list_interactive_falls_back_to_input_when_arrow_pick_declines(
     tmp_path, monkeypatch
 ):
-    import luna.cli as cli
 
     idx = _index()
     _record("thread-a", str(tmp_path), "a task")
 
-    monkeypatch.setattr(cli, "arrow_pick", lambda console, input_fn, options, default=None: None)
+    monkeypatch.setattr(
+        "luna.ui.interact.arrow_pick", lambda console, input_fn, options, default=None: None
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: "1")
     got = _resolve_resume(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
@@ -142,12 +142,12 @@ def test_main_handles_keyboard_interrupt_during_resume_list(tmp_path, monkeypatc
     def _raise_keyboard_interrupt(*args, **kwargs):
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr(cli, "arrow_pick", _raise_keyboard_interrupt)
+    monkeypatch.setattr("luna.ui.interact.arrow_pick", _raise_keyboard_interrupt)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     # Ensure interactive detection works: console must be terminal, stdin must be tty
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cli, "get_console", lambda: get_console(force_terminal=True))
+    monkeypatch.setattr("luna.ui.console.get_console", lambda: get_console(force_terminal=True))
 
     # Call main() with --resume (no id) to trigger interactive list branch
     result = cli.main(["--resume"])

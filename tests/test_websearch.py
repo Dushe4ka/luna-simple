@@ -37,12 +37,12 @@ async def test_uses_tavily_when_its_key_is_set(monkeypatch):
     def fake_post(url, *, headers, json, timeout):
         assert url == "https://api.tavily.com/search"
         assert headers["Authorization"] == "Bearer tvly-test"
-        assert json["query"] == "langchain 1.4 release notes"
+        assert json["query"] == "python 3.13 release notes"
         hit = {"title": "LangChain 1.4", "url": "https://x.test/a", "content": "notes"}
         return _response(url, "POST", {"results": [hit]})
 
     monkeypatch.setattr(websearch.httpx, "post", fake_post)
-    result = await _search({"query": "langchain 1.4 release notes", "max_results": 5})
+    result = await _search({"query": "python 3.13 release notes", "max_results": 5})
     assert "via tavily" in result
     assert "LangChain 1.4" in result
     assert "https://x.test/a" in result

@@ -34,7 +34,12 @@ def db_path(env: Mapping[str, str] | None = None) -> Path:
     return path
 
 
-def _drop_legacy(path: Path) -> None:
+def _drop_legacy(path: Path, env: Mapping[str, str] | None = None) -> None:
+    # Trusted folders are derived from the legacy ``luna_sessions`` table the first time
+    # ``luna_projects`` is created; do that before the table goes away.
+    from luna.core.projects import ProjectIndex
+
+    ProjectIndex(env)
     conn = sqlite3.connect(path)
     try:
         with conn:
@@ -49,7 +54,7 @@ def open_log(env: Mapping[str, str] | None = None) -> EventLog:
     path = db_path(env)
     key = str(path)
     if key not in _LOGS:
-        _drop_legacy(path)
+        _drop_legacy(path, env)
         _LOGS[key] = EventLog(path)
     return _LOGS[key]
 
@@ -76,4 +81,19 @@ def conversations(log: EventLog, workdir: str, limit: int = 100) -> list[Session
     for info in log.list(workdir, limit=limit):
         if is_conversation(info) and any(r.type == "user" for r in log.records(info.id)):
             out.append(info)
+    return out
+
+
+def descendants(log: EventLog, session_id: str) -> list[str]:
+    """Ids of the subagent/background runs below ``session_id``, children before parents.
+
+    Forks keep the parent's id but are conversations of their own, so they
+    (and what hangs below them) are not part of the result.
+    """
+    out: list[str] = []
+    for child in log.children(session_id):
+        if child.meta.get("kind") == "fork":
+            continue
+        out.extend(descendants(log, child.id))
+        out.append(child.id)
     return out

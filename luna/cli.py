@@ -3,39 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import getpass
-import json
-import os
 import sys
-import uuid
 from collections import namedtuple
 from pathlib import Path
 
 from luna import __version__
-from luna.config.config import config_path, load_config, set_config_values
-from luna.config.credentials import (
-    credentials_path,
-    get_api_key,
-    mask_key,
-    set_api_key,
-    unset_api_key,
-)
-from luna.config.providers import LunaConfigError, build_provider, merge_providers
-from luna.core.agent import build_agent
-from luna.core.session import run_once, run_repl
-from luna.extensions import mcp, skills
-from luna.extensions.initgen import init_prompt
-from luna.extensions.registry import known_mcp, known_skills, resolve_mcp
-from luna.extensions.subagents import subagent_summaries
-from luna.repl.setup_wizard import run_setup
-from luna.server.run import run_serve
-from luna.ui.console import get_console
-from luna.ui.interact import arrow_pick
-from luna.ui.splash import render_splash
-from luna.ui.trust import ensure_trusted
 
-_SUBCOMMANDS = {"setup", "config", "mcp", "skills", "agents", "init", "serve"}
+_SUBCOMMANDS = {
+    "setup",
+    "config",
+    "mcp",
+    "skills",
+    "agents",
+    "init",
+    "serve",
+    "run",
+    "sessions",
+    "acp",
+}
 
 
 def run_tui(config, *, workdir: str, thread_id: str) -> int:
@@ -140,6 +125,8 @@ def _resolve_resume(args, index, workdir, console, interactive):
             console.print(f"  [{n}] {r.title}")
         print("luna: --resume needs a value in non-interactive mode", file=sys.stderr)
         return None
+    from luna.ui.interact import arrow_pick
+
     picked = arrow_pick(console, input, [(r.thread_id, r.title) for r in rows], default=None)
     if picked is not None:
         return picked
@@ -167,6 +154,10 @@ def _overrides(args: argparse.Namespace) -> dict:
 
 
 def _has_api_key(provider: str, registry: dict) -> bool:
+    import os
+
+    from luna.config.credentials import get_api_key
+
     spec = registry[provider]
     if spec.env_var is None:
         return True
@@ -193,6 +184,19 @@ def _config_parser() -> argparse.ArgumentParser:
 
 
 def _run_config(argv: list[str]) -> int:
+    import getpass
+
+    from luna.config.config import config_path, load_config, set_config_values
+    from luna.config.credentials import (
+        credentials_path,
+        get_api_key,
+        mask_key,
+        set_api_key,
+        unset_api_key,
+    )
+    from luna.config.providers import merge_providers
+    from luna.ui.console import get_console
+
     console = get_console()
     args = _config_parser().parse_args(argv)
 
@@ -259,6 +263,13 @@ async def _mcp_probe(name: str, spec: dict, console) -> list:
 
 
 def _run_mcp(argv: list[str]) -> int:
+    import asyncio
+    import json
+
+    from luna.extensions import mcp
+    from luna.extensions.registry import known_mcp, resolve_mcp
+    from luna.ui.console import get_console
+
     console = get_console()
     head, rest = _split_ddash(argv)
     parser = argparse.ArgumentParser(prog="luna mcp")
@@ -305,6 +316,10 @@ def _run_mcp(argv: list[str]) -> int:
 
 
 def _run_skills(argv: list[str]) -> int:
+    from luna.extensions import skills
+    from luna.extensions.registry import known_skills
+    from luna.ui.console import get_console
+
     console = get_console()
     parser = argparse.ArgumentParser(prog="luna skills")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -332,14 +347,240 @@ def _run_skills(argv: list[str]) -> int:
     return 0
 
 
+def _live_server() -> dict | None:
+    """Return the running local server's token-file dict, or ``None`` (none, or a stale file)."""
+    from luna.server.auth import read_token_file
+    from luna.server.run import _default_is_alive
+
+    info = read_token_file()
+    if info is None or not _default_is_alive(info.get("pid", 0)):
+        return None
+    return info
+
+
+def _client(info: dict):
+    from luna_core.client import LunaClient
+
+    return LunaClient(f"http://127.0.0.1:{info['port']}", info["token"])
+
+
+def _server_runs() -> list[dict]:
+    """Return the live server's runs (empty when there is none or it does not answer)."""
+    import asyncio
+
+    from luna_core.client import ServerError
+
+    info = _live_server()
+    if info is None:
+        return []
+
+    async def fetch() -> list[dict]:
+        client = _client(info)
+        try:
+            return (await client.agents()).get("runs", [])
+        finally:
+            await client.aclose()
+
+    try:
+        return asyncio.run(fetch())
+    except ServerError:
+        return []
+
+
 def _run_agents(argv: list[str]) -> int:
+    from luna.extensions.subagents import subagent_summaries
+    from luna.ui.console import get_console
+
     console = get_console()
     parser = argparse.ArgumentParser(prog="luna agents")
     parser.add_argument("cmd", choices=["list"], nargs="?", default="list")
     parser.parse_args(argv)
     for name, desc in subagent_summaries():
         console.print(f"  {name} — {desc}")
+    runs = _server_runs()
+    if runs:
+        console.print("background runs:")
+    for run in runs:
+        cost = run.get("cost")
+        price = f" · ${cost:.4f}" if isinstance(cost, int | float) else ""
+        label = run.get("label") or run.get("title") or ""
+        console.print(f"  {run.get('id')} · {label} · {run.get('status')}{price}", markup=False)
     return 0
+
+
+# --- sessions / run / acp subcommands -----------------------------------------
+
+
+def _delete_conversation(log, session_id: str) -> str:
+    """Delete a conversation and its subagent/background children; returns the outcome.
+
+    ``"deleted"``, or ``"busy"`` when the live server refuses (a turn or a
+    background task is running). With a live server the delete goes through
+    it, so it can drop its in-memory runtime; otherwise the log is edited
+    directly. Forks are conversations of their own and are kept.
+    """
+    import asyncio
+
+    from luna_core.client import ServerError
+
+    from luna.core.store import descendants
+
+    children = descendants(log, session_id)
+    info = _live_server()
+    done = False
+    if info is not None:
+
+        async def remote() -> None:
+            client = _client(info)
+            try:
+                await client.delete_session(session_id)
+            finally:
+                await client.aclose()
+
+        try:
+            asyncio.run(remote())
+            done = True
+        except ServerError as exc:
+            if "409" in str(exc):
+                return "busy"
+            if "cannot reach" not in str(exc):
+                raise
+    if not done:
+        log.delete(session_id)
+    for child in children:
+        log.delete(child)
+    return "deleted"
+
+
+def _running_ids(workdir: str) -> set[str]:
+    """Ids the live server reports as running in ``workdir`` (empty without a server)."""
+    import asyncio
+
+    from luna_core.client import ServerError
+
+    info = _live_server()
+    if info is None:
+        return set()
+
+    async def fetch() -> list[dict]:
+        client = _client(info)
+        try:
+            return await client.list_sessions(workdir)
+        finally:
+            await client.aclose()
+
+    try:
+        return {r["id"] for r in asyncio.run(fetch()) if r.get("running")}
+    except ServerError:
+        return set()
+
+
+def _run_sessions(argv: list[str]) -> int:
+    """``luna sessions [list|rm <id>|prune [--days N]]`` for the current folder."""
+    import time
+
+    from luna.core.store import conversations, is_conversation, open_log
+
+    parser = argparse.ArgumentParser(prog="luna sessions")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("list", help="list this folder's sessions")
+    rm = sub.add_parser("rm", help="delete a session and its subagent/background runs")
+    rm.add_argument("session_id")
+    prune = sub.add_parser("prune", help="delete sessions not touched for N days")
+    prune.add_argument("--days", type=float, default=30)
+    args = parser.parse_args(argv)
+    log = open_log()
+    workdir = str(Path.cwd().resolve())
+
+    if args.cmd in (None, "list"):
+        for info in conversations(log, workdir):
+            print(f"{info.id}  {info.title or '(untitled)'}")
+        return 0
+
+    if args.cmd == "rm":
+        info = log.info(args.session_id)
+        if info is None:
+            print(f"luna: no session {args.session_id}", file=sys.stderr)
+            return 2
+        if not is_conversation(info):
+            print(
+                f"luna: {args.session_id} is a subagent/background run of {info.parent_id}; "
+                "delete that session instead",
+                file=sys.stderr,
+            )
+            return 2
+        if _delete_conversation(log, args.session_id) == "busy":
+            print(f"luna: {args.session_id} is running; stop it first", file=sys.stderr)
+            return 1
+        print(f"deleted {args.session_id}")
+        return 0
+
+    cutoff = time.time() - args.days * 86400
+    running = _running_ids(workdir)
+    removed = 0
+    for info in log.list(workdir, limit=1_000_000):
+        if not is_conversation(info) or info.updated >= cutoff or info.id in running:
+            continue
+        if _delete_conversation(log, info.id) == "deleted":
+            removed += 1
+            print(f"removed {info.id}  {info.title or '(untitled)'}")
+    print(f"pruned {removed} session(s)")
+    return 0
+
+
+def _trusted(workdir: str) -> bool:
+    from luna.core.projects import ProjectIndex
+
+    return ProjectIndex().is_trusted(workdir)
+
+
+def _run_run(argv: list[str]) -> int:
+    """``luna run --background "prompt"``: start a detached run on the local server."""
+    import asyncio
+
+    from luna_core.client import ServerError
+
+    from luna.server.run import ensure_running
+
+    parser = argparse.ArgumentParser(prog="luna run")
+    parser.add_argument("--background", action="store_true", required=True)
+    parser.add_argument("prompt")
+    args = parser.parse_args(argv)
+    workdir = str(Path.cwd().resolve())
+    if not _trusted(workdir):
+        print(
+            "luna: this folder is not trusted yet; open it once with `luna` and confirm",
+            file=sys.stderr,
+        )
+        return 1
+    info = ensure_running(workdir)
+
+    async def go() -> str:
+        client = _client(info)
+        try:
+            session_id = await client.create_session(workdir)
+            await client.background(session_id, args.prompt, workdir)
+            return session_id
+        finally:
+            await client.aclose()
+
+    try:
+        session_id = asyncio.run(go())
+    except ServerError as exc:
+        print(f"luna: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"session {session_id} started in the background; "
+        f"follow it with: luna --resume {session_id}"
+    )
+    return 0
+
+
+def _run_acp(argv: list[str]) -> int:
+    """``luna acp``: ACP over stdio for the current folder (no trust prompt, like ``-p``)."""
+    from luna.core.acp_app import run
+
+    return run(Path.cwd())
 
 
 # --- init subcommand ------------------------------------------------------
@@ -347,13 +588,22 @@ def _run_agents(argv: list[str]) -> int:
 
 def _run_init(argv: list[str]) -> int:
     """Explore the repo and write/update AGENTS.md in one agent turn."""
+    import asyncio
+
+    from luna.config.config import load_config
+    from luna.ui.console import get_console
+
     console = get_console()
     config = load_config({})
     return asyncio.run(_init_core(config, console))
 
 
 async def _init_core(config, console) -> int:
+    from luna.config.providers import LunaConfigError
+    from luna.core.agent import build_agent
+    from luna.core.session import run_once
     from luna.core.store import open_log
+    from luna.extensions.initgen import init_prompt
 
     try:
         bundle = await build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
@@ -372,18 +622,47 @@ async def _init_core(config, console) -> int:
 # --- main -------------------------------------------------------------------
 
 
+def _setup(argv: list[str]) -> int:
+    from luna.repl.setup_wizard import run_setup
+    from luna.ui.console import get_console
+
+    return run_setup(get_console())
+
+
+def _serve(argv: list[str]) -> int:
+    from luna.server.run import run_serve
+
+    return run_serve(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
     raw = list(sys.argv[1:] if argv is None else argv)
+    if raw in (["--version"], ["-V"]):  # before any heavy import: this path must stay instant
+        print(f"luna {__version__}")
+        return 0
+    return _main(raw)
+
+
+def _main(raw: list[str]) -> int:
+    import asyncio
+
+    from luna.config.config import load_config
+    from luna.config.providers import LunaConfigError, merge_providers
+    from luna.ui.console import get_console
+
     if raw and raw[0] in _SUBCOMMANDS:
         handlers = {
-            "setup": lambda a: run_setup(get_console()),
+            "setup": _setup,
             "config": _run_config,
             "mcp": _run_mcp,
             "skills": _run_skills,
             "agents": _run_agents,
             "init": _run_init,
-            "serve": run_serve,
+            "serve": _serve,
+            "run": _run_run,
+            "sessions": _run_sessions,
+            "acp": _run_acp,
         }
         try:
             return handlers[raw[0]](raw[1:])
@@ -408,11 +687,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # Trust gate: only the TUI path asks. `-p` and a piped-stdin REPL are
     # scripted invocations, where the invocation itself is the consent.
-    if interactive and not prompt and not ensure_trusted(console, config.workdir):
-        return 1
+    if interactive and not prompt:
+        from luna.ui.trust import ensure_trusted
+
+        if not ensure_trusted(console, config.workdir):
+            return 1
 
     if not _has_api_key(config.provider, merge_providers(config.custom_providers)):
         if interactive:
+            from luna.repl.setup_wizard import run_setup
+
             console.print(f"[yellow]No API key for {config.provider}.[/] Let's set one up.")
             try:
                 run_setup(console)
@@ -422,16 +706,19 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(_overrides(args))
         # non-interactive: fall through; build_agent raises the clean error.
 
-    from luna.turn.gitinfo import dirty_paths
+    if interactive and not prompt:
+        from luna.turn.gitinfo import dirty_paths
 
-    _dirty = dirty_paths(config.workdir) if interactive and not prompt else []
-    if _dirty:
-        console.print(
-            f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
-            "Luna edits files in place"
-        )
+        _dirty = dirty_paths(config.workdir)
+        if _dirty:
+            console.print(
+                f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
+                "Luna edits files in place"
+            )
 
     if config.show_splash and not prompt and console.is_terminal:
+        from luna.ui.splash import render_splash
+
         render_splash(console)
 
     if interactive and not prompt:
@@ -448,8 +735,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_tui_path(args, config, console) -> int:
     """Launch the full-screen TUI (served by the local server on luna-core)."""
+    import uuid
+
     from luna_core.undo import gc
 
+    from luna.config.providers import LunaConfigError, build_provider, merge_providers
     from luna.core.store import open_log
 
     try:  # fail fast on a bad provider/model/key instead of inside the server
@@ -507,9 +797,14 @@ class _LogIndex:
 
 async def _run_core(args, config, console, prompt: str | None, interactive: bool) -> int:
     """``luna -p`` and the line REPL, on luna-core."""
+    import asyncio
+
     from luna_core.session import Session
     from luna_core.undo import gc
 
+    from luna.config.providers import LunaConfigError
+    from luna.core.agent import build_agent
+    from luna.core.session import run_once, run_repl
     from luna.core.store import open_log
     from luna.turn import engine
 

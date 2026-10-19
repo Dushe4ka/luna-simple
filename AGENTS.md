@@ -1,23 +1,25 @@
 # AGENTS.md
 
 Этот репозиторий **и есть** Luna — простой лёгкий CLI-агент для кода на
-фреймворке `deepagents`. Когда Luna запускается внутри этого репозитория, файл
+собственном ядре `luna-core` (`packages/luna-core`). Когда Luna запускается внутри этого репозитория, файл
 загружается как память.
 
 ## Сборка и тесты
 
-- Окружение: `uv venv --python 3.12 && uv pip install -e ".[dev,all]"`
+- Окружение: `uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"`
 - Тесты: `uv run pytest`
 - Линт: `uv run ruff check .` и `uv run ruff format --check .`
 - Локальный запуск: `uv run luna --no-splash "…"`
 
 ## Структура
 
-- `luna/cli.py` — точка входа на argparse (`setup`/`config`/`mcp`/`skills`/`agents`/`init`)
+- `luna/cli.py` — точка входа на argparse (`setup`/`config`/`mcp`/`skills`/`agents`/`init`/`serve`/`run`/`sessions`/`acp`);
+  тяжёлые импорты — внутри функций, чтобы `luna --version` оставался мгновенным
 - `luna/core/` — рантайм агента и его защита
-  - `agent.py` — сборка `create_deep_agent` (вызовы фреймворка живут здесь)
+  - `agent.py` — `build_agent`: сборка `luna_core.loop.Agent` (провайдер, инструменты, политика, MCP, субагенты, хуки)
   - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
-  - `store.py` — журнал событий сессий ядра (`sessions.db`), `conversations`
+  - `store.py` — журнал событий сессий ядра (`sessions.db`), `conversations`, `descendants`
+  - `acp_app.py` — `luna acp`: ACP-агент для редакторов
 - `luna/repl/` — интерактивный слой поверх core
   - `commands.py` — диспетчер slash-команд
   - `setup_wizard.py` — интерактивный мастер `luna setup`
@@ -25,7 +27,7 @@
 - `luna/config/` — настройки, ключи, провайдеры, цены
   - `config.py` — слоистое разрешение настроек в `LunaConfig`; запись `config.toml`
   - `credentials.py` — API-ключи в `~/.config/luna/credentials.toml` (права 0600)
-  - `providers.py` — реестр провайдеров → chat-модель LangChain
+  - `providers.py` — реестр провайдеров (`ProviderSpec`) → адаптер `luna_core`
   - `prompts.py` — системный промпт Luna
   - `usage.py` — учёт токенов, `$`-стоимость (`models.toml`)
   - `models.toml` — реестр моделей: окно контекста, цена input/output

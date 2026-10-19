@@ -61,3 +61,28 @@ def test_a_fork_is_a_conversation_but_a_subagent_is_not(tmp_path):
     log.append(sub, "user", {"message": message_to_dict(Message.user("sub"))})
     ids = {i.id for i in conversations(log, str(tmp_path))}
     assert ids == {parent.id, fork.id}
+
+
+def test_first_open_keeps_the_trust_derived_from_legacy_sessions(tmp_path):
+    from luna.core.projects import ProjectIndex
+
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    with sqlite3.connect(store.db_path()) as conn:
+        conn.execute(
+            "CREATE TABLE luna_sessions "
+            "(thread_id TEXT, workdir TEXT, title TEXT, created REAL, updated REAL)"
+        )
+        conn.execute("INSERT INTO luna_sessions VALUES ('t', ?, 'x', 1, 1)", (str(folder),))
+    store.open_log()  # drops luna_sessions
+    assert ProjectIndex().is_trusted(str(folder)) is True
+
+
+def test_descendants_are_children_before_parents_and_skip_forks():
+    log = store.open_log()
+    root = log.create("/w")
+    child = log.create("/w", parent_id=root)
+    grand = log.create("/w", parent_id=child)
+    fork = log.create("/w", parent_id=root, meta={"kind": "fork"})
+    assert store.descendants(log, root) == [grand, child]
+    assert fork not in store.descendants(log, root)

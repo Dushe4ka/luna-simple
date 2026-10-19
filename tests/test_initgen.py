@@ -25,7 +25,7 @@ def test_init_subcommand_runs_agent(tmp_path, monkeypatch, capsys):
     async def build(config, **kw):
         return await real_build(config, provider=provider, **kw)
 
-    monkeypatch.setattr(cli, "build_agent", build)
+    monkeypatch.setattr("luna.core.agent.build_agent", build)
     rc = cli.main(["init"])
     assert rc == 0
     assert "AGENTS.md" in provider.requests[0].messages[-1].text  # the init prompt was sent

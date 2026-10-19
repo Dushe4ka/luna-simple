@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "luna-simple"
-version = "0.3.0"
-description = "Luna — простой лёгкий CLI-агент для кода на deepagents. Observe, Understand, Plan, Act."
+version = "0.4.0"
+description = "Luna — простой лёгкий CLI-агент для кода на собственном ядре luna-core. Observe, Understand, Plan, Act."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Luna contributors" }]
-keywords = ["cli", "coding-agent", "llm", "deepagents", "langchain"]
+keywords = ["cli", "coding-agent", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -23,15 +23,9 @@ classifiers = [
 ]
 dependencies = [
     "luna-core",
-    "deepagents~=0.7.13",
-    "langchain~=1.4",
-    "langgraph~=1.2",
     "rich>=13.7",
-    "langchain-anthropic>=1.7",
-    "langgraph-checkpoint-sqlite>=2.0",
     "questionary>=2.1",
     "httpx>=0.27",
-    "httpx-sse>=0.4",
     "starlette>=1.6",
     "sse-starlette>=3.0",
     "uvicorn>=0.30",
@@ -39,39 +33,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-deepseek = ["langchain-deepseek>=0.1"]
-openai = ["langchain-openai>=1.0"]
-google = ["langchain-google-genai>=3.0"]
-ollama = ["langchain-ollama>=1.0"]
-mistral = ["langchain-mistralai>=1.0"]
-xai = ["langchain-xai>=1.0"]
-groq = ["langchain-groq>=1.0"]
-fireworks = ["langchain-fireworks>=1.0"]
-together = ["langchain-together>=0.1"]
-openrouter = ["langchain-openrouter>=0.1"]
-perplexity = ["langchain-perplexity>=1.0"]
-mcp = ["langchain-mcp-adapters>=0.3"]
+mcp = ["luna-core[mcp]"]
+acp = ["luna-core[acp]"]
 lsp = ["multilspy>=0.0.15"]
 websearch = ["ddgs>=8.0"]
-all = [
-    "langchain-deepseek>=0.1",
-    "langchain-openai>=1.0",
-    "langchain-google-genai>=3.0",
-    "langchain-ollama>=1.0",
-    "langchain-mistralai>=1.0",
-    "langchain-xai>=1.0",
-    "langchain-groq>=1.0",
-    "langchain-fireworks>=1.0",
-    # langchain-together intentionally omitted: no published version is
-    # compatible with both langchain-openai>=1.0 and multilspy's pinned
-    # requests==2.32.3 in the same resolved environment. Install the
-    # `together` extra separately if you need it: pip install "luna-simple[together]"
-    "langchain-openrouter>=0.1",
-    "langchain-perplexity>=1.0",
-    "langchain-mcp-adapters>=0.3",
-    "multilspy>=0.0.15",
-    "ddgs>=8.0",
-]
+all = ["luna-simple[mcp,acp,lsp,websearch]"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mcp>=1.12,<2", "agent-client-protocol>=0.4"]
 
 [project.scripts]
@@ -87,26 +53,6 @@ members = ["packages/luna-core"]
 
 [tool.uv.sources]
 luna-core = { workspace = true }
-
-[tool.uv]
-conflicts = [
-    [
-      { extra = "together" },
-      { extra = "openai" },
-    ],
-    [
-      { extra = "together" },
-      { extra = "lsp" },
-    ],
-    [
-      { extra = "together" },
-      { extra = "all" },
-    ],
-    [
-      { package = "luna-simple", extra = "together" },
-      { package = "luna-core", extra = "lsp" },
-    ],
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["luna"]
