@@ -199,4 +199,5 @@ def test_policy_check_survives_an_invalid_path(tmp_path):
     ws = Workspace(tmp_path)
     policy = Policy(Rules(deny=["write_file:.env"]), workspace=ws)
     verdict = policy.check(write_file, {"file_path": "a\x00b", "content": "x"})
-    assert verdict is not None
+    assert verdict.action == "deny" and "invalid path" in verdict.message
+    policy.after("write_file", {"file_path": "a\x00b"}, ok=False)  # no exception either

@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
 from luna_core.tools.base import Tool, args_preview
-from luna_core.workspace import Workspace
+from luna_core.workspace import OutsideWorkspace, Workspace
 
 MUTATING_FILE_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_APPROVAL = frozenset({"write_file", "edit_file", "delete", "execute"})
@@ -332,19 +332,24 @@ class Policy:
         """True while plan mode refuses mutating tool calls."""
         return self._planning()
 
-    def _rel(self, args: dict) -> str:
+    def _rel(self, args: dict) -> str | None:
+        """Workspace-relative path of the call's file argument; ``None`` when it is invalid."""
         raw = args.get("file_path") or args.get("path") or ""
         if not raw or self.workspace is None:
             return _relpath(raw)
         try:
             return self.workspace.rel(self.workspace.resolve(raw))
-        except (ToolError, OSError, ValueError):  # OutsideWorkspace, InvalidPath, ...
+        except OutsideWorkspace:
             return _relpath(raw)
+        except (ToolError, OSError, ValueError):  # InvalidPath, NUL byte, OS refusal
+            return None
 
     def check(self, tool: Tool, args: dict) -> Verdict:
         """Verdict for calling ``tool`` with ``args``."""
         name = tool.name
         rel = self._rel(args)
+        if rel is None:  # fail closed: a path that cannot exist is never worth asking about
+            return Verdict("deny", f"invalid path: {args.get('file_path') or args.get('path')!r}")
         # Rule subjects use the workspace-resolved relative path, not the raw
         # argument, so a deny rule cannot be bypassed by an unnormalised path
         # (e.g. ``src/../.env`` must match the same rule as ``.env``).
