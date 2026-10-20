@@ -660,3 +660,24 @@ async def test_turn_end_on_close_runs_off_the_event_loop_thread(tmp_path, monkey
     assert threads == [False]
     assert "end" in session.undo_journal._load()["turns"][-1]
     log.close()
+
+
+async def test_always_allow_that_cannot_be_saved_still_runs_the_approved_call(env):
+    tmp, session = env
+
+    def broken_persist(rule):
+        raise ValueError("permissions.toml would break")
+
+    ws = Workspace(tmp)
+    script = [
+        FakeProvider.call("write_file", {"file_path": "n.txt", "content": "x"}, "c1"),
+        FakeProvider.text("done"),
+    ]
+    agent = agent_for(tmp, script, policy=Policy(workspace=ws, persist_rule=broken_persist))
+    events = await collect(
+        agent, session, decide=lambda r: Decision.approve(always="write_file:n.txt")
+    )
+    assert (tmp / "n.txt").read_text() == "x"
+    warns = [e for e in events if isinstance(e, Notice) and e.level == "warn"]
+    assert any("permissions.toml would break" in w.text for w in warns)
+    assert isinstance(events[-1], TurnDone)

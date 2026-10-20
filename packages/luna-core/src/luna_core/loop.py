@@ -593,7 +593,14 @@ class Agent:
                 return
             session.append("approval", {"call_id": call.id, "decision": decision.to_dict()})
             if decision.always:
-                self.policy.remember_always(decision.always)
+                try:
+                    self.policy.remember_always(decision.always)
+                except Exception as exc:  # noqa: BLE001 - the approval itself still stands
+                    yield Notice(
+                        "warn",
+                        f"could not save the rule {decision.always!r} ({exc}); "
+                        "it applies for this session only",
+                    )
             if decision.type == "reject":
                 suffix = f": {decision.message}" if decision.message else ""
                 yield _Outcome(("refuse", f"rejected by the user{suffix}"))
