@@ -49,8 +49,10 @@ mutating tool that is not a file tool), the whole tree diff of the turn is resto
 because a command can change any file, and every path outside the file tools is named
 ("also restored (changed by commands or outside Luna): …"). Known limitation: in such
 a turn a file the user edited during the turn is restored too, but it is named. A turn
-whose end was never recorded (a crash) restores only the file-tool paths. Undo, redo
-and rewind are refused while background tasks of the session are running.
+whose end was never recorded (a crash) restores only the file-tool paths. The SDK does not
+check for background tasks: `Session.undo/redo/rewind` run regardless. The Luna app's
+`/undo`, `/redo` and `/rewind` commands refuse while background tasks of the session run;
+in your own code check `background.list(session.id)` for `queued`/`running` tasks first.
 
 ## Compaction
 

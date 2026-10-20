@@ -1,3 +1,5 @@
+Русское руководство по SDK: [README.ru.md](README.ru.md)
+
 # Quickstart
 
 `luna-core` is an async agent runtime: you give it a model provider, a folder and

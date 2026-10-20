@@ -24,8 +24,9 @@ print(sorted(providers.PRESETS))
 `resolve(provider, *, model=None, api_key=None, base_url=None, options=None, custom=None, env=os.environ)`
 returns `(provider, model_id)`. A missing key raises `LunaCoreError` naming the environment
 variable. Built-in presets always win over `custom` entries with the same key.
-Presets: `anthropic`, `openai`, `openai_chat`, `deepseek`, `google`, `gigachat`, `yandex`
-and the OpenAI-compatible ones (see `providers.PRESETS`). Yandex AI Studio needs
+Presets: `anthropic`, `openai`, `openai_chat`, `deepseek`, `google`, `gigachat`, `yandex`,
+`ollama` (no key needed), `mistral`, `xai`, `groq`, `fireworks`, `together`, `openrouter`,
+`perplexity`, `cerebras` (see `providers.PRESETS`). Yandex AI Studio needs
 `YANDEX_FOLDER_ID`; GigaChat reads `GIGACHAT_SCOPE` and `GIGACHAT_CA_BUNDLE`.
 
 ## Custom OpenAI-compatible endpoint

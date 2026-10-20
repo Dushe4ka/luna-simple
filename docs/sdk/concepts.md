@@ -15,7 +15,8 @@
 
 `agent.run(session, text)` is an async generator. One call is one turn:
 
-1. `session_start` hooks, then the user message is appended to the log.
+1. `TurnStarted` is yielded and the undo snapshot is taken; on the first turn of a session
+   the `session_start` hooks run; then the user message is appended to the log.
 2. Compaction runs if the context is over 80% of the model window.
 3. The request is streamed from the provider; `TextDelta` / `ThinkingDelta` events are yielded.
 4. Each tool call is checked by the policy. Calls that need approval yield
@@ -24,8 +25,9 @@
    are appended and the loop repeats until the model stops or `max_steps` is reached.
 6. The turn ends with exactly one of `TurnDone`, `TurnError` or `Cancelled`.
 
-Provider and tool failures never raise out of `run`: a failing tool becomes an error
-result the model sees, a failing provider becomes `TurnError`.
+A failing tool never raises out of `run`: it becomes an error result the model sees. A
+`ProviderError` becomes `TurnError`; any other exception from a provider (a bug, or an
+exhausted `FakeProvider`) propagates out of `run`.
 
 ## Events
 

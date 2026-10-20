@@ -54,7 +54,12 @@ See `examples/approvals_web.py` for approvals over HTTP.
 ## Hooks
 
 Hooks are callbacks at five points: `session_start`, `pre_tool`, `post_tool`, `turn_end`,
-`pre_compact`.
+`pre_compact`. Payload keys (plus `event`): `session_start` has `session_id`, `workdir`;
+`pre_tool` has `session_id`, `tool`, `args`; `post_tool` adds `ok` and `output`; `turn_end` has
+`session_id`, `turn_id`, `text`; `pre_compact` has `session_id`, `messages`. A `turn_end` hook
+returning `block=True` with a `message` does not stop the turn: it continues, with `message`
+added as a new user message (while `max_steps` allows). A blocking `pre_compact` hook skips
+the compaction.
 
 ```python
 from luna_core import Agent, HookResult, Hooks

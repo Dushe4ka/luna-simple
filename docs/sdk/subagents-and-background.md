@@ -23,7 +23,8 @@ agent = Agent(provider, model, tools=tools, services={"background": BackgroundTa
 - `SubagentSpec(name, description, prompt, tools, model, unsafe, isolation, max_steps, max_cost)`.
   A subagent is read-only by default (`ls`, `read_file`, `glob`, `grep`). Mutating tools
   (`write_file`, `edit_file`, `delete`, `execute`) in a `subagents.toml` entry require
-  `unsafe = true`, otherwise loading fails with `SubagentConfigError`.
+  `unsafe = true`, otherwise loading fails with `SubagentConfigError`. Only
+  `load_subagents` checks this; constructing `SubagentSpec` in code does not.
 - `load_subagents(files)` merges `[subagent.<name>]` tables from TOML files over the built-ins.
 - Several `task` calls in one assistant message run concurrently, up to `max_parallel`.
 - The child inherits policy, sandbox and hooks; its approvals are answered through the
@@ -44,8 +45,9 @@ branch and diff to merge. Pitfalls:
 ## Background tasks
 
 `task(..., background=true)` returns a handle at once and the parent continues. When the
-child finishes, its result is appended to the log, a `BackgroundDone` event is emitted and the
-text is delivered to the parent **at its next step boundary** (not instantly). `task_status`
+child finishes, its result is appended to the log, `BackgroundDone` is delivered to
+`session.subscribe(fn)` listeners (via `session.notify`; it is not part of the `agent.run`
+stream) and the text is delivered to the parent **at its next step boundary** (not instantly). `task_status`
 and `task_cancel` inspect and stop a task; they only see tasks of their own session.
 
 ```python

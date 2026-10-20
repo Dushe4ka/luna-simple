@@ -1,3 +1,5 @@
+Русское руководство по SDK: [docs/sdk/README.ru.md](../../docs/sdk/README.ru.md)
+
 # luna-core
 
 The agent runtime behind [Luna](https://github.com/Dushe4ka/luna-simple), usable as an SDK:

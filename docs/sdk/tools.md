@@ -23,11 +23,14 @@ agent = Agent(provider, model, tools=[*builtin_tools(), word_count])
 
 - The first parameter named `ctx` receives a `ToolContext` and is hidden from the schema.
 - The docstring summary is the description; the `Args:` section documents parameters.
-- Supported annotations: `str`, `int`, `float`, `bool`, `list[...]`, `Literal[...]`,
-  `Optional`. Others are rejected when the tool is defined.
+- Supported annotations: `str`, `int`, `float`, `bool`, `dict`, `list[...]`,
+  `Literal[...]`, `X | None` / `Optional`. Others are rejected when the tool is defined.
 - Return a `str`, a `ToolOutput` (`ToolOutput.text(text, detail)` / `ToolOutput.error(text)`),
   or raise `ToolError`; any exception becomes an error result for the model.
-- `@tool(mutating=True)` marks a tool that changes state (use it with approval policies).
+- `@tool(mutating=True)` marks a tool that changes state. It does **not** by itself ask for approval: plan mode
+  refuses it, calls with the same `file_path`/`path` are serialised, and undo treats it as a
+  command that may have changed any file. To require approval add its name to
+  `Policy(approval_tools=...)` or an `ask` rule.
 - For dynamic tools (MCP), build `Tool(name, description, parameters, fn, raw=True)` where
   `fn(ctx, args) -> ToolOutput`.
 
