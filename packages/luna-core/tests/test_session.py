@@ -249,8 +249,8 @@ async def test_child_approvals_route_through_the_parent_and_cost_adds_up(log, tm
     )
     parent.adopt(child)
     fut = child.expect_decision("k1")
-    assert parent.pending_approvals == ["k1"]
-    parent.decide("k1", Decision.approve())
+    assert parent.pending_approvals == [f"{child.id}:k1"]
+    parent.decide(f"{child.id}:k1", Decision.approve())
     assert (await fut) == Decision.approve()
     turn(child, "c1", "sub", "done")
     turn(parent, "p1", "main", "ok")
@@ -299,3 +299,26 @@ async def test_prefixed_approval_ids_reach_only_the_child(log, tmp_path):
     parent.decide(f"{child.id}:call_0", Decision.approve())
     assert (await theirs) == Decision.approve()
     assert not mine.done() and parent.pending_approvals == ["call_0"]
+
+
+# -- final review I2: child approvals are listed with their "<child>:" prefix --
+
+
+async def test_pending_approvals_prefix_child_ids_and_siblings_do_not_collide(log, tmp_path):
+    parent = Session.create(log, str(tmp_path), undo=False)
+    a = Session.create(log, str(tmp_path), undo=False)
+    b = Session.create(log, str(tmp_path), undo=False)
+    grand = Session.create(log, str(tmp_path), undo=False)
+    parent.adopt(a)
+    parent.adopt(b)
+    a.adopt(grand)
+    fa, fb, fg = a.expect_decision("c1"), b.expect_decision("c1"), grand.expect_decision("c1")
+    assert sorted(parent.pending_approvals) == sorted(
+        [f"{a.id}:c1", f"{b.id}:c1", f"{a.id}:{grand.id}:c1"]
+    )
+    with pytest.raises(LunaCoreError):
+        parent.decide("c1", Decision.approve())  # no unprefixed fallback
+    parent.decide(f"{b.id}:c1", Decision.approve())
+    assert fb.done() and not fa.done()
+    parent.decide(f"{a.id}:{grand.id}:c1", Decision.reject("no"))
+    assert fg.result().type == "reject" and not fa.done()

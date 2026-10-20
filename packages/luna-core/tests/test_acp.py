@@ -237,3 +237,19 @@ async def test_acp_stdio_end_to_end(tmp_path):
     proc.stdin.close()
     proc.kill()
     await proc.wait()
+
+
+async def test_acp_child_approval_reaches_the_subagent(tmp_path):
+    """A subagent's prefixed approval id is answered through the parent session."""
+    pytest.importorskip("acp")
+    log = EventLog(tmp_path / "acp.db")
+    agent = LunaAcpAgent(lambda cwd: _make_fake_luna_agent(cwd), log)
+    agent.on_connect(_FakeClient({"outcome": {"outcome": "selected", "optionId": "allow_once"}}))
+    parent = Session.create(log, str(tmp_path))
+    child = Session.create(log, str(tmp_path), undo=False)
+    parent.adopt(child)
+    fut = child.expect_decision("c1")
+    request = ApprovalRequest(f"{child.id}:c1", "execute", {"command": "ls"}, "ls", "")
+    await asyncio.wait_for(agent._ask(parent.id, parent, request), timeout=5)
+    assert fut.done() and fut.result().type == "approve"
+    assert parent.pending_approvals == []

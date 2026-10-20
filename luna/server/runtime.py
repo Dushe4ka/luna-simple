@@ -163,8 +163,8 @@ class SessionRuntime:
         """``approval_needed`` events of background subagents still waiting for a decision."""
         waiting = set(self.session.pending_approvals)
         for call_id in list(self._pending):
-            # children list their ids unprefixed; the wire id is "<child>:<call>"
-            if call_id not in waiting and call_id.partition(":")[2] not in waiting:
+            # children's ids are listed with their "<child>:" prefix, like the wire id
+            if call_id not in waiting:
                 del self._pending[call_id]
         return list(self._pending.values())
 

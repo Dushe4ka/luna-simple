@@ -427,10 +427,6 @@ class Session:
                 if call_id.startswith(prefix):
                     child.decide(call_id[len(prefix) :], decision)
                     return
-            for child in self._children:
-                if call_id in child.pending_approvals:
-                    child.decide(call_id, decision)
-                    return
             raise LunaCoreError(f"no approval is pending for call {call_id!r}")
         if not fut.done():
             fut.set_result(
@@ -439,9 +435,16 @@ class Session:
 
     @property
     def pending_approvals(self) -> list[str]:
-        """Call ids waiting for a decision (including adopted subagent sessions)."""
+        """Call ids waiting for a decision.
+
+        Ids of adopted subagent sessions carry their ``"<child id>:"`` prefix
+        (recursively), exactly as their ``NeedsApproval`` events do, so two
+        siblings' identical call ids never collide.
+        """
         own = [cid for cid, fut in self._decisions.items() if not fut.done()]
-        return own + [cid for child in self._children for cid in child.pending_approvals]
+        return own + [
+            f"{child.id}:{cid}" for child in self._children for cid in child.pending_approvals
+        ]
 
     # -- queue and turn control -------------------------------------------
     def queue(self, text: str) -> None:
