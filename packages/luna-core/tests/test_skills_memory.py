@@ -151,3 +151,39 @@ async def test_memory_notes_and_remember_tool(tmp_path):
         and (tmp_path / ".luna" / "memory" / "decisions.md").is_file()
         and remember.mutating
     )
+
+
+# -- final review I4: a source subdir must stay inside the cloned repository --
+
+
+def _fake_clone(cmd, **kwargs):
+    repo = Path(cmd[-1])
+    write_skill(repo, "good", "fine")
+    write_skill(repo.parent, "stolen", "outside the clone")
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["owner/repo/../stolen", "owner/repo//good", "owner/../repo/good", "owner/repo/good/.."],
+)
+def test_install_rejects_unsafe_source_segments(tmp_path, source):
+    dest = tmp_path / "installed"
+    with pytest.raises(SkillError):
+        skills.install(source, dest, name="x", run=_fake_clone)
+    assert not (dest / "x").exists()
+
+
+def test_install_rejects_a_resolver_path_escaping_the_clone(tmp_path):
+    dest = tmp_path / "installed"
+    for path in ("../stolen", "/etc", "good/../../stolen"):
+        with pytest.raises(SkillError):
+            skills.install(
+                "named",
+                dest,
+                name="x",
+                run=_fake_clone,
+                resolve=lambda _src, p=path: {"repo": "owner/repo", "path": p},
+            )
+    assert not (dest / "x").exists()
+    assert "installed" in skills.install("owner/repo/good", dest, name="x", run=_fake_clone)

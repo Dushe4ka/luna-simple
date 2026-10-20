@@ -131,6 +131,7 @@ def _source(source: str, resolve: Callable[[str], dict] | None) -> tuple[str, st
                 return str(root), (None if sub == "." else sub), probe.name
         return src, None, Path(src).name
     parts = src.split("/")
+    _safe_segments(source, parts)
     if len(parts) == 2:
         return f"https://github.com/{src}.git", None, parts[1]
     if len(parts) >= 3:
@@ -138,11 +139,19 @@ def _source(source: str, resolve: Callable[[str], dict] | None) -> tuple[str, st
     if resolve is None:
         raise SkillError(f"unknown skill source {source!r}")
     spec = resolve(src)
+    if spec.get("path"):
+        _safe_segments(source, str(spec["path"]).split("/"))
     return (
         f"https://github.com/{spec['repo']}.git",
         spec.get("path"),
         Path(spec.get("path") or src).name,
     )
+
+
+def _safe_segments(source: str, parts: list[str]) -> None:
+    """Refuse empty, ``.``/``..`` or absolute segments in an owner/repo/subdir source."""
+    if any(p in ("", ".", "..") or "\\" in p for p in parts):
+        raise SkillError(f"unsafe skill source {source!r}: bad path segment")
 
 
 def _reject_external_symlinks(src: Path) -> None:
@@ -185,6 +194,8 @@ def install(
         except subprocess.CalledProcessError as exc:
             raise SkillError(f"git clone failed: {(exc.stderr or str(exc)).strip()}") from exc
         src = tmp / "repo" / (subdir or "")
+        if not src.resolve().is_relative_to((tmp / "repo").resolve()):
+            raise SkillError(f"{source!r} points outside the cloned repository")
         md = src / "SKILL.md"
         if not md.is_file():
             raise SkillError(f"no SKILL.md at {source}")
