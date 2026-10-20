@@ -23,8 +23,9 @@
 
 ---
 
-Luna — это **CLI-агент для кода** на фреймворке
-[`deepagents`](https://github.com/langchain-ai/deepagents) (LangChain / LangGraph).
+Luna — это **CLI-агент для кода** на собственном ядре
+[`luna-core`](packages/luna-core) (свой агентный цикл, инструменты, журнал
+сессий и адаптеры провайдеров; без LangChain / LangGraph).
 Это намеренно маленький аналог [`pi`](https://github.com/earendil-works/pi):
 единый API к моделям, агентный цикл и CLI для кодинга — с одним REPL на `rich`
 вместо собственного TUI.
@@ -35,18 +36,41 @@ Luna — это **CLI-агент для кода** на фреймворке
 ## Установка
 
 ```bash
-# почти со всеми провайдерами (кроме Together — конфликт зависимостей,
-# ставится отдельно: uv pip install "luna-simple[together]")
+# со всеми необязательными возможностями: MCP, ACP, LSP, веб-поиск
 uv pip install "luna-simple[all]"
 
-# или только провайдер по умолчанию (Anthropic)
+# или только база (все провайдеры встроены)
 uv pip install luna-simple
 
+# по отдельности: luna-simple[mcp], [acp], [lsp], [websearch]
+
 # из клона репозитория
-uv venv --python 3.12 && uv pip install -e ".[dev,all]"
+uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"
 ```
 
 Требуется Python **3.11+**.
+
+## Luna как SDK
+
+Ядро — отдельный пакет [`luna-core`](packages/luna-core) (`pip install luna-core`):
+его можно встроить в своё приложение, не используя CLI.
+
+```python
+from luna_core import Agent, EventLog, Policy, Session, TextDelta, Workspace, providers
+
+provider, model = providers.resolve("anthropic")
+workspace = Workspace(".")
+agent = Agent(provider, model, workspace=workspace, policy=Policy(workspace=workspace))
+session = Session.create(EventLog(".luna/sessions.db"), str(workspace.root))
+async for event in agent.run(session, "Что это за проект?"):
+    if isinstance(event, TextDelta):
+        print(event.text, end="")
+```
+
+Документация: [`docs/sdk/`](docs/sdk/quickstart.md) (на английском), формат событий —
+[`docs/protocol.md`](docs/protocol.md), запускаемые примеры — [`examples/`](examples)
+(`python examples/minimal_agent.py --fake` работает без сети и ключей).
+Результаты приёмки ядра: [`docs/superpowers/acceptance/luna-core.md`](docs/superpowers/acceptance/luna-core.md).
 
 ## Быстрый старт
 
@@ -116,7 +140,14 @@ luna serve --port 8765     # на конкретном порту
 ```bash
 luna -c            # или --continue: возобновить последнюю сессию этого каталога
 luna --resume            # выбрать сессию из списка
-luna --resume <thread-id>  # возобновить конкретную сессию
+luna --resume <id>       # возобновить конкретную сессию
+
+luna sessions                    # список сессий этого каталога
+luna sessions rm <id>            # удалить сессию вместе с её субагентами/фоновыми запусками
+luna sessions prune --days 30    # удалить сессии старше 30 дней (идущие не трогает)
+luna run --background "промпт"   # запустить фоновый запуск на локальном сервере
+luna agents                      # субагенты и фоновые запуски сервера
+luna acp                         # ACP по stdio для редакторов (Zed, JetBrains); нужен [acp]
 ```
 
 - `/sessions` — список прошлых сессий этого каталога; `/resume <n>` —
@@ -156,25 +187,28 @@ luna config unset-key openai
 
 ## Провайдеры
 
-Luna создаёт модели через `init_chat_model` из LangChain. Установите нужный
-API-ключ (см. `.env.example`) и выберите провайдера флагом `--provider` /
+Все провайдеры встроены в `luna-core` (отдельных extras не нужно). Установите
+нужный API-ключ (см. `.env.example`) и выберите провайдера флагом `--provider` /
 `--model` либо в конфиге.
 
-| Провайдер | `--provider` | Модель по умолчанию | Ключ | Extra |
-| --- | --- | --- | --- | --- |
-| Anthropic *(по умолчанию)* | `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` | (входит в базовую установку) |
-| DeepSeek | `deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` | `luna-simple[deepseek]` |
-| OpenAI | `openai` | `gpt-4.1` | `OPENAI_API_KEY` | `luna-simple[openai]` |
-| Google | `google` | `gemini-2.5-pro` | `GOOGLE_API_KEY` | `luna-simple[google]` |
-| Ollama | `ollama` | `qwen2.5-coder` | — (локально) | `luna-simple[ollama]` |
-| Mistral | `mistral` | `mistral-large-latest` | `MISTRAL_API_KEY` | `luna-simple[mistral]` |
-| xAI (Grok) | `xai` | `grok-4` | `XAI_API_KEY` | `luna-simple[xai]` |
-| Groq | `groq` | `openai/gpt-oss-120b` | `GROQ_API_KEY` | `luna-simple[groq]` |
-| Fireworks | `fireworks` | `accounts/fireworks/models/qwen3p5-397b-a17b` | `FIREWORKS_API_KEY` | `luna-simple[fireworks]` |
-| Together | `together` | `Qwen/Qwen2.5-Coder-32B-Instruct` | `TOGETHER_API_KEY` | `luna-simple[together]` |
-| OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` | `OPENROUTER_API_KEY` | `luna-simple[openrouter]` |
-| Perplexity | `perplexity` | `sonar` | `PPLX_API_KEY` | `luna-simple[perplexity]` |
-| Cerebras | `cerebras` | `gpt-oss-120b` | `CEREBRAS_API_KEY` | `luna-simple[openai]` |
+| Провайдер | `--provider` | Модель по умолчанию | Ключ |
+| --- | --- | --- | --- |
+| Anthropic *(по умолчанию)* | `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
+| DeepSeek | `deepseek` | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| OpenAI (Responses API) | `openai` | `gpt-6-astra` | `OPENAI_API_KEY` |
+| OpenAI (Chat Completions) | `openai_chat` | `gpt-6.1-sol` | `OPENAI_API_KEY` |
+| Google | `google` | `gemini-3.1-pro-preview` | `GOOGLE_API_KEY` |
+| Ollama | `ollama` | `qwen3-coder` | — (локально) |
+| GigaChat | `gigachat` | `GigaChat-2-Max` | `GIGACHAT_CREDENTIALS` |
+| Yandex | `yandex` | `yandexgpt/latest` | `YANDEX_API_KEY` |
+| Mistral | `mistral` | `mistral-large-latest` | `MISTRAL_API_KEY` |
+| xAI (Grok) | `xai` | `grok-4.7` | `XAI_API_KEY` |
+| Groq | `groq` | `openai/gpt-oss-120b` | `GROQ_API_KEY` |
+| Fireworks | `fireworks` | `accounts/fireworks/models/qwen3p5-397b-a17b` | `FIREWORKS_API_KEY` |
+| Together | `together` | `Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8` | `TOGETHER_API_KEY` |
+| OpenRouter | `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
+| Perplexity | `perplexity` | `sonar` | `PPLX_API_KEY` |
+| Cerebras | `cerebras` | `gpt-oss-120b` | `CEREBRAS_API_KEY` |
 
 ### Свой OpenAI-совместимый провайдер
 
@@ -253,7 +287,7 @@ luna agents list              # встроенные: researcher, reviewer
   Для мутирующих инструментов (`write_file` / `edit_file` / `delete` /
   `execute`) ключ `unsafe = true` в блоке `[subagent.<имя>]` **обязателен** —
   иначе жёсткая ошибка при старте и `/reload`. При явном списке `tools`
-  включайте `read_file` (иначе deepagents отклонит конфиг).
+  включайте `read_file` (иначе конфиг будет отклонён).
 - В REPL: `/reload` активирует добавленные скилы / MCP / субагенты без
   перезапуска; `/tools`, `/agents` показывают, что доступно.
 

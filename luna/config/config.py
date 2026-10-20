@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from luna_core.hooks import POINTS
+
 from luna.config.providers import (
     DEFAULT_PROVIDER,
     PROVIDERS,
@@ -70,31 +72,16 @@ class LunaConfig:
     show_splash: bool = True
     temperature: float | None = None
     max_tokens: int | None = None
-    extra_model_kwargs: dict = field(default_factory=dict)
+    reasoning: str | None = None
+    max_cost: float | None = None
+    max_parallel: int = 4
+    roles: dict[str, str] = field(default_factory=dict)
+    sandbox: str = "local"
+    sandbox_image: str = "python:3.12-slim"
+    sandbox_network: str = "none"
+    hooks: list[dict] = field(default_factory=list)
+    ignored_extra: bool = False
     custom_providers: dict[str, ProviderSpec] = field(default_factory=dict)
-
-    @property
-    def model_kwargs(self) -> dict:
-        """Keyword arguments forwarded to ``init_chat_model``.
-
-        ``max_retries`` defaults to 0: LangChain chat models otherwise retry
-        a failed call themselves (``ChatAnthropic`` defaults to 2), and for a
-        *streaming* call that retry restarts the whole generation from
-        scratch rather than resuming it — a transient mid-stream error can
-        silently re-emit the entire response on top of what was already
-        shown, duplicating it. Luna's own turn-level retry
-        (``_stream_turn_resilient``) handles this instead: it starts a
-        genuinely fresh turn and is visible to the user ("retrying in
-        Xs..."), so the provider SDK's own silent retry is only a liability
-        here. A user's own ``max_retries`` in ``[agent.extra]`` still wins.
-        """
-        kwargs: dict = dict(self.extra_model_kwargs)
-        kwargs.setdefault("max_retries", 0)
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            kwargs["max_tokens"] = self.max_tokens
-        return kwargs
 
 
 def _load_toml(path: Path) -> dict:
@@ -113,8 +100,12 @@ def _apply_toml(data: dict, into: dict) -> None:
         into["provider"] = model["provider"]
     if "name" in model:
         into["model"] = model["name"]
-    if "fast" in model:
-        into["fast_model"] = model["fast"]
+    roles = dict(into.get("roles", {}))
+    for role in ("fast", "plan", "vision", "summarize"):
+        if role in model:
+            roles[role] = str(model[role])
+    if roles:
+        into["roles"] = roles
     if isinstance(model.get("pricing"), dict):
         into["pricing"] = {k: dict(v) for k, v in model["pricing"].items() if isinstance(v, dict)}
 
@@ -128,11 +119,25 @@ def _apply_toml(data: dict, into: dict) -> None:
         "language",
         "temperature",
         "max_tokens",
+        "reasoning",
+        "max_cost",
+        "max_parallel",
     ):
         if key in agent:
             into[key] = agent[key]
-    if isinstance(agent.get("extra"), dict):
-        into["extra_model_kwargs"] = dict(agent["extra"])
+    if isinstance(agent.get("extra"), dict) and agent["extra"]:
+        into["ignored_extra"] = True
+
+    sandbox = data.get("sandbox", {})
+    for src, dst in (
+        ("kind", "sandbox"),
+        ("image", "sandbox_image"),
+        ("network", "sandbox_network"),
+    ):
+        if src in sandbox:
+            into[dst] = str(sandbox[src])
+    if isinstance(data.get("hooks"), list):
+        into["hooks"] = [dict(h) for h in data["hooks"] if isinstance(h, dict)]
 
     ui = data.get("ui", {})
     if "splash" in ui:
@@ -143,6 +148,25 @@ def _apply_toml(data: dict, into: dict) -> None:
         into["custom_providers"] = {
             k: dict(v) for k, v in provider["custom"].items() if isinstance(v, dict)
         }
+
+
+def _validate_hook(index: int, entry: dict) -> None:
+    """Raise ``LunaConfigError`` naming the ``[[hooks]]`` entry unless it is well formed."""
+    where = f"[[hooks]] entry {index}"
+    if entry.get("event") not in POINTS:
+        raise LunaConfigError(
+            f"{where}: event must be one of {', '.join(POINTS)}, got {entry.get('event')!r}."
+        )
+    command = entry.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise LunaConfigError(f"{where}: command must be a non-empty string.")
+    if "match" in entry and not isinstance(entry["match"], str):
+        raise LunaConfigError(f"{where}: match must be a string, got {entry['match']!r}.")
+    timeout = entry.get("timeout")
+    if "timeout" in entry and (
+        isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0
+    ):
+        raise LunaConfigError(f"{where}: timeout must be a number > 0, got {timeout!r}.")
 
 
 def _apply_env(env: Mapping[str, str], into: dict) -> None:
@@ -185,12 +209,11 @@ def load_config(
             )
         custom_providers[name] = ProviderSpec(
             key=name,
-            init_prefix="openai",
+            api="openai_chat",
             default_model=fields.get("default_model") or "gpt-4o",
             # Optional: a keyless local endpoint (vLLM, LM Studio) needs no
             # API key at all — same as the built-in ``ollama`` provider.
             env_var=env_var or None,
-            pip_extra="openai",
             base_url=base_url,
         )
 
@@ -201,10 +224,38 @@ def load_config(
             f"Unknown provider {provider!r}. Choose one of: {', '.join(sorted(registry))}."
         )
 
+    sandbox = merged.get("sandbox", "local")
+    if sandbox not in ("local", "docker"):
+        raise LunaConfigError(f"[sandbox] kind must be 'local' or 'docker', got {sandbox!r}.")
+    sandbox_network = merged.get("sandbox_network", "none")
+    if sandbox_network not in ("none", "bridge"):
+        raise LunaConfigError(
+            f"[sandbox] network must be 'none' or 'bridge', got {sandbox_network!r}."
+        )
+    reasoning = merged.get("reasoning")
+    if reasoning not in (None, "low", "medium", "high"):
+        raise LunaConfigError(
+            f"[agent] reasoning must be 'low', 'medium' or 'high', got {reasoning!r}."
+        )
+    max_parallel = merged.get("max_parallel", 4)
+    if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or max_parallel < 1:
+        raise LunaConfigError(
+            f"[agent] max_parallel must be an integer >= 1, got {max_parallel!r}."
+        )
+    max_cost = merged.get("max_cost")
+    if max_cost is not None and (
+        isinstance(max_cost, bool) or not isinstance(max_cost, (int, float)) or max_cost < 0
+    ):
+        raise LunaConfigError(f"[agent] max_cost must be a number >= 0, got {max_cost!r}.")
+    hooks = list(merged.get("hooks", []))
+    for index, entry in enumerate(hooks, 1):
+        _validate_hook(index, entry)
+    roles = dict(merged.get("roles", {}))
+
     return LunaConfig(
         provider=provider,
         model=merged.get("model"),
-        fast_model=merged.get("fast_model"),
+        fast_model=roles.get("fast"),
         pricing=dict(merged.get("pricing", {})),
         workdir=str(merged.get("workdir", ".")),
         yolo=bool(merged.get("yolo", False)),
@@ -215,7 +266,15 @@ def load_config(
         show_splash=bool(merged.get("show_splash", True)),
         temperature=merged.get("temperature"),
         max_tokens=merged.get("max_tokens"),
-        extra_model_kwargs=dict(merged.get("extra_model_kwargs", {})),
+        reasoning=reasoning,
+        max_cost=max_cost,
+        max_parallel=max_parallel,
+        roles=roles,
+        sandbox=sandbox,
+        sandbox_image=merged.get("sandbox_image", "python:3.12-slim"),
+        sandbox_network=sandbox_network,
+        hooks=hooks,
+        ignored_extra=bool(merged.get("ignored_extra", False)),
         custom_providers=custom_providers,
     )
 

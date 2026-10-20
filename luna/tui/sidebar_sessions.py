@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from luna_core.client import ServerError
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView
 
-from luna.server.client import ServerError
+from luna.tui.errors import readable
 
 #: Client-side labels for the server's language-neutral ``group`` values.
 GROUP_LABELS = {
@@ -50,6 +51,7 @@ class SessionsSidebar(Widget):
         super().__init__()
         self._workdir = workdir
         self.current_thread_id = current_thread_id
+        self.any_running = False
 
     def compose(self):
         """Yield the project header and the session list."""
@@ -69,8 +71,10 @@ class SessionsSidebar(Widget):
         try:
             sessions = await self.app.client.list_sessions(self._workdir)
         except ServerError as exc:
-            self.notify(str(exc), severity="error")
+            self.notify(readable(exc), severity="error", markup=False)
             return
+        #: True when some listed session is still running (the app polls then).
+        self.any_running = any(s.get("running") for s in sessions)
         list_view = self.query_one("#session-list", ListView)
         await list_view.clear()
         items: list[ListItem] = [ListItem(_NewSessionRow(), classes="new-session-item")]
@@ -85,9 +89,12 @@ class SessionsSidebar(Widget):
                         disabled=True,
                     )
                 )
-            item = ListItem(_SessionRow(s["title"], s["relative_time"]), classes="session-item")
-            item.data_thread_id = s["thread_id"]  # plain attribute, no reactive needed here
-            item.set_class(s["thread_id"] == self.current_thread_id, "-current")
+            marker = _marker(s)
+            item = ListItem(
+                _SessionRow(s["title"], s["relative_time"], marker), classes="session-item"
+            )
+            item.data_thread_id = s["id"]  # plain attribute, no reactive needed here
+            item.set_class(s["id"] == self.current_thread_id, "-current")
             items.append(item)
         await list_view.extend(items)
 
@@ -107,15 +114,30 @@ class SessionsSidebar(Widget):
             self.post_message(self.SessionSelected(thread_id))
 
 
-class _SessionRow(Horizontal):
-    """One line: ellipsis-truncated title, relative time right-aligned."""
+def _marker(row: dict) -> tuple[str, str] | None:
+    """``● `` for a running session, ``◌ `` for one running with no client attached."""
+    if not row.get("running"):
+        return None
+    if row.get("background"):
+        return ("◌ ", "session-background")
+    return ("● ", "session-running")
 
-    def __init__(self, title: str, relative_time: str) -> None:
+
+class _SessionRow(Horizontal):
+    """One line: run marker, ellipsis-truncated title, relative time right-aligned."""
+
+    def __init__(
+        self, title: str, relative_time: str, marker: tuple[str, str] | None = None
+    ) -> None:
         super().__init__()
         self._title = title
         self._relative_time = relative_time
+        self._marker = marker
 
     def compose(self):
+        if self._marker is not None:
+            glyph, kind = self._marker
+            yield Label(glyph, classes=f"session-marker {kind}")
         yield Label(self._title, classes="session-title")
         yield Label(self._relative_time, classes="session-time")
 

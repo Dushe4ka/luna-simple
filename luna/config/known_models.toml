@@ -36,3 +36,12 @@ models = ["sonar"]
 
 [cerebras]
 models = ["gpt-oss-120b"]
+
+[openai_chat]
+models = ["gpt-6.1-sol"]
+
+[gigachat]
+models = ["GigaChat-2-Max"]
+
+[yandex]
+models = ["yandexgpt/latest"]

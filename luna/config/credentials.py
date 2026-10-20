@@ -18,6 +18,21 @@ from luna.config.providers import PROVIDERS, LunaConfigError, ProviderSpec
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0600
 
 
+def write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` in a file that is 0600 from the moment it exists.
+
+    The mode is passed to ``open(2)`` (no window with umask permissions) and
+    ``fchmod`` tightens a file that already existed with looser ones.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, _FILE_MODE)
+    try:
+        os.fchmod(fd, _FILE_MODE)
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def credentials_path(env: Mapping[str, str] | None = None) -> Path:
     """Return the path to the credentials file."""
     return config_dir(env) / "credentials.toml"
@@ -51,9 +66,7 @@ def _write(data: Mapping[str, Mapping[str, str]], path: Path) -> None:
             escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'{key} = "{escaped}"')
         lines.append("")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n")
-    os.chmod(path, _FILE_MODE)
+    write_private(path, "\n".join(lines).rstrip() + "\n")
 
 
 def set_api_key(

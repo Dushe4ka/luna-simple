@@ -5,8 +5,17 @@ import io
 
 from rich.console import Console
 
-from luna.cli import _resolve_resume
-from luna.core.persistence import SessionIndex
+from luna.cli import _LogIndex, _resolve_resume
+from luna.core.store import open_log
+from tests.server_helpers import seed
+
+
+def _index() -> _LogIndex:
+    return _LogIndex(open_log())
+
+
+def _record(session_id: str, workdir, title: str) -> None:
+    seed(open_log(), workdir, title, session_id=session_id)
 
 
 def _console() -> Console:
@@ -18,56 +27,65 @@ def _args(cont: bool = False, resume: str | None = None) -> argparse.Namespace:
 
 
 def test_continue_returns_recorded_thread(tmp_path):
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
     got = _resolve_resume(_args(cont=True), idx, str(tmp_path), _console(), interactive=False)
     assert got == "thread-a"
 
 
 def test_resume_numeric_is_a_list_index(tmp_path):
-    idx = SessionIndex()
-    idx.record("thread-old", str(tmp_path), "older")
-    idx.record("thread-new", str(tmp_path), "newer")
+    idx = _index()
+    _record("thread-old", str(tmp_path), "older")
+    _record("thread-new", str(tmp_path), "newer")
     got = _resolve_resume(_args(resume="1"), idx, str(tmp_path), _console(), interactive=False)
     assert got == "thread-new"  # newest first → [1]
 
 
 def test_resume_non_digit_is_treated_as_raw_thread_id(tmp_path):
-    idx = SessionIndex()
+    idx = _index()
     got = _resolve_resume(_args(resume="nope"), idx, str(tmp_path), _console(), interactive=False)
     assert got == "nope"
 
 
 def test_resume_list_non_interactive_returns_none(tmp_path):
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
     got = _resolve_resume(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=False
     )
     assert got is None
 
 
-def test_session_id_follows_resumed_thread(tmp_path, monkeypatch):
+def test_repl_continue_opens_the_resumed_session(tmp_path, monkeypatch):
+    from luna_core.messages import Message, message_to_dict
+
     import luna.cli as cli
-    from luna.core.persistence import SessionIndex
+    from luna.core.store import open_log
 
-    idx = SessionIndex()
-    idx.record("thread-abc", str(tmp_path), "earlier work")
-
+    log = open_log()
+    log.create(str(tmp_path.resolve()), title="earlier work", session_id="thread-abc")
+    log.append("thread-abc", "user", {"message": message_to_dict(Message.user("earlier work"))})
     seen: dict = {}
 
-    def _capture(agent, **kw):
+    class _Bundle:
+        async def aclose(self):
+            pass
+
+    async def _build(*a, **k):
+        return _Bundle()
+
+    async def _capture(bundle, **kw):
         seen.update(kw)
         return 0
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setattr(cli, "run_repl", _capture)
-    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+    monkeypatch.setattr("luna.core.session.run_repl", _capture)
+    monkeypatch.setattr("luna.core.agent.build_agent", _build)
 
-    cli.main(["-c"])
-    assert seen["thread_id"] == "thread-abc"
-    assert seen["session_id"] == "thread-abc"
+    assert cli.main(["-c"]) == 0
+    assert seen["session"].id == "thread-abc"
+    assert seen["session"].undo_journal.session_id == "thread-abc"  # the journal follows it
 
 
 def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkeypatch):
@@ -76,14 +94,12 @@ def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkey
     input_fn), so this is the only way to exercise it in a test — patch
     the real builtin. Confirms arrow_pick is consulted first, and that a
     stubbed arrow_pick's return value is used directly."""
-    import luna.cli as cli
-    from luna.core.persistence import SessionIndex
 
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
 
     monkeypatch.setattr(
-        cli, "arrow_pick", lambda console, input_fn, options, default=None: "thread-a"
+        "luna.ui.interact.arrow_pick", lambda console, input_fn, options, default=None: "thread-a"
     )
     got = _resolve_resume(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
@@ -94,13 +110,13 @@ def test_resume_list_interactive_uses_arrow_pick_when_available(tmp_path, monkey
 def test_resume_list_interactive_falls_back_to_input_when_arrow_pick_declines(
     tmp_path, monkeypatch
 ):
-    import luna.cli as cli
-    from luna.core.persistence import SessionIndex
 
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    idx = _index()
+    _record("thread-a", str(tmp_path), "a task")
 
-    monkeypatch.setattr(cli, "arrow_pick", lambda console, input_fn, options, default=None: None)
+    monkeypatch.setattr(
+        "luna.ui.interact.arrow_pick", lambda console, input_fn, options, default=None: None
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: "1")
     got = _resolve_resume(
         _args(resume="__list__"), idx, str(tmp_path), _console(), interactive=True
@@ -115,24 +131,23 @@ def test_main_handles_keyboard_interrupt_during_resume_list(tmp_path, monkeypatc
     import sys
 
     import luna.cli as cli
-    from luna.core.persistence import SessionIndex
     from luna.ui.console import get_console
 
-    idx = SessionIndex()
-    idx.record("thread-a", str(tmp_path), "a task")
+    _record("thread-a", str(tmp_path), "a task")
+    from luna.core.projects import ProjectIndex
+
+    ProjectIndex().trust(str(tmp_path))
 
     # Make arrow_pick raise KeyboardInterrupt to simulate Ctrl-C
     def _raise_keyboard_interrupt(*args, **kwargs):
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr(cli, "arrow_pick", _raise_keyboard_interrupt)
+    monkeypatch.setattr("luna.ui.interact.arrow_pick", _raise_keyboard_interrupt)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     # Ensure interactive detection works: console must be terminal, stdin must be tty
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cli, "get_console", lambda: get_console(force_terminal=True))
-    # Dummy agent so we don't hit build errors
-    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+    monkeypatch.setattr("luna.ui.console.get_console", lambda: get_console(force_terminal=True))
 
     # Call main() with --resume (no id) to trigger interactive list branch
     result = cli.main(["--resume"])

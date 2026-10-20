@@ -10,18 +10,28 @@ keep a pending question.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from luna.config.config import LunaConfig
-from luna.config.usage import SessionUsage
-from luna.turn.context import PinnedFiles
 from luna.turn.engine import Notice
+
+if TYPE_CHECKING:
+    from luna_core.background import AgentManager
+    from luna_core.context import PinnedFiles
+    from luna_core.loop import Agent
+    from luna_core.session import Session
+
+    from luna.config.config import LunaConfig
+    from luna.core.agent import AgentBundle
+    from luna.core.session_state import SessionState
 
 #: ui = handled by the client; read = allowed mid-turn; mutate = changes the
 #: session; prompt = becomes a message to the agent.
 KINDS = ("ui", "read", "mutate", "prompt")
+
+#: Commands that rewrite files and history: refused while background tasks run.
+HISTORY_COMMANDS = frozenset({"/undo", "/redo", "/rewind"})
 
 
 @dataclass(frozen=True)
@@ -77,24 +87,27 @@ class CommandEnv(Protocol):
     """What a handler may use; see the REPL and server adapters."""
 
     workdir: str
-    thread_id: str
-    session_id: str
-    index: object | None
     user_commands: dict
     pinned: PinnedFiles
-    usage: SessionUsage
+    session: Session
+    state: SessionState
+    bundle: AgentBundle
+    manager: AgentManager | None
 
     @property
     def config(self) -> LunaConfig:
         """Effective config (session overrides applied)."""
 
     @property
-    def agent(self) -> object:
-        """The session's current agent."""
+    def agent(self) -> Agent:
+        """The session's current agent (``bundle.agent``)."""
 
     @property
     def can_rebuild(self) -> bool:
         """Whether this surface can rebuild the agent."""
+
+    def live_tasks(self) -> bool:
+        """Whether a background task of this session is queued or running."""
 
     def get_plan(self) -> bool | None:
         """Plan mode state, or ``None`` when plan mode is not available."""
@@ -102,13 +115,13 @@ class CommandEnv(Protocol):
     def set_plan(self, on: bool) -> None:
         """Turn plan mode on or off."""
 
-    def rebuild(self) -> None:
+    async def rebuild(self) -> None:
         """Rebuild the agent; raises on a bad config."""
 
-    def switch_model(self, model: str) -> None:
+    async def switch_model(self, model: str) -> None:
         """Switch model for this session; restores the old one and raises on failure."""
 
-    def switch_provider(self, provider: str) -> None:
+    async def switch_provider(self, provider: str) -> None:
         """Switch provider for this session; restores the old one and raises on failure."""
 
 
@@ -119,4 +132,6 @@ class Command:
     name: str
     help: str
     kind: str
-    run: Callable[[CommandEnv, str], CommandResult] | None
+    run: Callable[[CommandEnv, str], CommandResult | Awaitable[CommandResult]] | None
+    #: the handler uses ``env.agent`` (the server builds the agent only for these)
+    agent: bool = False

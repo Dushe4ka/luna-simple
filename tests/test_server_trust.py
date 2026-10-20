@@ -1,18 +1,12 @@
-import httpx
 import pytest
 
 from luna.core.projects import ProjectIndex
-from luna.server.app import create_app
 from luna.server.run import make_trust_check
+from tests.server_helpers import client, make_app
 
 
 def _client(trust_check):
-    app = create_app(agent_factory=lambda _w: None, token="t", trust_check=trust_check)
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-        headers={"Authorization": "Bearer t"},
-    )
+    return client(make_app(trust_check=trust_check))
 
 
 ROUTES = [
@@ -20,18 +14,36 @@ ROUTES = [
     ("POST", "/sessions", "json"),
     ("GET", "/sessions/t1/messages", "params"),
     ("POST", "/sessions/t1/messages", "json"),
-    ("POST", "/sessions/t1/approve", "json"),
+    ("POST", "/sessions/t1/background", "json"),
+    ("GET", "/sessions/t1/state", "params"),
+    ("POST", "/sessions/t1/command", "json"),
+    ("GET", "/commands", "params"),
 ]
 
 
 @pytest.mark.parametrize(("method", "path", "where"), ROUTES)
 async def test_untrusted_workdir_is_rejected_on_every_route(tmp_path, method, path, where):
-    body = {"workdir": str(tmp_path), "content": "hi", "decision": {"type": "approve"}}
+    body = {"workdir": str(tmp_path), "content": "hi", "line": "/plan"}
     kwargs = {"params": {"workdir": str(tmp_path)}} if where == "params" else {"json": body}
     async with _client(make_trust_check()) as c:
         resp = await c.request(method, path, **kwargs)
+        loaded = c._app.state.runtimes.peek("t1")
     assert resp.status_code == 403
     assert resp.json() == {"error": "workdir_not_trusted", "workdir": str(tmp_path)}
+    assert loaded is None  # no agent is ever built for an untrusted folder
+
+
+async def test_session_routes_without_a_workdir_need_a_loaded_session(tmp_path):
+    async with _client(make_trust_check()) as c:
+        approve = await c.post(
+            "/sessions/t1/approve", json={"call_id": "c1", "decision": {"type": "approve"}}
+        )
+        cancel = await c.post("/sessions/t1/cancel")
+        async with c.stream("GET", "/sessions/t1/events") as resp:
+            events = [line async for line in resp.aiter_lines() if line.startswith("data:")]
+    assert approve.status_code == 404
+    assert cancel.json() == {"cancelled": False}
+    assert events == []
 
 
 async def test_missing_workdir_is_a_400(tmp_path):
@@ -72,7 +84,7 @@ def test_run_serve_wires_the_real_trust_check(tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "write_token_file", lambda **k: None)
 
     assert run_mod.run_serve(["--port", "1", "--token", "x"]) == 0
-    assert captured["session_agent_factory"] is not None
+    assert captured["build"] is not None
     check = captured["trust_check"]
     assert check(str(tmp_path)) is False
     ProjectIndex().trust(str(tmp_path))

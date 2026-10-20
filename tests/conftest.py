@@ -1,43 +1,27 @@
-from collections.abc import Sequence
-
 import pytest
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-
-
-class FakeToolCallingModel(BaseChatModel):
-    """Deterministic chat model with a scripted queue and a working bind_tools."""
-
-    responses: Sequence[AIMessage] = ()
-    idx: int = 0
-
-    @property
-    def _llm_type(self) -> str:
-        return "fake-tool-calling"
-
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        i = min(self.idx, len(self.responses) - 1)
-        msg = self.responses[i]
-        self.idx += 1
-        return ChatResult(generations=[ChatGeneration(message=msg)])
-
-    def bind_tools(self, tools, **kwargs):
-        return self
 
 
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path_factory, monkeypatch):
     """Keep tests away from the real ~/.config/luna (env var and HOME)."""
+    from luna.core import store
+
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    # each test has its own config home, so its own sessions.db and event log
+    for log in store._LOGS.values():
+        log.close()
+    store._LOGS.clear()
     return home / ".config"
 
 
 @pytest.fixture
-def fake_model():
-    def _make(*messages: AIMessage) -> FakeToolCallingModel:
-        return FakeToolCallingModel(responses=list(messages) or [AIMessage(content="ok")])
+def fake_provider():
+    """Build a scripted provider: fake_provider(FakeProvider.text("hi"), FakeProvider.call(...))."""
+    from luna_core.providers.fake import FakeProvider
+
+    def _make(*script):
+        return FakeProvider(list(script) or [FakeProvider.text("ok")])
 
     return _make

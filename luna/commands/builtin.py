@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+
+from luna_core.errors import LunaCoreError, ProviderError
+from luna_core.events import Compacted
+from luna_core.loop import readable_error
 
 from luna.commands.base import Choice, CommandResult, Confirm
 from luna.commands.registry import register, register_ui
@@ -10,23 +15,6 @@ from luna.config.credentials import get_api_key
 from luna.config.providers import LunaConfigError, merge_providers
 from luna.turn.engine import Notice
 from luna.turn.verify import run_verify
-
-TOOL_NAMES = (
-    "ls",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "delete",
-    "glob",
-    "grep",
-    "execute",
-    "write_todos",
-    "task",
-    "manage_mcp",
-    "manage_skills",
-    "save_skill",
-    "web_search",
-)
 
 
 def _api_key(provider: str, spec) -> str | None:
@@ -43,40 +31,6 @@ def _models_for(cfg) -> list[str]:
     return models if models is not None else model_discovery.known_models(cfg.provider)
 
 
-def _is_git(workdir: str) -> bool:
-    from luna.turn import gitinfo
-
-    return gitinfo.is_git_repo(workdir)
-
-
-def peek_last(workdir, session_id):
-    """Lazy seam over :func:`luna.turn.undo.peek_last` (patched in tests)."""
-    from luna.turn.undo import peek_last as _peek
-
-    return _peek(workdir, session_id)
-
-
-def undo_last(workdir, session_id):
-    """Lazy seam over :func:`luna.turn.undo.undo_last`."""
-    from luna.turn.undo import undo_last as _undo
-
-    return _undo(workdir, session_id)
-
-
-def forget_messages(workdir, session_id, count):
-    """Lazy seam over :func:`luna.turn.undo.forget_messages`."""
-    from luna.turn.undo import forget_messages as _forget
-
-    return _forget(workdir, session_id, count)
-
-
-def compact_history(agent, thread_id):
-    """Lazy seam over :func:`luna.core.session.compact_history` (avoids an import cycle)."""
-    from luna.core.session import compact_history as _compact
-
-    return _compact(agent, thread_id)
-
-
 def init_prompt(workdir):
     """Lazy seam over :func:`luna.extensions.initgen.init_prompt`."""
     from luna.extensions.initgen import init_prompt as _init
@@ -84,25 +38,15 @@ def init_prompt(workdir):
     return _init(workdir)
 
 
-def _message_count(env) -> int:
-    try:
-        config = {"configurable": {"thread_id": env.thread_id}}
-        return len(env.agent.get_state(config).values.get("messages", []))
-    except Exception:  # noqa: BLE001 - best-effort ledger resync
-        return 0
-
-
 register_ui("/help", "show this help")
 
 
-@register("/tools", "list the agent's tools", "read")
+@register("/tools", "list the agent's tools", "read", agent=True)
 def _tools(env, arg):
-    return CommandResult(
-        text=", ".join(TOOL_NAMES) + "\n\n(+ any MCP tools as `mcp__<server>__<tool>`)"
-    )
+    return CommandResult(text=", ".join(sorted(env.agent.tools)))
 
 
-@register("/agents", "list available subagents", "read")
+@register("/agents", "subagents and background work", "read", agent=True)
 def _agents(env, arg):
     from luna.extensions.subagents import subagent_summaries
 
@@ -110,93 +54,273 @@ def _agents(env, arg):
         summaries = subagent_summaries(env.workdir)
     except LunaConfigError as exc:
         return CommandResult(notices=[Notice("error", str(exc))])
-    if not summaries:
-        return CommandResult(notices=[Notice("dim", "(no subagents)")])
-    return CommandResult(text="\n".join(f"- **{n}** — {d}" for n, d in summaries))
+    lines = [f"- **{n}** — {d}" for n, d in summaries] or ["(no subagents)"]
+    runs = env.manager.list() if env.manager is not None else []
+    background = env.agent.services.get("background")
+    tasks = background.list(env.session.id) if background is not None else []
+    work = [f"- {r.session_id[:8]} · {r.label} · {r.status} · ${r.cost:.3f}" for r in runs]
+    work += [f"- {t.handle} · {t.label} · {t.status}" for t in tasks]
+    text = "**Subagents**\n" + "\n".join(lines)
+    return CommandResult(
+        text=text + "\n\n**Background**\n" + ("\n".join(work) or "(no background work)")
+    )
 
 
 register_ui("/sessions", "list past sessions for this directory")
 register_ui("/resume", "resume a past session")
 
 
-@register("/usage", "show token usage this session", "read")
+@register("/usage", "show token usage and cost this session", "read")
 def _usage(env, arg):
-    if not env.usage.turns:
+    usage = env.session.usage()
+    if not usage.total:
         return CommandResult(notices=[Notice("info", "no usage recorded yet")])
-    in_tok, out_tok, total = env.usage.totals
-    lines = [f"turns: {len(env.usage.turns)}  in: {in_tok}  out: {out_tok}  total: {total}"]
-    cost = env.usage.cost(env.config.provider, env.config.model, env.config.pricing)
-    if cost is not None:
+    turns = len(env.session.turn_ids())
+    lines = [
+        f"turns: {turns}  in: {usage.input}  out: {usage.output}  "
+        f"cached: {usage.cache_read}  total: {usage.total}"
+    ]
+    cost = env.session.cost()
+    if cost:
         lines.append(f"cost: ${cost:.4f}")
     return CommandResult(text="\n".join(lines))
 
 
-@register("/compact", "summarise and compact the conversation", "mutate")
-def _compact(env, arg):
+@register(
+    "/compact", "summarise old history to free context (/compact [focus])", "mutate", agent=True
+)
+async def _compact(env, arg):
+    compactor = env.agent.compactor
+    if compactor is None:
+        return CommandResult(notices=[Notice("error", "/compact is not available here")])
+    notices = []
     try:
-        ok, message = compact_history(env.agent, env.thread_id)
+        async for event in compactor.compact(env.agent, env.session, instructions=arg):
+            if isinstance(event, Compacted):
+                notices.append(Notice("info", f"compacted {event.removed} messages into a summary"))
+            elif hasattr(event, "level"):
+                notices.append(Notice(event.level, event.text))
     except Exception as exc:  # noqa: BLE001 - a failed compact must not kill the session
         return CommandResult(notices=[Notice("error", f"/compact failed: {exc}")])
-    if ok:
-        forget_messages(env.workdir, env.session_id, _message_count(env))
-    if env.index is not None:
-        env.index.touch(env.thread_id)
-    return CommandResult(notices=[Notice("info" if ok else "error", message)])
+    return CommandResult(notices=notices or [Notice("dim", "nothing to compact yet")])
 
 
 @register("/diff", "show file changes made this session", "read")
-def _diff(env, arg):
-    from luna.turn.undo import session_diff
-
-    text = session_diff(env.workdir, env.session_id)
+async def _diff(env, arg):
+    journal = env.session.undo_journal
+    text = await asyncio.to_thread(journal.diff) if journal is not None else ""
     if not text:
         return CommandResult(notices=[Notice("dim", "no changes this session")])
-    return CommandResult(text=f"```diff\n{text}\n```")
+    fence = "`" * 3
+    return CommandResult(text=f"{fence}diff\n{text}\n{fence}")
 
 
-@register("/undo", "revert the last file change", "mutate")
-def _undo(env, arg):
-    yes = arg.strip() == "--yes"
-    try:
-        if _is_git(env.workdir):
-            if not yes:
-                return CommandResult(
-                    confirm=Confirm(
-                        "undo the last turn (files + conversation)?",
-                        "/undo --yes",
-                        "undo cancelled",
-                    )
-                )
-            from luna.turn.undo import undo as git_undo
+def _last_user_line(session) -> str:
+    """First line of the last visible turn's user message, for the confirm question."""
+    turns = session.turn_ids()
+    if not turns:
+        return ""
+    for entry in session.entries():
+        if entry.turn_id == turns[-1] and entry.message.role == "user":
+            text = entry.message.text.strip()
+            return text.splitlines()[0][:60] if text else ""
+    return ""
 
-            note = git_undo(env.workdir, env.session_id, env.agent, env.thread_id)
-        else:
-            desc = peek_last(env.workdir, env.session_id)
-            if desc is None:
-                return CommandResult(notices=[Notice("dim", "nothing to undo")])
-            if not yes:
-                return CommandResult(confirm=Confirm(f"{desc}?", "/undo --yes", "undo cancelled"))
-            note = undo_last(env.workdir, env.session_id)
-    except Exception as exc:  # noqa: BLE001 - a failed undo must not kill the session
-        return CommandResult(notices=[Notice("error", f"/undo failed: {exc}")])
+
+_BACKGROUND_BUSY = (
+    "background tasks are still running and may be writing files — "
+    "wait for them (or cancel them) before /undo, /redo or /rewind"
+)
+
+
+def _background_busy(env) -> CommandResult | None:
+    """Refuse history commands while a background subagent of the session runs."""
+    live = getattr(env, "live_tasks", None)
+    if live is not None and live():
+        return CommandResult(notices=[Notice("error", _BACKGROUND_BUSY)])
+    return None
+
+
+@register("/undo", "revert the last turn (files + conversation)", "mutate")
+async def _undo(env, arg):
+    if (refused := _background_busy(env)) is not None:
+        return refused
+    if not env.session.turn_ids():
+        return CommandResult(notices=[Notice("dim", "nothing to undo")])
+    if arg.strip() != "--yes":
+        what = _last_user_line(env.session)
+        question = (
+            f"undo the last turn «{what}» (files + conversation)?"
+            if what
+            else ("undo the last turn (files + conversation)?")
+        )
+        return CommandResult(confirm=Confirm(question, "/undo --yes", "undo cancelled"))
+    result = await asyncio.to_thread(env.session.undo)
+    if result is None:
+        return CommandResult(notices=[Notice("dim", "nothing to undo")])
     return CommandResult(
-        notices=[Notice("info", note) if note else Notice("dim", "nothing to undo")]
+        notices=[Notice("info", f"undid the turn: {result.note}")],
+        effects={"undo_depth": env.session.undo_depth},
     )
 
 
-@register("/redo", "re-apply the last undone turn (git only)", "mutate")
-def _redo(env, arg):
-    try:
-        if not _is_git(env.workdir):
-            return CommandResult(notices=[Notice("dim", "redo needs a git repository")])
-        from luna.turn.undo import redo as git_redo
-
-        note = git_redo(env.workdir, env.session_id, env.agent, env.thread_id)
-    except Exception as exc:  # noqa: BLE001 - a failed redo must not kill the session
-        return CommandResult(notices=[Notice("error", f"/redo failed: {exc}")])
+@register("/redo", "re-apply the last undone turn", "mutate")
+async def _redo(env, arg):
+    if (refused := _background_busy(env)) is not None:
+        return refused
+    result = await asyncio.to_thread(env.session.redo)
+    if result is None:
+        return CommandResult(notices=[Notice("dim", "nothing to redo")])
     return CommandResult(
-        notices=[Notice("info", note) if note else Notice("dim", "nothing to redo")]
+        notices=[Notice("info", f"redo: {result.note}")],
+        effects={"undo_depth": env.session.undo_depth},
     )
+
+
+@register("/rewind", "undo the last N turns (/rewind 3)", "mutate")
+async def _rewind(env, arg):
+    if (refused := _background_busy(env)) is not None:
+        return refused
+    parts = arg.split()
+    numbers = [p for p in parts if p != "--yes"]
+    if len(numbers) > 1 or (numbers and not numbers[0].isdigit()) or numbers[:1] == ["0"]:
+        return CommandResult(notices=[Notice("error", "/rewind: n must be a positive number")])
+    count = int(numbers[0]) if numbers else 1
+    available = len(env.session.turn_ids())
+    if not available:
+        return CommandResult(notices=[Notice("dim", "nothing to rewind")])
+    count = min(count, available)
+    if "--yes" not in parts:
+        return CommandResult(
+            confirm=Confirm(
+                f"rewind the last {count} turn(s) (files + conversation)?",
+                f"/rewind {count} --yes",
+                "rewind cancelled",
+            )
+        )
+    done = 0
+    for _ in range(count):
+        if await asyncio.to_thread(env.session.undo) is None:
+            break
+        done += 1
+    return CommandResult(
+        notices=[Notice("info", f"rewound {done} turn(s)")],
+        effects={"undo_depth": env.session.undo_depth},
+    )
+
+
+_EXPORT_FORMATS = ("md", "html", "json")
+
+
+def _parse_export(arg: str) -> tuple[str | None, str | None, bool]:
+    """Split ``/export`` args into ``(format, path, force)``; raises ValueError on bad input."""
+    import shlex
+    from pathlib import PurePosixPath
+
+    parts = shlex.split(arg)
+    force = "--force" in parts
+    parts = [p for p in parts if p != "--force"]
+    fmt = None
+    if parts and "." not in parts[0] and "/" not in parts[0]:
+        fmt = parts.pop(0)
+        if fmt not in _EXPORT_FORMATS:
+            raise ValueError(f"unknown format {fmt!r} (use md, html or json)")
+    if len(parts) > 1:
+        raise ValueError("usage: /export [md|html|json] [path] [--force]")
+    path = parts[0] if parts else None
+    if path is not None:
+        ext = PurePosixPath(path).suffix.lstrip(".").lower()
+        if ext not in _EXPORT_FORMATS:
+            raise ValueError(f"unsupported file extension {path!r} (use .md, .html or .json)")
+        if fmt is not None and fmt != ext:
+            raise ValueError(f"format {fmt} does not match the extension of {path!r}")
+        fmt = ext
+    return fmt, path, force
+
+
+# kind "mutate": it writes a project file, so it must not run mid-turn
+@register(
+    "/export",
+    "save the transcript (/export [md|html|json] [path] [--force])",
+    "mutate",
+    agent=True,
+)
+async def _export(env, arg):
+    import time
+
+    try:
+        fmt, rel, force = _parse_export(arg)
+    except ValueError as exc:
+        return CommandResult(notices=[Notice("error", f"/export: {exc}")])
+    fmt = fmt or "md"
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    rel = rel or f".luna/exports/{env.session.id[:8]}-{stamp}.{fmt}"
+    workspace = env.agent.workspace
+    try:
+        target = workspace.resolve(rel)
+        shown = workspace.rel(target)
+        if ".git" in shown.split("/"):
+            return CommandResult(notices=[Notice("error", "/export: refusing to write into .git")])
+        if target.exists() and not force:
+            return CommandResult(
+                notices=[Notice("error", f"/export: {shown} exists; add --force to overwrite")]
+            )
+        text = await asyncio.to_thread(env.session.export, fmt)
+
+        def write() -> None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+
+        await asyncio.to_thread(write)
+    except (LunaCoreError, OSError) as exc:
+        return CommandResult(notices=[Notice("error", f"/export failed: {exc}")])
+    return CommandResult(notices=[Notice("info", f"exported to {shown}")], effects={"path": shown})
+
+
+@register("/btw", "ask a side question without adding it to the conversation", "read", agent=True)
+async def _btw(env, arg):
+    if not arg:
+        return CommandResult(notices=[Notice("dim", "usage: /btw <question>")])
+    try:
+        answer = await env.agent.side_question(env.session, arg)
+    except ProviderError as exc:
+        return CommandResult(
+            notices=[Notice("error", readable_error(exc, env.agent.provider.name))]
+        )
+    except LunaCoreError as exc:
+        return CommandResult(notices=[Notice("error", f"/btw failed: {exc}")])
+    notices = [Notice("warn", answer.notice)] if answer.notice else []
+    return CommandResult(text=answer.text, notices=notices)
+
+
+@register("/steer", "add guidance to the running turn (read at the next step)", "read")
+def _steer(env, arg):
+    if not arg:
+        return CommandResult(notices=[Notice("dim", "usage: /steer <text>")])
+    env.session.queue(arg)
+    return CommandResult(
+        notices=[
+            Notice(
+                "dim",
+                (
+                    "queued — the agent reads it at the next step"
+                    if env.session.busy
+                    else "queued for the next turn"
+                ),
+            )
+        ]
+    )
+
+
+@register("/fork", "continue in a new session that copies this one", "mutate")
+async def _fork(env, arg):
+    child = await asyncio.to_thread(env.session.fork)
+    return CommandResult(
+        notices=[Notice("info", f"forked into {child.id[:8]}")], effects={"session": child.id}
+    )
+
+
+register_ui("/background", "run a prompt in the background (/background <prompt>)")
 
 
 @register("/add", "pin files into context (/add path ...)", "mutate")
@@ -227,17 +351,17 @@ def _context(env, arg):
 
 
 @register("/verify", "run the project's verify command now", "mutate")
-def _verify(env, arg):
+async def _verify(env, arg):
     if not env.config.verify_command:
         return CommandResult(notices=[Notice("dim", "set agent.verify_command in config first")])
-    ok, tail = run_verify(env.config.verify_command, env.workdir)
+    ok, tail = await asyncio.to_thread(run_verify, env.config.verify_command, env.workdir)
     return CommandResult(
         notices=[Notice("ok", "✓ verify ok") if ok else Notice("warn", f"verify failed\n{tail}")]
     )
 
 
 @register("/diagnose", "run the project's diagnostics command now", "mutate")
-def _diagnose(env, arg):
+async def _diagnose(env, arg):
     from luna.turn import diagnose
 
     cmd = env.config.diagnose_command
@@ -245,7 +369,7 @@ def _diagnose(env, arg):
         cmd = diagnose.detect(env.workdir)
     if not cmd:
         return CommandResult(notices=[Notice("dim", "no diagnose command configured or detected")])
-    text = diagnose.run(cmd, env.workdir, [])
+    text = await asyncio.to_thread(diagnose.run, cmd, env.workdir, [])
     return (
         CommandResult(text=text) if text else CommandResult(notices=[Notice("dim", "no findings")])
     )
@@ -259,10 +383,10 @@ def _init(env, arg):
 
 
 @register("/model", "pick a model interactively, or /model <name> to switch directly", "mutate")
-def _model(env, arg):
+async def _model(env, arg):
     if not arg:
         current = Notice("dim", f"model: {env.config.model or '(provider default)'}")
-        models = _models_for(env.config)
+        models = await asyncio.to_thread(_models_for, env.config)
         if not models:
             return CommandResult(notices=[current])
         return CommandResult(
@@ -274,14 +398,14 @@ def _model(env, arg):
             ),
         )
     try:
-        env.switch_model(arg)
+        await env.switch_model(arg)
     except Exception as exc:  # noqa: BLE001 - a bad model must not kill the session
         return CommandResult(notices=[Notice("error", f"could not switch: {exc}")])
     return CommandResult(notices=[Notice("info", f"model → {arg}")], effects={"model": arg})
 
 
 @register("/provider", "show or switch the provider (/provider <key>)", "mutate")
-def _provider(env, arg):
+async def _provider(env, arg):
     registry = merge_providers(env.config.custom_providers)
     if not arg:
         current = Notice("dim", f"provider: {env.config.provider}")
@@ -301,18 +425,18 @@ def _provider(env, arg):
             notices=[Notice("error", f"no key for {arg}; run: luna config set-key {arg}")]
         )
     try:
-        env.switch_provider(arg)
+        await env.switch_provider(arg)
     except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the session
         return CommandResult(notices=[Notice("error", f"could not switch: {exc}")])
     return CommandResult(notices=[Notice("info", f"provider → {arg}")], effects={"provider": arg})
 
 
 @register("/reload", "rebuild the agent with the current config", "mutate")
-def _reload(env, arg):
+async def _reload(env, arg):
     if not env.can_rebuild:
         return CommandResult(notices=[Notice("error", "/reload is not available here")])
     try:
-        env.rebuild()
+        await env.rebuild()
     except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
         return CommandResult(notices=[Notice("error", f"/reload failed: {exc}")])
     return CommandResult(

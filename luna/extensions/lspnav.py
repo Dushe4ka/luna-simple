@@ -7,10 +7,12 @@ fails to start — these are read-only tools, never gated by approval.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
+from collections.abc import Callable
 from pathlib import Path
 
-from langchain_core.tools import tool
+from luna_core.tools.base import Tool, tool
 
 try:
     from multilspy import SyncLanguageServer
@@ -83,13 +85,10 @@ def _span(symbol: dict) -> tuple[int, int] | None:
     return rng["start"]["line"], rng["end"]["line"]
 
 
-def make_tools(workdir: str, language: str) -> list:
-    """Build the four navigation tools bound to ``workdir``/``language``."""
-    if not available():
-        return []
+def _functions(workdir: str, language: str) -> list[Callable[..., str]]:
+    """Return the four blocking navigation functions bound to ``workdir``/``language``."""
 
-    @tool
-    def goto_definition(file: str, line: int, symbol: str) -> str:
+    def _goto_definition(file: str, line: int, symbol: str) -> str:
         """Find where ``symbol`` (on 1-based ``line`` of ``file``) is defined."""
         srv = _server(workdir, language)
         if srv is None:
@@ -105,8 +104,7 @@ def make_tools(workdir: str, language: str) -> list:
             f"{r.get('relativePath', '?')}:{r['range']['start']['line'] + 1}" for r in results
         )
 
-    @tool
-    def find_references(file: str, line: int, symbol: str) -> str:
+    def _find_references(file: str, line: int, symbol: str) -> str:
         """Find callers/usages of ``symbol`` (on 1-based ``line`` of ``file``)."""
         srv = _server(workdir, language)
         if srv is None:
@@ -122,8 +120,7 @@ def make_tools(workdir: str, language: str) -> list:
             f"{r.get('relativePath', '?')}:{r['range']['start']['line'] + 1}" for r in results
         )
 
-    @tool
-    def hover(file: str, line: int, symbol: str) -> str:
+    def _hover(file: str, line: int, symbol: str) -> str:
         """Show type/doc info for ``symbol`` (on 1-based ``line`` of ``file``)."""
         srv = _server(workdir, language)
         if srv is None:
@@ -138,8 +135,7 @@ def make_tools(workdir: str, language: str) -> list:
         contents = result.get("contents", "")
         return contents.get("value", str(contents)) if isinstance(contents, dict) else str(contents)
 
-    @tool
-    def symbol_range(file: str, symbol: str, line: int | None = None) -> str:
+    def _symbol_range(file: str, symbol: str, line: int | None = None) -> str:
         """Return the exact current source text of `symbol` in `file`.
 
         Resolved via the language server's document-symbol index — use
@@ -194,5 +190,69 @@ def make_tools(workdir: str, language: str) -> list:
             return f"LSP unavailable: {exc}"
         text = "\n".join(lines[start_line : end_line + 1])
         return f"{file}:{start_line + 1}-{end_line + 1}\n{text}"
+
+    return [_goto_definition, _find_references, _hover, _symbol_range]
+
+
+def make_tools(workdir: str, language: str) -> list[Tool]:
+    """Build the four navigation tools bound to ``workdir``/``language``."""
+    if not available():
+        return []
+    _goto_definition, _find_references, _hover, _symbol_range = _functions(workdir, language)
+
+    @tool(name="goto_definition")
+    async def goto_definition(file: str, line: int, symbol: str) -> str:
+        """Find where a symbol is defined.
+
+        Args:
+            file: File relative to the project root.
+            line: 1-based line where the symbol appears.
+            symbol: The symbol's name.
+
+        """
+        return await asyncio.to_thread(_goto_definition, file, line, symbol)
+
+    @tool(name="find_references")
+    async def find_references(file: str, line: int, symbol: str) -> str:
+        """Find callers and usages of a symbol.
+
+        Args:
+            file: File relative to the project root.
+            line: 1-based line where the symbol appears.
+            symbol: The symbol's name.
+
+        """
+        return await asyncio.to_thread(_find_references, file, line, symbol)
+
+    @tool(name="hover")
+    async def hover(file: str, line: int, symbol: str) -> str:
+        """Show type and documentation info for a symbol.
+
+        Args:
+            file: File relative to the project root.
+            line: 1-based line where the symbol appears.
+            symbol: The symbol's name.
+
+        """
+        return await asyncio.to_thread(_hover, file, line, symbol)
+
+    @tool(name="symbol_range")
+    async def symbol_range(file: str, symbol: str, line: int | None = None) -> str:
+        """Return the exact current source text of a symbol in a file.
+
+        Resolved via the language server's document-symbol index — use this
+        instead of guessing at old_string for edit_file when the name might
+        match more than one location. The first line of the response is a
+        `file:start-end` header, not source text — pass only the lines after
+        it as old_string. If edit_file still reports multiple occurrences,
+        widen old_string with a line of context instead of using replace_all.
+
+        Args:
+            file: File relative to the project root.
+            symbol: The symbol's name.
+            line: 1-based line to pick one match when the name is ambiguous.
+
+        """
+        return await asyncio.to_thread(_symbol_range, file, symbol, line)
 
     return [goto_definition, find_references, hover, symbol_range]

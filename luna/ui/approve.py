@@ -6,12 +6,12 @@ import difflib
 import os
 from collections.abc import Callable
 
+from luna_core.policy import suggest_rule
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from luna.core.permissions import suggest_rule
 from luna.ui.interact import arrow_pick
 from luna.ui.theme import PALETTE
 
@@ -79,7 +79,7 @@ def prompt_decision(
 ) -> dict:
     """Show the pending action and collect the user's decision.
 
-    Returns a decision dict for ``Command(resume={"decisions": [...]})``.
+    Returns the wire form of a decision (``Decision.from_dict`` reads it).
     """
     console.print(_panel(action_request))
     picked = arrow_pick(
@@ -102,7 +102,7 @@ def prompt_decision(
     if choice in ("a", "always"):
         action = action_request.get("action") or action_request.get("name")
         args = action_request.get("args", {}) or {}
-        rule = suggest_rule(action, args, ".")
+        rule = suggest_rule(action, args)
         edited = input_fn(f"rule [{rule}] > ").strip()
         return {"type": "approve", "always": edited or rule}
 

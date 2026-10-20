@@ -34,23 +34,27 @@ def test_yolo_from_env_truthy(tmp_path):
     assert cfg.yolo is True
 
 
-def test_model_kwargs_composed(tmp_path):
+def test_temperature_and_max_tokens_are_plain_settings(tmp_path):
     cfg = load_config({"temperature": 0.2, "max_tokens": 1000}, env={}, cwd=str(tmp_path))
-    assert cfg.model_kwargs == {"max_retries": 0, "temperature": 0.2, "max_tokens": 1000}
+    assert (cfg.temperature, cfg.max_tokens) == (0.2, 1000)
+    assert not hasattr(cfg, "model_kwargs")
 
 
-def test_model_kwargs_defaults_max_retries_to_zero(tmp_path):
-    """The provider SDK's own retry silently restarts a whole streamed
-    generation on a transient mid-stream error, duplicating already-shown
-    content — Luna's own turn-level retry replaces it, so max_retries
-    defaults to 0 unless the user sets their own in [agent.extra]."""
-    cfg = load_config({}, env={}, cwd=str(tmp_path))
-    assert cfg.model_kwargs["max_retries"] == 0
+def test_agent_extra_is_ignored_and_flagged(tmp_path):
+    (tmp_path / ".luna.toml").write_text("[agent.extra]\nmax_retries = 3\n")
+    assert load_config({}, env={}, cwd=str(tmp_path)).ignored_extra is True
+    (tmp_path / ".luna.toml").write_text("[agent]\nyolo = false\n")
+    assert load_config({}, env={}, cwd=str(tmp_path)).ignored_extra is False
 
 
-def test_model_kwargs_lets_extra_override_max_retries(tmp_path):
-    cfg = load_config({"extra_model_kwargs": {"max_retries": 3}}, env={}, cwd=str(tmp_path))
-    assert cfg.model_kwargs["max_retries"] == 3
+@pytest.mark.parametrize(
+    "toml",
+    ['[sandbox]\nkind = "vm"\n', '[sandbox]\nnetwork = "host"\n', '[agent]\nreasoning = "max"\n'],
+)
+def test_invalid_core_settings_are_rejected(tmp_path, toml):
+    (tmp_path / ".luna.toml").write_text(toml)
+    with pytest.raises(LunaConfigError):
+        load_config({}, env={}, cwd=str(tmp_path))
 
 
 def test_verify_command_settable(tmp_path, isolated_config_home):
@@ -107,8 +111,7 @@ def test_custom_provider_parsed_from_project_toml(tmp_path):
     assert spec.base_url == "http://localhost:8000/v1"
     assert spec.env_var == "MYLOCAL_API_KEY"
     assert spec.default_model == "local-model"
-    assert spec.init_prefix == "openai"
-    assert spec.pip_extra == "openai"
+    assert spec.api == "openai_chat"
 
 
 def test_custom_provider_default_model_is_optional(tmp_path):
@@ -167,3 +170,57 @@ def test_set_config_values_still_validates_provider_against_builtin(isolated_con
 
     with pytest.raises(LunaConfigError):
         set_config_values({"model.provider": "not-a-real-provider"})
+
+
+def test_new_core_settings(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        '[model]\nname = "m"\nfast = "f"\nsummarize = "deepseek:deepseek-chat"\n'
+        '[agent]\nreasoning = "high"\nmax_cost = 2.5\nmax_parallel = 2\n'
+        '[sandbox]\nkind = "docker"\nimage = "node:22"\nnetwork = "bridge"\n'
+        '[[hooks]]\nevent = "post_tool"\nmatch = "edit_file"\ncommand = "ruff check"\n'
+    )
+    cfg = load_config(cwd=str(tmp_path), env={})
+    assert cfg.roles == {"fast": "f", "summarize": "deepseek:deepseek-chat"}
+    assert cfg.fast_model == "f"
+    assert (cfg.reasoning, cfg.max_cost, cfg.max_parallel) == ("high", 2.5, 2)
+    assert (cfg.sandbox, cfg.sandbox_image, cfg.sandbox_network) == ("docker", "node:22", "bridge")
+    assert cfg.hooks == [{"event": "post_tool", "match": "edit_file", "command": "ruff check"}]
+
+
+@pytest.mark.parametrize(
+    ("toml", "needle"),
+    [
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "x"\ntimeout = "30s"\n', "timeout"),
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "x"\ntimeout = 0\n', "timeout"),
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "  "\n', "command"),
+        ('[[hooks]]\nevent = "pre_tool"\n', "command"),
+        ('[[hooks]]\nevent = "before_tool"\ncommand = "x"\n', "event"),
+        ('[[hooks]]\nevent = "pre_tool"\ncommand = "x"\nmatch = 3\n', "match"),
+    ],
+)
+def test_invalid_hooks_are_rejected_naming_the_entry(tmp_path, toml, needle):
+    (tmp_path / ".luna.toml").write_text(toml)
+    with pytest.raises(LunaConfigError, match=rf"\[\[hooks\]\] entry 1: {needle}"):
+        load_config({}, env={}, cwd=str(tmp_path))
+
+
+def test_valid_hook_with_timeout_and_match_loads(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        '[[hooks]]\nevent = "pre_tool"\ncommand = "x"\nmatch = "execute"\ntimeout = 30\n'
+    )
+    assert load_config({}, env={}, cwd=str(tmp_path)).hooks[0]["timeout"] == 30
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        "[agent]\nmax_parallel = 0\n",
+        '[agent]\nmax_parallel = "4"\n',
+        "[agent]\nmax_cost = -1\n",
+        '[agent]\nmax_cost = "lots"\n',
+    ],
+)
+def test_invalid_limits_are_rejected(tmp_path, toml):
+    (tmp_path / ".luna.toml").write_text(toml)
+    with pytest.raises(LunaConfigError):
+        load_config({}, env={}, cwd=str(tmp_path))

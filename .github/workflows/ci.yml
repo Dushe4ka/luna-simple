@@ -19,7 +19,10 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv venv --python ${{ matrix.python-version }}
       - name: Install
-        run: uv pip install -e ".[dev,all]"
+        run: uv pip install -e packages/luna-core -e ".[dev,all]"
+      - name: No agent frameworks installed
+        run: |
+          if uv pip list | grep -Ei "langchain|langgraph|deepagents"; then exit 1; fi
       - name: Lint
         run: |
           uv run ruff check .

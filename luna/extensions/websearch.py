@@ -23,10 +23,11 @@ overall cap of its own.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import httpx
-from langchain_core.tools import tool
+from luna_core.tools.base import tool
 
 _TIMEOUT_SECONDS = 15.0
 _DDGS_TIMEOUT_SECONDS = 10.0
@@ -101,17 +102,8 @@ def _format_results(query: str, source: str, results: list[dict[str, str]]) -> s
     return "\n".join(lines)
 
 
-@tool
-def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web and return the top results (title, URL, snippet).
-
-    Automatically uses whichever backend is configured — Tavily
-    (``TAVILY_API_KEY``) or Brave (``BRAVE_API_KEY``), tried in that order
-    — and falls back to a free, keyless search needing no setup at all if
-    neither is configured. Use this for anything beyond your training
-    knowledge: current events, library/API versions, recent releases,
-    live documentation.
-    """
+def _search(query: str, max_results: int) -> str:
+    """Try every backend in priority order; blocking (run it in a thread)."""
     max_results = max(1, min(int(max_results), 10))
     errors: list[str] = []
     # Built fresh on every call (not a module-level constant) so tests can
@@ -144,3 +136,19 @@ def web_search(query: str, max_results: int = 5) -> str:
         'or run `pip install ddgs` (or `pip install "luna-simple[websearch]"`) '
         "for a free, keyless fallback."
     )
+
+
+@tool()
+async def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web: title, URL and snippet of the top results.
+
+    Uses Tavily (TAVILY_API_KEY) or Brave (BRAVE_API_KEY) when configured and
+    falls back to a free, keyless search otherwise. Use it for anything beyond
+    your training knowledge: current events, library/API versions, live docs.
+
+    Args:
+        query: What to search for.
+        max_results: 1-10 results.
+
+    """
+    return await asyncio.to_thread(_search, query, max_results)

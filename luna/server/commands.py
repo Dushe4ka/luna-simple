@@ -1,32 +1,36 @@
-"""Slash commands over HTTP: one entry point, like opencode's /session/:id/command."""
+"""Slash commands over HTTP: one entry point, like opencode's /session/:id/command.
+
+Every command is an async handler of the shared registry (:mod:`luna.commands`),
+run over :class:`_ServerEnv`; the REPL runs the very same handlers.
+"""
 
 from __future__ import annotations
 
-from starlette.concurrency import run_in_threadpool
+import asyncio
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.commands import command_kind, list_commands, run_line
-from luna.config.usage import indicator_line
+from luna.commands import HISTORY_COMMANDS, command_kind, list_commands, needs_agent, run_line
 from luna.repl import usercmd
 from luna.server.runtime import runtime_for
 from luna.server.trust import trust_error
 
 
 class _ServerEnv:
-    """:class:`luna.commands.CommandEnv` over a :class:`SessionRuntime`."""
+    """:class:`luna.commands.CommandEnv` over a :class:`~luna.server.runtime.SessionRuntime`."""
 
-    def __init__(self, runtime) -> None:
+    can_rebuild = True
+
+    def __init__(self, runtime, manager, bundle) -> None:
         self._rt = runtime
+        self.session = runtime.session
+        self.state = runtime.state
+        self.manager = manager
+        self.bundle = bundle
         self.workdir = runtime.workdir
-        self.thread_id = runtime.thread_id
-        self.session_id = runtime.thread_id
-        from luna.core.persistence import SessionIndex
-
-        self.index = SessionIndex()
-        self.user_commands = usercmd.load(runtime.workdir)
         self.pinned = runtime.state.pinned
-        self.usage = runtime.state.usage
+        self.user_commands = usercmd.load(runtime.workdir)
         self._config = None
 
     @property
@@ -37,9 +41,9 @@ class _ServerEnv:
 
     @property
     def agent(self):
-        return self._rt.agent
-
-    can_rebuild = True
+        if self.bundle is None:
+            raise RuntimeError("the agent could not be built; fix the config and /reload")
+        return self.bundle.agent
 
     def get_plan(self):
         return self._rt.state.plan
@@ -47,25 +51,49 @@ class _ServerEnv:
     def set_plan(self, on: bool) -> None:
         self._rt.set_plan(on)
 
-    def rebuild(self) -> None:
-        self._rt.rebuild()
+    def live_tasks(self) -> bool:
+        return self._rt.has_live_tasks
 
-    def switch_model(self, model: str) -> None:
-        self._rt.switch_model(model)
+    async def _after_rebuild(self) -> None:
         self._config = None
+        self.bundle = await self._rt.bundle()
 
-    def switch_provider(self, provider: str) -> None:
-        self._rt.switch_provider(provider)
-        self._config = None
+    async def rebuild(self) -> None:
+        await self._rt.rebuild()
+        await self._after_rebuild()
+
+    async def switch_model(self, model: str) -> None:
+        await self._rt.switch_model(model)
+        await self._after_rebuild()
+
+    async def switch_provider(self, provider: str) -> None:
+        await self._rt.switch_provider(provider)
+        await self._after_rebuild()
+
+
+async def _env_for(runtime, manager, name: str) -> _ServerEnv:
+    """Build the command env; the agent is built only for commands that use it.
+
+    A failing build leaves ``bundle`` ``None``: the command reports it, and
+    commands that need no agent (``/plan``, ``/reload``...) keep working
+    when the config is broken.
+    """
+    bundle = None
+    if needs_agent(name):
+        try:
+            bundle = await runtime.bundle()
+        except Exception:  # noqa: BLE001 - reported by the command that needs the agent
+            bundle = None
+    return _ServerEnv(runtime, manager, bundle)
 
 
 async def post_command(request: Request) -> JSONResponse:
     """Run one slash command for a session and return its structured result."""
-    thread_id = request.path_params["thread_id"]
+    session_id = request.path_params["session_id"]
     body = await request.json()
     if (error := trust_error(request, body.get("workdir"))) is not None:
         return error
-    runtime = runtime_for(request, thread_id, body.get("workdir", "."))
+    runtime = await runtime_for(request, session_id, body.get("workdir", "."))
     if isinstance(runtime, JSONResponse):
         return runtime
     line = body["line"].strip()
@@ -73,23 +101,24 @@ async def post_command(request: Request) -> JSONResponse:
     kind = command_kind(name, usercmd.load(runtime.workdir))
     if kind == "ui":
         return JSONResponse({"error": "client_command"}, status_code=400)
-    if kind != "read" and runtime.lock.locked():
+    busy = runtime.lock.locked() or request.app.state.runtimes.running(session_id)
+    if kind != "read" and busy:
+        return JSONResponse({"error": "session_busy"}, status_code=409)
+    if name in HISTORY_COMMANDS and runtime.has_live_tasks:
+        # a background subagent may still be writing files of this session
         return JSONResponse({"error": "session_busy"}, status_code=409)
 
     if kind == "read":
-        # read-only: may run mid-turn, never writes state (the turn thread does)
-        result = await run_in_threadpool(run_line, line, _ServerEnv(runtime))
-        return JSONResponse(result.to_json())
-
-    def _run():
-        result = run_line(line, _ServerEnv(runtime))
-        runtime.save()
-        return result
+        # read-only: may run mid-turn, never writes state
+        env = await _env_for(runtime, request.app.state.manager, name)
+        return JSONResponse((await run_line(line, env)).to_json())
 
     # Hold the session lock: /compact, /undo, /verify... must never run
-    # alongside a turn on the same thread (they rewrite history and files).
+    # alongside a turn on the same session (they rewrite history and files).
     async with runtime.lock:
-        result = await run_in_threadpool(_run)
+        env = await _env_for(runtime, request.app.state.manager, name)
+        result = await run_line(line, env)
+        runtime.save()
     return JSONResponse(result.to_json())
 
 
@@ -101,28 +130,35 @@ async def get_commands(request: Request) -> JSONResponse:
     return JSONResponse({"commands": list_commands(usercmd.load(workdir or "."))})
 
 
+def usage_summary(session) -> str:
+    """Return the status-bar usage line, e.g. ``"12k in · 3k out · $0.04"`` (or "")."""
+    usage = session.usage()
+    if not (usage.input or usage.output):
+        return ""
+    cost = session.cost()
+    line = f"{usage.input // 1000}k in · {usage.output // 1000}k out"
+    return line + (f" · ${cost:.2f}" if cost else "")
+
+
 async def get_state(request: Request) -> JSONResponse:
     """Return the session's settings for the status bar."""
-    thread_id = request.path_params["thread_id"]
+    session_id = request.path_params["session_id"]
     workdir = request.query_params.get("workdir")
     if (error := trust_error(request, workdir)) is not None:
         return error
-    runtime = runtime_for(request, thread_id, workdir or ".")
+    runtime = await runtime_for(request, session_id, workdir or ".")
     if isinstance(runtime, JSONResponse):
         return runtime
-    cfg = await run_in_threadpool(runtime.config)
-    state = runtime.state
-    summary = (
-        indicator_line(state.usage, cfg.provider, cfg.model, cfg.pricing)
-        if state.usage.turns
-        else ""
-    )
+    cfg = await asyncio.to_thread(runtime.config)
+    summary = await asyncio.to_thread(usage_summary, runtime.session)
     return JSONResponse(
         {
             "provider": cfg.provider,
             "model": cfg.model,
-            "plan": state.plan,
-            "pinned": state.pinned.paths,
+            "plan": runtime.state.plan,
+            "pinned": runtime.state.pinned.paths,
             "usage_summary": summary,
+            "undo_depth": runtime.session.undo_depth,
+            "running": request.app.state.runtimes.running(session_id),
         }
     )

@@ -1,39 +1,38 @@
 import httpx
-import pytest
+from luna_core.protocol import PROTOCOL_VERSION
 
+import luna
 from luna.server.app import create_app
 from luna.server.auth import read_token_file, token_path, write_token_file
+from luna.server.run import make_session_build
 
 
-@pytest.fixture
-async def client():
-    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
+def _app():
+    return create_app(token="secret-token", build=make_session_build())
+
+
+async def test_health_ok_with_valid_token():
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(
         transport=transport,
         base_url="http://test",
         headers={"Authorization": "Bearer secret-token"},
     ) as c:
-        yield c
-
-
-async def test_health_ok_with_valid_token(client):
-    resp = await client.get("/health")
+        resp = await c.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json() == {"ok": True, "version": luna.__version__, "protocol": PROTOCOL_VERSION}
 
 
 async def test_health_rejects_missing_token():
-    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/health")
     assert resp.status_code == 401
+    assert resp.json() == {"error": "unauthorized"}
 
 
 async def test_health_rejects_wrong_token():
-    app = create_app(agent_factory=lambda _workdir: None, token="secret-token")
-    transport = httpx.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=_app())
     async with httpx.AsyncClient(
         transport=transport, base_url="http://test", headers={"Authorization": "Bearer wrong"}
     ) as c:

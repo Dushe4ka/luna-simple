@@ -1,15 +1,16 @@
-"""Session list/create endpoints — a thin HTTP wrapper over SessionIndex."""
+"""Session endpoints over the core event log: list, create, delete."""
 
 from __future__ import annotations
 
+import asyncio
 import time
-import uuid
 from datetime import date, datetime
+from pathlib import Path
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.core.persistence import SessionIndex
+from luna.core.store import conversations
 from luna.server.trust import trust_error
 
 _MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
@@ -59,34 +60,66 @@ def relative_time(updated: float, *, now: float | None = None) -> str:
     return f"{when.day} {_MONTHS[when.month - 1]}"
 
 
+def _conversations(log, workdir: str | None) -> list:
+    """Top-level sessions that hold a conversation (``store.conversations`` semantics)."""
+    return conversations(log, workdir)
+
+
 async def list_sessions(request: Request) -> JSONResponse:
-    """List sessions for a workdir, newest first."""
+    """Sessions of a workdir, newest first.
+
+    Subagent/background children and sessions nobody typed into yet are
+    skipped (the CLI's ``-c`` and pickers skip them the same way).
+    """
     workdir = request.query_params.get("workdir")
     if (error := trust_error(request, workdir)) is not None:
         return error
-    index = SessionIndex()
-    rows = index.list(workdir=workdir)
-    return JSONResponse(
-        {
-            "sessions": [
-                {
-                    "thread_id": r.thread_id,
-                    "workdir": r.workdir,
-                    "title": r.title,
-                    "updated": r.updated,
-                    "group": session_group(r.updated),
-                    "relative_time": relative_time(r.updated),
-                }
-                for r in rows
-            ]
-        }
-    )
+    resolved = str(Path(workdir).resolve()) if workdir else None
+    manager = request.app.state.manager
+    registry = request.app.state.runtimes
+    rows = []
+    for info in await asyncio.to_thread(_conversations, request.app.state.log, resolved):
+        running = registry.running(info.id)
+        rows.append(
+            {
+                "id": info.id,
+                "title": info.title or "(new session)",
+                "created": info.created,
+                "updated": info.updated,
+                "group": session_group(info.updated),
+                "relative_time": relative_time(info.updated),
+                "running": running,
+                "background": running and not manager.has_listeners(info.id),
+            }
+        )
+    return JSONResponse({"sessions": rows})
 
 
 async def create_session(request: Request) -> JSONResponse:
-    """Create a new session with a random thread_id."""
+    """Create an empty session in a workdir."""
     body = await request.json()
     if (error := trust_error(request, body.get("workdir"))) is not None:
         return error
-    thread_id = uuid.uuid4().hex
-    return JSONResponse({"thread_id": thread_id, "workdir": body.get("workdir", ".")})
+    workdir = str(Path(body.get("workdir") or ".").resolve())
+    return JSONResponse({"id": request.app.state.log.create(workdir)})
+
+
+async def delete_session(request: Request) -> JSONResponse:
+    """Delete a session (refused while it runs or has background tasks).
+
+    While it is deleted no runtime can be created for it, so no turn can
+    start in a session whose log is about to go.
+    """
+    session_id = request.path_params["session_id"]
+    registry = request.app.state.runtimes
+    runtime = registry.peek(session_id)
+    busy = registry.running(session_id) or session_id in registry.deleting
+    if busy or (runtime is not None and (runtime.lock.locked() or runtime.has_live_tasks)):
+        return JSONResponse({"error": "session_busy"}, status_code=409)
+    registry.deleting.add(session_id)
+    try:
+        await registry.drop(session_id)
+        deleted = request.app.state.log.delete(session_id)
+    finally:
+        registry.deleting.discard(session_id)
+    return JSONResponse({"deleted": deleted})

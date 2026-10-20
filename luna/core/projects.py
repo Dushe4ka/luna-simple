@@ -1,8 +1,8 @@
 """Persisted projects: exact launch directories and whether they are trusted.
 
-Lives in the same ``sessions.db`` as :class:`luna.core.persistence.SessionIndex`
-so a future desktop client can list projects and their sessions from one
-store. Best-effort like the session index: an unavailable database degrades
+Lives in the same ``sessions.db`` as the session event log
+(:mod:`luna.core.store`) so a future desktop client can list projects and
+their sessions from one store. Best-effort: an unavailable database degrades
 to a no-op index instead of breaking the CLI.
 """
 
@@ -14,7 +14,7 @@ from collections import namedtuple
 from collections.abc import Mapping
 from pathlib import Path
 
-from luna.core.persistence import _INDEX_ERRORS, _db_path
+from luna.core.store import INDEX_ERRORS, db_path
 
 ProjectRow = namedtuple("ProjectRow", "path trusted_at last_opened")
 
@@ -52,7 +52,7 @@ class ProjectIndex:
         """Open ``sessions.db``, create the table, migrate once; degrade on failure."""
         self._conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(_db_path(env), check_same_thread=False)
+            conn = sqlite3.connect(db_path(env), check_same_thread=False)
             existed = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'luna_projects'"
             ).fetchone()
@@ -64,7 +64,7 @@ class ProjectIndex:
                 _migrate(conn)
             conn.commit()
             self._conn = conn
-        except _INDEX_ERRORS:
+        except INDEX_ERRORS:
             self._conn = None
 
     @property

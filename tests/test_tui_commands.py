@@ -15,13 +15,13 @@ class _Client:
         self.results = list(results)
         self.lines = []
 
-    async def get_history(self, thread_id, workdir):
+    async def history(self, thread_id, workdir):
         return []
 
-    async def get_state(self, thread_id, workdir):
+    async def state(self, thread_id, workdir):
         return {"provider": "p", "model": "m", "plan": False, "pinned": [], "usage_summary": ""}
 
-    async def list_commands(self, workdir):
+    async def commands(self, workdir):
         return [
             {"name": "/model", "help": "pick", "kind": "mutate"},
             {"name": "/usage", "help": "u", "kind": "read"},
@@ -118,7 +118,7 @@ async def test_prompt_result_is_sent_as_a_message():
     sent = []
 
     class _PromptClient(_Client):
-        async def send_message(self, thread_id, content, workdir):
+        async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
             sent.append(content)
             yield {"event": "turn_done"}
 
@@ -159,7 +159,7 @@ async def test_plan_state_colours_the_input_border():
             "usage_summary": "ctx 1k",
         }
 
-    client.get_state = plan_state
+    client.state = plan_state
     app = _Host(client)
     async with app.run_test():
         chat = app.query_one(ChatPane)
@@ -219,7 +219,7 @@ async def test_busy_is_set_before_the_worker_starts_so_double_enter_is_refused()
     sent = []
 
     class _SlowClient(_Client):
-        async def send_message(self, thread_id, content, workdir):
+        async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
             sent.append(content)
             import asyncio
 
@@ -258,7 +258,7 @@ async def test_prompt_with_reload_effect_is_sent_with_the_flag():
     calls = []
 
     class _PromptClient(_Client):
-        async def send_message(self, thread_id, content, workdir, reload_after=False):
+        async def send(self, thread_id, content, workdir, *, images=(), reload_after=False):
             calls.append((content, reload_after))
             yield {"event": "turn_done"}
 

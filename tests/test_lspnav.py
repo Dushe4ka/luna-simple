@@ -1,4 +1,10 @@
 import pytest
+from luna_core.tools.base import ToolContext
+
+
+async def _call(tool, args: dict) -> str:
+    out = await tool.invoke(ToolContext(), args)
+    return out.content[0].text
 
 
 def test_detect_language_from_markers(tmp_path):
@@ -34,13 +40,13 @@ def test_make_tools_without_multilspy_reports_unavailable(tmp_path, monkeypatch)
     not __import__("luna.extensions.lspnav", fromlist=["available"]).available(),
     reason="multilspy not installed",
 )
-def test_goto_definition_runs_against_a_real_python_file(tmp_path):
+async def test_goto_definition_runs_against_a_real_python_file(tmp_path):
     from luna.extensions.lspnav import make_tools
 
     (tmp_path / "a.py").write_text("def foo():\n    pass\n\nfoo()\n")
     tools = make_tools(str(tmp_path), "python")
     by_name = {t.name: t for t in tools}
-    result = by_name["goto_definition"].invoke({"file": "a.py", "line": 4, "symbol": "foo"})
+    result = await _call(by_name["goto_definition"], {"file": "a.py", "line": 4, "symbol": "foo"})
     assert "a.py" in result
 
 
@@ -56,13 +62,13 @@ def test_symbol_range_without_multilspy_reports_unavailable(tmp_path, monkeypatc
     not __import__("luna.extensions.lspnav", fromlist=["available"]).available(),
     reason="multilspy not installed",
 )
-def test_symbol_range_returns_exact_source_text(tmp_path):
+async def test_symbol_range_returns_exact_source_text(tmp_path):
     from luna.extensions.lspnav import make_tools
 
     (tmp_path / "a.py").write_text("def foo():\n    return 1\n\n\ndef bar():\n    return foo()\n")
     tools = make_tools(str(tmp_path), "python")
     by_name = {t.name: t for t in tools}
-    result = by_name["symbol_range"].invoke({"file": "a.py", "symbol": "bar"})
+    result = await _call(by_name["symbol_range"], {"file": "a.py", "symbol": "bar"})
     assert "a.py" in result
     assert "def bar():" in result
     assert "return foo()" in result
@@ -73,13 +79,13 @@ def test_symbol_range_returns_exact_source_text(tmp_path):
     not __import__("luna.extensions.lspnav", fromlist=["available"]).available(),
     reason="multilspy not installed",
 )
-def test_symbol_range_reports_no_match(tmp_path):
+async def test_symbol_range_reports_no_match(tmp_path):
     from luna.extensions.lspnav import make_tools
 
     (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
     tools = make_tools(str(tmp_path), "python")
     by_name = {t.name: t for t in tools}
-    result = by_name["symbol_range"].invoke({"file": "a.py", "symbol": "does_not_exist"})
+    result = await _call(by_name["symbol_range"], {"file": "a.py", "symbol": "does_not_exist"})
     assert "no symbol named" in result
 
 
@@ -87,7 +93,7 @@ def test_symbol_range_reports_no_match(tmp_path):
     not __import__("luna.extensions.lspnav", fromlist=["available"]).available(),
     reason="multilspy not installed",
 )
-def test_symbol_range_disambiguates_with_line(tmp_path):
+async def test_symbol_range_disambiguates_with_line(tmp_path):
     from luna.extensions.lspnav import make_tools
 
     (tmp_path / "a.py").write_text(
@@ -100,7 +106,7 @@ def test_symbol_range_disambiguates_with_line(tmp_path):
     )
     tools = make_tools(str(tmp_path), "python")
     by_name = {t.name: t for t in tools}
-    result = by_name["symbol_range"].invoke({"file": "a.py", "symbol": "foo", "line": 7})
+    result = await _call(by_name["symbol_range"], {"file": "a.py", "symbol": "foo", "line": 7})
     assert "return 2" in result
     assert "return 1" not in result
 
@@ -109,7 +115,7 @@ def test_symbol_range_disambiguates_with_line(tmp_path):
     not __import__("luna.extensions.lspnav", fromlist=["available"]).available(),
     reason="multilspy not installed",
 )
-def test_symbol_range_lists_matches_without_guessing_when_line_is_omitted(tmp_path):
+async def test_symbol_range_lists_matches_without_guessing_when_line_is_omitted(tmp_path):
     from luna.extensions.lspnav import make_tools
 
     (tmp_path / "a.py").write_text(
@@ -122,8 +128,22 @@ def test_symbol_range_lists_matches_without_guessing_when_line_is_omitted(tmp_pa
     )
     tools = make_tools(str(tmp_path), "python")
     by_name = {t.name: t for t in tools}
-    result = by_name["symbol_range"].invoke({"file": "a.py", "symbol": "foo"})
+    result = await _call(by_name["symbol_range"], {"file": "a.py", "symbol": "foo"})
     assert "multiple symbols named 'foo'" in result
     assert "pass line=" in result
     assert "return 1" not in result
     assert "return 2" not in result
+
+
+async def test_tools_degrade_to_a_message_when_the_server_is_missing(tmp_path, monkeypatch):
+    import luna.extensions.lspnav as lspnav
+
+    monkeypatch.setattr(lspnav, "available", lambda: True)
+    monkeypatch.setattr(lspnav, "_server", lambda workdir, language: None)
+    tools = {t.name: t for t in lspnav.make_tools(str(tmp_path), "python")}
+    assert set(tools) == {"goto_definition", "find_references", "hover", "symbol_range"}
+    assert tools["symbol_range"].parameters["required"] == ["file", "symbol"]
+    for name in ("goto_definition", "find_references", "hover"):
+        args = {"file": "a.py", "line": 1, "symbol": "x"}
+        assert await _call(tools[name], args) == "LSP unavailable"
+    assert await _call(tools["symbol_range"], {"file": "a.py", "symbol": "x"}) == "LSP unavailable"

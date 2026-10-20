@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from pathlib import Path
+
+from luna_core.client import ServerError
 from rich.text import Text
 from textual import events, work
+from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
@@ -11,9 +17,9 @@ from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
-from luna.server.client import ServerError
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
+from luna.tui.errors import readable
 from luna.tui.pickers import ChoiceModal, ConfirmModal
 from luna.tui.status_bar import StatusBar
 from luna.tui.theme import TUI_VARIABLES
@@ -68,6 +74,57 @@ class NoticeRow(Static):
         self.text = text
 
 
+#: File types a pasted path is turned into an ``@mention`` for (sent as an image).
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+class ChatInput(Input):
+    """The chat line; a pasted path of an image file becomes an ``@mention``.
+
+    ``Input`` handles (and stops) ``Paste`` itself, so the mention has to be
+    made here, before its own handler inserts the raw path.
+    """
+
+    def __init__(self, *, workdir: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._workdir = workdir
+
+    def _on_paste(self, event: events.Paste) -> None:
+        # terminals quote a dropped path or escape its spaces
+        raw = event.text.strip().strip("'\"").replace("\\ ", " ")
+        if "\n" in raw or not raw:
+            return
+        try:
+            path = Path(raw).expanduser()
+        except RuntimeError:  # "~user/..." for an unknown user: paste it as plain text
+            return
+        if not path.is_absolute():
+            path = Path(self._workdir) / path
+        if path.suffix.lower() not in _IMAGE_SUFFIXES or not path.is_file():
+            return
+        event.prevent_default()
+        event.stop()
+        try:
+            rel = path.resolve().relative_to(Path(self._workdir).resolve()).as_posix()
+        except ValueError:
+            self.notify("Картинка вне проекта — скопируйте её в папку проекта.", severity="warning")
+            return
+        if any(ch.isspace() for ch in rel):
+            # ``@mentions`` end at whitespace, so such a path cannot be attached
+            self.notify("Путь картинки с пробелами — переименуйте файл.", severity="warning")
+            return
+        self.insert_text_at_cursor(f"@{rel} ")
+
+
+def _messages_word(n: int) -> str:
+    """Russian plural of "сообщение" for ``n``."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "сообщение"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "сообщения"
+    return "сообщений"
+
+
 def render_history(messages: list[dict]) -> list[Widget]:
     """Build one widget per history entry, ready to mount into the transcript.
 
@@ -77,12 +134,14 @@ def render_history(messages: list[dict]) -> list[Widget]:
     """
     widgets: list[Widget] = []
     for m in messages:
-        if m["role"] == "human":
+        if m["role"] == "user":
             widgets.append(UserMessage(m["content"]))
         elif m["role"] == "tool":
             widgets.append(
                 ToolRow(m["name"], m.get("args_preview", ""), result=(m["ok"], m["detail"]))
             )
+        elif m["role"] == "notice":  # e.g. a background run that finished while away
+            widgets.append(NoticeRow(m["level"], m["text"]))
         else:
             widgets.append(LunaMessage(m["content"]))
     return widgets
@@ -103,6 +162,9 @@ class _LiveReply:
         self._thinking = thinking
         self._stream: MarkdownStream | None = None
         self._tools: dict[str, ToolRow] = {}
+        #: The dim "last thought" line under the thinking glyph, and its text so far.
+        self._thought: Static | None = None
+        self._thought_text = ""
 
     def _thinking_shown(self) -> bool:
         # Not ``is_mounted``: that stays True after ``remove()``, and mounting
@@ -116,12 +178,36 @@ class _LiveReply:
             await self._transcript.mount(widget)
         self._transcript.anchor()
 
+    async def _drop_thought(self) -> None:
+        if self._thought is not None:
+            await self._thought.remove()
+            self._thought = None
+        self._thought_text = ""
+        self._thinking.remove_class("-with-thought")
+
+    async def thought(self, text: str) -> None:
+        """Show the last non-empty line of the model's reasoning, dimmed."""
+        self._thought_text += text
+        lines = [line for line in self._thought_text.splitlines() if line.strip()]
+        if not lines:
+            return
+        if self._thought is None:
+            self._thought = Static("", classes="thought-line", markup=False)
+            if self._thinking_shown():
+                self._thinking.add_class("-with-thought")
+                await self._transcript.mount(self._thought, after=self._thinking)
+            else:
+                await self._transcript.mount(self._thought)
+            self._transcript.anchor()
+        self._thought.update(lines[-1].strip())
+
     async def _end_text_block(self) -> None:
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
 
     async def write(self, text: str) -> None:
+        await self._drop_thought()
         if self._stream is None:
             if self._thinking_shown():
                 await self._thinking.remove()
@@ -131,6 +217,7 @@ class _LiveReply:
         await self._stream.write(text)
 
     async def tool_started(self, call_id: str, name: str, preview: str) -> None:
+        await self._drop_thought()
         await self._end_text_block()
         row = ToolRow(name, preview)
         self._tools[call_id] = row
@@ -146,12 +233,14 @@ class _LiveReply:
         await self._mount(NoticeRow(level, text))
 
     async def stop(self) -> None:
+        await self._drop_thought()
         await self._end_text_block()
         for row in self._tools.values():
             await row.finish(False, "прервано")
         self._tools.clear()
         if self._thinking_shown():
             await self._thinking.remove()
+
 
 class ChatPane(Widget):
     """Chat transcript + input row, streamed via the server's SSE endpoint.
@@ -161,8 +250,17 @@ class ChatPane(Widget):
     string here — see that file's header comment for why.
     """
 
+    BINDINGS = [Binding("ctrl+c", "cancel_turn", show=False, priority=True)]
+
     class TurnFinished(Message):
         """Posted after a turn's stream ends, so the sidebar can re-sort."""
+
+    class SwitchSession(Message):
+        """Posted when a command (``/fork``) moved the conversation to another session."""
+
+        def __init__(self, session_id: str) -> None:
+            self.session_id = session_id
+            super().__init__()
 
     thread_id: reactive[str | None] = reactive(None)
 
@@ -189,6 +287,12 @@ class ChatPane(Widget):
         self.busy = False
         #: Built-in + project commands from the server (help, autocomplete).
         self._commands: list[dict] = list(FALLBACK_COMMANDS)
+        #: The session the running turn belongs to (cancel goes there).
+        self._turn_session: str | None = None
+        #: Per session: the last run-event ``index`` seen (``/events?after=``).
+        self._last_index: dict[str, int] = {}
+        #: Approval call ids already put in front of the user.
+        self._asked: set[str] = set()
 
     def compose(self):
         """Build the transcript, autocomplete dropdown, input, and status bar.
@@ -202,7 +306,7 @@ class ChatPane(Widget):
         with Vertical():
             yield VerticalScroll(id="transcript")
             yield ListView(id="autocomplete")
-            yield Input(placeholder="> ", id="chat-input")
+            yield ChatInput(workdir=self._workdir, placeholder="> ", id="chat-input")
             yield StatusBar(id="status-bar")
 
     async def on_mount(self) -> None:
@@ -229,16 +333,16 @@ class ChatPane(Widget):
 
     async def _load_commands(self) -> list[dict]:
         try:
-            return await self.app.client.list_commands(self._workdir)
+            return await self.app.client.commands(self._workdir)
         except ServerError:
             return list(FALLBACK_COMMANDS)
 
     async def refresh_state(self) -> None:
         """Pull this session's settings from the server into the status bar."""
         try:
-            state = await self.app.client.get_state(self.thread_id, self._workdir)
+            state = await self.app.client.state(self.thread_id, self._workdir)
         except ServerError as exc:
-            self.notify(str(exc), severity="error")
+            self.notify(readable(exc), severity="error", markup=False)
             return
         bar = self.query_one(StatusBar)
         bar.provider = state["provider"] or ""
@@ -246,6 +350,7 @@ class ChatPane(Widget):
         bar.plan_mode = bool(state["plan"])
         bar.usage_summary = state["usage_summary"]
         bar.pinned = len(state["pinned"])
+        bar.undo_depth = state.get("undo_depth", 0)
         self.set_class(bool(state["plan"]), "-plan")
 
     def _refresh_status_bar(self) -> None:
@@ -265,9 +370,9 @@ class ChatPane(Widget):
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.remove_children()
         try:
-            messages = await self.app.client.get_history(self.thread_id, self._workdir)
+            messages = await self.app.client.history(self.thread_id, self._workdir)
         except ServerError as exc:
-            await transcript.mount(SystemMessage(f"⚠ {exc}"))
+            await transcript.mount(SystemMessage(f"⚠ {readable(exc)}"))
             return
         if messages:
             await transcript.mount_all(render_history(messages))
@@ -333,6 +438,9 @@ class ChatPane(Widget):
         """
         dropdown = self.query_one("#autocomplete", ListView)
         if not dropdown.display:
+            if event.key == "escape" and self.busy:
+                self.run_worker(self.action_cancel_turn())
+                event.stop()
             return
         if event.key == "down":
             dropdown.action_cursor_down()
@@ -380,6 +488,12 @@ class ChatPane(Widget):
         if name == "/clear":
             await transcript.remove_children()
             return
+        if name == "/background":
+            if arg.strip():
+                await self.send_background(arg.strip())
+            else:
+                await transcript.mount(NoticeRow("warn", "/background <задача>"))
+            return
         await transcript.mount(UserMessage(line))
         if name == "/help":
             await transcript.mount(SystemMessage(self._help_markdown()))
@@ -391,7 +505,7 @@ class ChatPane(Widget):
             try:
                 result = await self.app.client.run_command(self.thread_id, line, self._workdir)
             except ServerError as exc:
-                await transcript.mount(NoticeRow("error", str(exc)))
+                await transcript.mount(NoticeRow("error", readable(exc)))
             else:
                 await self._render_command_result(result)
         transcript.anchor()
@@ -405,7 +519,7 @@ class ChatPane(Widget):
         try:
             result = await self.app.client.run_command(self.thread_id, line, self._workdir)
         except ServerError as exc:
-            self.notify(str(exc), title=line, severity="error", markup=False)
+            self.notify(readable(exc), title=line, severity="error", markup=False)
             return
         parts = [n["text"] for n in result.get("notices", [])]
         if result.get("text"):
@@ -434,8 +548,11 @@ class ChatPane(Widget):
         elif result.get("prompt"):
             reload_after = bool(result.get("effects", {}).get("reload_after_turn"))
             await self._send(result["prompt"], echo=None, reload_after=reload_after)
-        if result.get("effects"):
+        effects = result.get("effects") or {}
+        if effects:
             await self.refresh_state()
+        if effects.get("session"):
+            self.post_message(self.SwitchSession(effects["session"]))
 
     def _help_markdown(self) -> str:
         groups = {
@@ -532,83 +649,91 @@ class ChatPane(Widget):
         transcript.anchor()
         reply = _LiveReply(transcript, thinking)
         # Pinned for the whole turn: the user may open another session while
-        # this one waits for approval, and the decision must resume *this*
-        # thread, not whichever one the pane shows by then.
+        # this one waits for approval, and the decision must reach *this*
+        # session, not whichever one the pane shows by then.
         thread_id = self.thread_id
+        self._turn_session = thread_id
         self.busy = True
+        self.stop_watching()
         app = self.app
         try:
-            # A turn can pause for approval more than once: the server's SSE
-            # stream always ends after an Interrupted, so a resumed stream
-            # that hits a *second* interrupt ends on another approval_needed.
-            # Loop until a stream finishes without one — mirroring
-            # luna.core.session._stream_turn's own `while True`. Handling only
-            # one round (the old nested `async for`) left the graph paused on
-            # the second interrupt with nothing in the UI to resume it.
             try:
-                # plain messages keep the plain call; only /init asks for a reload
-                event_stream = (
-                    app.client.send_message(thread_id, content, self._workdir, reload_after=True)
-                    if reload_after
-                    else app.client.send_message(thread_id, content, self._workdir)
+                # One stream per turn: an approval is answered with decide()
+                # while the same stream keeps going (protocol v1).
+                stream = app.client.send(
+                    thread_id, content, self._workdir, reload_after=reload_after
                 )
-                while True:
-                    approval_value = None
-                    async for evt in event_stream:
-                        pending = await self._apply_event(evt, reply)
-                        if pending is not None:
-                            approval_value = pending
-                    if approval_value is None:
-                        break
-                    requests = approval_value.get("action_requests") or [
-                        approval_value.get("action_request")
-                    ]
-                    # ModalScreen.push_screen_wait requires worker context
-                    # (Textual raises NoActiveWorker otherwise), so the actual
-                    # push+wait is delegated to the @work-decorated
-                    # _await_approval_decision helper below. on_input_submitted
-                    # itself stays a plain coroutine so it's still directly
-                    # awaitable (Task 8's regression test calls it that way) and
-                    # its try/finally around reply.stop() is unaffected.
-                    decision = await self._await_approval_decision(requests[0]).wait()
-                    event_stream = app.client.approve(thread_id, decision, self._workdir)
+                async with contextlib.aclosing(stream):
+                    async for evt in stream:
+                        if "index" in evt:
+                            self._last_index[thread_id] = evt["index"]
+                        if evt["event"] == "approval_needed":
+                            await self._answer(thread_id, evt["value"])
+                        else:
+                            await self._apply_event(evt, reply)
             except ServerError as exc:
-                await reply.write(f"\n\n**⚠** {exc}\n\n")
+                await reply.write(f"\n\n**⚠** {readable(exc)}\n\n")
         finally:
             self.busy = False
+            self._turn_session = None
             await reply.stop()
             self.post_message(self.TurnFinished())
 
-    async def _apply_event(
-        self, evt: dict, reply: _LiveReply
-    ) -> dict | None:
-        """Apply one SSE event to the transcript/status bar.
-
-        Returns the interrupt's action-request payload if ``evt`` is an
-        ``approval_needed`` event, else ``None``.
-        """
-        if evt["event"] == "text_delta":
+    async def _apply_event(self, evt: dict, reply: _LiveReply) -> None:
+        """Apply one SSE event to the transcript/status bar."""
+        kind = evt["event"]
+        if kind == "text_delta":
             await reply.write(evt["text"])
-        elif evt["event"] == "turn_done":
+        elif kind == "thinking_delta":
+            await reply.thought(evt["text"])
+        elif kind == "turn_done":
             # The server accumulates usage per session (it survives session
             # switches and restarts); refresh once per completed turn, never
             # mid-stream — the cadence the REPL's indicator line always had.
             await self.refresh_state()
-        elif evt["event"] == "tool_started":
+        elif kind == "tool_started":
             await reply.tool_started(evt["call_id"], evt["name"], evt.get("args_preview", ""))
-        elif evt["event"] == "tool_finished":
+        elif kind == "tool_finished":
             await reply.tool_finished(evt["call_id"], evt["ok"], evt["detail"])
-        elif evt["event"] == "notice":
+        elif kind == "notice":
             await reply.notice(evt["level"], evt["text"])
-        elif evt["event"] == "approval_needed":
-            return evt["value"]
-        elif evt["event"] == "error":
+        elif kind == "todos":
+            marks = {"completed": "✓", "in_progress": "▸", "pending": "·"}
+            lines = [f"{marks.get(t['status'], '·')} {t['content']}" for t in evt["todos"]]
+            await reply.notice("dim", "\n".join(lines))
+        elif kind == "compacted":
+            removed = evt["removed"]
+            await reply.notice("info", f"история сжата: {removed} {_messages_word(removed)}")
+        elif kind == "cancelled":
+            await reply.notice("dim", "прервано")
+        elif kind == "background_done":
+            announce = getattr(self.app, "announce_background_done", None)
+            if announce is not None:
+                announce(evt["handle"], evt["ok"])
+        elif kind == "error":
             # Without this, a turn that fails server-side (a provider call
             # erroring, an unhandled exception) left the transcript exactly
             # as it was before the message was sent — no different from
             # the turn still being in progress, forever.
             await reply.write(f"\n\n**⚠ Error:** {evt['message']}\n\n")
-        return None
+
+    async def _answer(self, session_id: str, value: dict) -> None:
+        """Ask the user about each pending request and send the decisions."""
+        for request in value.get("action_requests") or []:
+            call_id = request.get("call_id")
+            if call_id in self._asked:
+                continue
+            self._asked.add(call_id)
+            # push_screen_wait needs worker context, hence the @work helper.
+            decision = await self._await_approval_decision(request).wait()
+            try:
+                await self.app.client.decide(session_id, call_id, decision)
+            except ServerError as exc:
+                # not delivered: the stream/watcher may ask it again
+                self._asked.discard(call_id)
+                self.notify(
+                    f"Решение не принято: {readable(exc)}", severity="warning", markup=False
+                )
 
     @work
     async def _await_approval_decision(self, action_request: dict) -> dict:
@@ -623,6 +748,102 @@ class ChatPane(Widget):
         from luna.tui.approval_modal import ApprovalModal
 
         return await self.app.push_screen_wait(ApprovalModal(action_request))
+
+    async def action_cancel_turn(self) -> None:
+        """Esc / Ctrl+C: cancel the running turn."""
+        if not self.busy:
+            self.notify("Ctrl+Q или /exit — выйти.", timeout=3)
+            return
+        try:
+            await self.app.client.cancel(self._turn_session or self.thread_id)
+        except ServerError as exc:
+            self.notify(readable(exc), severity="error", markup=False)
+
+    async def send_background(self, text: str) -> None:
+        """Start a background run of ``text`` in this session."""
+        transcript = self.query_one("#transcript", VerticalScroll)
+        try:
+            await self.app.client.background(self.thread_id, text, self._workdir)
+        except ServerError as exc:
+            await transcript.mount(NoticeRow("error", readable(exc)))
+            return
+        await transcript.mount(UserMessage(text))
+        await transcript.mount(
+            NoticeRow("dim", "отправлено в фон — результат придёт уведомлением (/agents)")
+        )
+        transcript.anchor()
+        self.post_message(self.TurnFinished())
+
+    # --- approvals asked while no turn of ours is streaming -----------------
+
+    def watch_out_of_turn(self) -> None:
+        """Attach to this session to answer approvals asked outside a turn.
+
+        Background subagents and background runs of this session ask while
+        the pane has no open stream; ``GET /events`` replays them (and
+        follows a live run). Only one watcher runs; it stops on a session
+        switch, when a turn starts and when the app exits.
+        """
+        if self.busy or any(w.group == "watch" and w.is_running for w in self.workers):
+            return
+        self.run_worker(self._watch(self.thread_id), group="watch", exclusive=True)
+
+    def stop_watching(self) -> None:
+        """Cancel the out-of-turn watcher (it closes its stream)."""
+        self.workers.cancel_group(self, "watch")
+
+    async def _watch(self, session_id: str) -> None:
+        queue: asyncio.Queue = asyncio.Queue()
+        stream = self.app.client.attach(session_id, after=self._last_index.get(session_id, -1))
+
+        async def pump() -> None:
+            try:
+                async with contextlib.aclosing(stream):
+                    async for evt in stream:
+                        await queue.put(evt)
+            except ServerError:
+                pass
+            finally:
+                await queue.put(None)
+
+        reader = asyncio.create_task(pump())
+        pending: dict[str, dict] = {}
+        try:
+            while True:
+                try:
+                    # a replay arrives at once: wait for it to settle before
+                    # asking, so approvals answered later in it are skipped
+                    evt = await asyncio.wait_for(queue.get(), 0.3 if pending else None)
+                except TimeoutError:
+                    await self._ask_pending(session_id, pending)
+                    continue
+                if evt is None:
+                    break
+                if "index" in evt:
+                    self._last_index[session_id] = evt["index"]
+                kind = evt["event"]
+                if kind == "approval_needed":
+                    for request in evt["value"].get("action_requests") or []:
+                        pending[request.get("call_id")] = request
+                elif kind in ("tool_started", "tool_finished"):
+                    pending.pop(evt.get("call_id"), None)
+                elif kind in ("turn_done", "error", "cancelled"):
+                    pending.clear()
+                elif kind == "background_done":
+                    announce = getattr(self.app, "announce_background_done", None)
+                    if announce is not None:
+                        announce(evt["handle"], evt["ok"])
+            await self._ask_pending(session_id, pending)
+        finally:
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+
+    async def _ask_pending(self, session_id: str, pending: dict[str, dict]) -> None:
+        requests = list(pending.values())
+        pending.clear()
+        if requests:
+            await self._answer(session_id, {"action_requests": requests})
 
 
 class _CommandLabel(ListItem):

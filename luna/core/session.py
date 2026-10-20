@@ -1,268 +1,50 @@
-"""Streaming REPL / one-shot session loop with approval handling.
-
-Together with :mod:`luna.core.agent` this is the only module that touches
-``deepagents`` / ``langgraph`` directly.
-"""
+"""Console surfaces on luna-core: the line REPL and one-shot ``luna -p``."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
-import time
-import uuid
+import signal
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
-from langchain_core.messages import HumanMessage, RemoveMessage
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from langgraph.types import Command
+from luna_core.errors import LunaCoreError
+from luna_core.events import (
+    Cancelled,
+    Compacted,
+    NeedsApproval,
+    Notice,
+    ReloadRequested,
+    TextDelta,
+    TodosUpdated,
+    ToolFinished,
+    ToolStarted,
+    TurnDone,
+    TurnError,
+)
+from luna_core.policy import Decision
+from luna_core.session import Session
+from luna_core.usage import Usage
 from rich.console import Console
 
 from luna.config.config import LunaConfig
-from luna.config.usage import SessionUsage, TurnUsage, indicator_line, price
-from luna.core import permissions
-from luna.core.permissions import load_rules
-from luna.core.persistence import SessionIndex, make_title
-from luna.core.session_state import SessionState
-from luna.core.turn_events import (
-    Interrupted,
-    ReloadRequested,
-    TextDelta,
-    ToolFinished,
-    ToolStarted,
-    UsageDelta,
-    iter_turn,
-)
+from luna.core.session_state import SessionState, SessionStateStore
+from luna.core.store import make_title
 from luna.extensions.subagents import subagent_summaries
 from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
-from luna.repl.commands import CommandContext, dispatch
-from luna.turn import engine, gitinfo, undo
-from luna.turn.context import PinnedFiles
+from luna.repl.commands import CommandContext, dispatch, swap_bundle
+from luna.turn import engine
 from luna.ui.answer import AnswerRenderer
 from luna.ui.approve import prompt_decision
+from luna.ui.interact import in_thread
 from luna.ui.progress import ToolProgress
 from luna.ui.theme import PALETTE
 from luna.ui.turn import close_turn, open_turn
 
-__all__ = [
-    "SLASH_COMMANDS",
-    "collect_decisions",
-    "compact_thread",
-    "run_once",
-    "run_repl",
-]
-
-
-
-def _new_thread_id() -> str:
-    return uuid.uuid4().hex
-
-
-_COMPACT_ASK = (
-    "Summarise this whole session as a dense handoff note: the goal, decisions "
-    "made, files touched, current state, and open questions. Text only — do not "
-    "call any tools. No preamble."
-)
-
-
-def compact_history(agent, thread_id: str) -> tuple[bool, str]:
-    """Replace this thread's history with a model-written summary: (ok, message)."""
-    config = {"configurable": {"thread_id": thread_id}}
-    pre = agent.get_state(config).values.get("messages", [])
-    result = agent.invoke({"messages": [{"role": "user", "content": _COMPACT_ASK}]}, config)
-    if isinstance(result, dict) and result.get("__interrupt__"):
-        result = agent.invoke(
-            Command(resume={"decisions": [{"type": "reject", "message": "summary only"}]}),
-            config,
-        )
-    summary = ""
-    messages = result.get("messages", []) if isinstance(result, dict) else []
-    for msg in reversed(messages):
-        text = getattr(msg, "content", "")
-        if getattr(msg, "type", "") == "ai" and isinstance(text, str) and text.strip():
-            summary = text.strip()
-            break
-    if not summary:
-        added = agent.get_state(config).values["messages"][len(pre) :]
-        agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in added]})
-        return False, "/compact: no summary produced"
-    agent.update_state(
-        config,
-        {
-            "messages": [
-                RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                HumanMessage(id=uuid.uuid4().hex, content="[compacted] Handoff note:\n" + summary),
-            ]
-        },
-    )
-    return True, "compacted — history replaced with a summary"
-
-
-def compact_thread(agent, thread_id: str, console: Console) -> None:
-    """Replace this thread's message history with a model-written summary, in place."""
-    ok, message = compact_history(agent, thread_id)
-    console.print(f"[{PALETTE['blue'] if ok else PALETTE['mauve']}]{message}[/]")
-
-
-def collect_decisions(
-    console: Console,
-    interrupt_value: dict,
-    *,
-    input_fn: Callable[[str], str] = input,
-    rules=None,
-    workdir=None,
-) -> dict:
-    """Turn an interrupt payload into a ``Command(resume=...)`` argument.
-
-    ``rules`` (a :class:`~luna.core.permissions.RuleSet`) auto-approves any request
-    whose ``(tool, args)`` matches an ``allow`` rule. A decision carrying an
-    ``"always"`` key is persisted as a project rule and folded into ``rules``.
-    """
-    requests = interrupt_value.get("action_requests")
-    if requests is None and "action_request" in interrupt_value:
-        requests = [interrupt_value["action_request"]]
-
-    decisions: list[dict] = []
-    for request in requests or []:
-        name = request.get("action") or request.get("name")
-        args = request.get("args", {}) or {}
-        verdict = rules.match(name, args) if rules is not None else None
-        if verdict == "allow":
-            console.print(f"[dim]⚙ {name} · auto (rule)[/]")
-            decisions.append({"type": "approve"})
-        elif verdict == "deny":
-            console.print(f"[dim]⚙ {name} · blocked (rule)[/]")
-            decisions.append(
-                {
-                    "type": "reject",
-                    "message": f"blocked by a Luna permission rule ({name})",
-                }
-            )
-        else:
-            decisions.append(prompt_decision(console, request, input_fn=input_fn))
-
-    for d in decisions:
-        if "always" in d:
-            if workdir is not None:
-                permissions.append_project_rule(workdir, d["always"])
-            if rules is not None and d["always"] not in rules.allow:
-                rules.allow.append(d["always"])
-            d.pop("always", None)
-
-    return {"decisions": decisions}
-
-
-def _stream_turn(
-    agent,
-    payload,
-    config: dict,
-    console: Console,
-    input_fn: Callable[[str], str],
-    *,
-    rules=None,
-    workdir: str = ".",
-) -> tuple[str, bool, TurnUsage, set[str]]:
-    """Run one user turn.
-
-    Returns ``(final_text, reload_requested, turn_usage, tool_names_seen)``.
-    """
-    parts: list[str] = []
-    tool_names_seen: set[str] = set()
-    reload_requested = False
-    turn_usage = TurnUsage()
-    progress = ToolProgress(console)
-    answer = AnswerRenderer(console)
-
-    open_turn(console)
-    try:
-        while True:
-            interrupt_value: dict | None = None
-            for event in iter_turn(agent, payload, config):
-                if isinstance(event, TextDelta):
-                    parts.append(event.text)
-                    answer.append(event.text)
-                elif isinstance(event, UsageDelta):
-                    turn_usage.merge(event.usage_metadata)
-                elif isinstance(event, ToolStarted):
-                    answer.stop()
-                    progress.start(event.call_id, event.name, event.args)
-                elif isinstance(event, ToolFinished):
-                    if event.name:
-                        tool_names_seen.add(event.name)
-                    progress.finish(event.call_id, event.ok, event.detail)
-                elif isinstance(event, ReloadRequested):
-                    reload_requested = True
-                elif isinstance(event, Interrupted) and interrupt_value is None:
-                    interrupt_value = event.value
-
-            if interrupt_value is None:
-                break
-
-            progress.pause()
-            console.print()
-            resume = collect_decisions(
-                console,
-                interrupt_value,
-                input_fn=input_fn,
-                rules=rules,
-                workdir=workdir,
-            )
-            progress.resume()
-            payload = Command(resume=resume)
-    finally:
-        answer.stop()
-        progress.close()
-
-    close_turn(console)
-    return "".join(parts).strip(), reload_requested, turn_usage, tool_names_seen
-
-
-#: A turn that fails outright gets this many extra automatic attempts before
-#: the caller sees the exception — each attempt waits this many seconds.
-_MAX_TURN_RETRIES = 2
-_RETRY_BACKOFF_SECONDS = (2, 5)
-
-
-def _stream_turn_resilient(
-    agent,
-    payload,
-    config: dict,
-    console: Console,
-    input_fn: Callable[[str], str],
-    *,
-    rules=None,
-    workdir: str = ".",
-) -> tuple[str, bool, TurnUsage, set[str]]:
-    """Like :func:`_stream_turn`, but retries a failed turn before giving up.
-
-    A network/provider error (a request timeout, a dropped connection) used
-    to end the turn outright — the user's message was answered with nothing.
-    Retrying is safe: LangGraph resumes the same checkpointed thread from
-    where it left off rather than replaying it, so re-sending the same
-    ``payload`` neither duplicates the human message nor re-runs a tool call
-    that already executed (verified directly against this project's own
-    ``build_agent()`` — a step that already completed before the failure
-    is not repeated). ``KeyboardInterrupt`` is never retried.
-    """
-    attempt = 0
-    while True:
-        try:
-            return _stream_turn(
-                agent, payload, config, console, input_fn, rules=rules, workdir=workdir
-            )
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:  # noqa: BLE001 - retried transparently, re-raised past the cap
-            if attempt >= _MAX_TURN_RETRIES:
-                raise
-            wait = _RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)]
-            console.print(
-                f"[{PALETTE['mauve']}]turn failed ({exc}) — retrying in {wait}s "
-                f"(attempt {attempt + 2}/{_MAX_TURN_RETRIES + 1})...[/]"
-            )
-            time.sleep(wait)
-            attempt += 1
-
+__all__ = ["SLASH_COMMANDS", "TurnSummary", "render_turn", "run_once", "run_repl"]
 
 _NOTICE_STYLE = {
     "dim": "dim",
@@ -271,253 +53,344 @@ _NOTICE_STYLE = {
     "warn": "yellow",
     "error": PALETTE["mauve"],
 }
+_TODO_MARKS = {"completed": "✓", "in_progress": "▸", "pending": "·"}
 
 
-def _print_notices(console: Console, notices) -> None:
-    """Render engine notices the way the REPL always printed these lines."""
-    for notice in notices:
-        console.print(notice.text, style=_NOTICE_STYLE.get(notice.level, ""), markup=False)
+@dataclass
+class TurnSummary:
+    """What a rendered turn produced."""
+
+    text: str = ""
+    usage: Usage = field(default_factory=Usage)
+    cost: float | None = None
+    tools: set[str] = field(default_factory=set)
+    reload: bool = False
+    error: str = ""
+    cancelled: bool = False
 
 
-def _format_and_diagnose(console: Console, cfg: LunaConfig, before: list[str] | None = None) -> str:
-    """Format then diagnose the files this turn changed (see :func:`engine.format_and_diagnose`)."""
-    notices, text = engine.format_and_diagnose(cfg, before)
-    _print_notices(console, notices)
-    return text
+def _request_dict(request) -> dict:
+    """Convert the approval request to the dict :func:`prompt_decision` reads."""
+    return {
+        "name": request.name,
+        "action": request.name,
+        "args": request.args,
+        "description": request.description,
+    }
 
 
-def _run_verification(
-    agent, turn_config: dict, console: Console, cfg, input_fn, rules=None
-) -> None:
-    """Run the verify command; on failure, take exactly one fix-up turn."""
-    if not cfg.verify_command:
-        return
-    ok, tail, notices = engine.verify_step(cfg)
-    _print_notices(console, notices)
-    if ok:
-        return
-    payload = {"messages": [{"role": "user", "content": engine.fixup_prompt(cfg, tail)}]}
-    _stream_turn_resilient(
-        agent, payload, turn_config, console, input_fn, rules=rules, workdir=cfg.workdir
-    )
-    _print_notices(console, engine.finish_fixup(cfg))
+@contextlib.contextmanager
+def _ctrl_c_cancels(on_sigint: Callable[[], None]):
+    """While the block runs, Ctrl-C calls ``on_sigint`` instead of killing the REPL.
+
+    The previous SIGINT handler (e.g. ``asyncio.run``'s) is restored afterwards.
+    """
+    loop = asyncio.get_running_loop()
+    previous = signal.getsignal(signal.SIGINT)
+    installed = False
+    try:
+        loop.add_signal_handler(signal.SIGINT, on_sigint)
+        installed = True
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass  # not the main thread, or a platform without loop signal handlers
+    try:
+        yield
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal.SIGINT)
+            with contextlib.suppress(TypeError, ValueError):
+                signal.signal(signal.SIGINT, previous)
 
 
-def run_once(
+async def render_turn(
     agent,
+    session: Session,
+    text: str,
+    *,
+    console: Console,
+    input_fn: Callable[[str], str],
+    images=(),
+) -> TurnSummary:
+    """Run one turn, rendering it to ``console``; Ctrl-C cancels the turn."""
+    summary = TurnSummary()
+    parts: list[str] = []
+    progress = ToolProgress(console)
+    answer = AnswerRenderer(console)
+    calls = _Calls()
+
+    def on_sigint() -> None:
+        session.cancel_turn()
+        if calls.prompt_open and not calls.interrupted:
+            # the prompt's thread keeps blocking on stdin: say so now, and drop
+            # whatever it answers later (the call must not run)
+            calls.interrupted = True
+            answer.stop()
+            console.print("\nturn cancelled", style=PALETTE["mauve"])
+            calls.announced = True
+
+    open_turn(console)
+    try:
+        with _ctrl_c_cancels(on_sigint):
+            run = agent.run(session, text, images=images)
+            async with contextlib.aclosing(run) as events:
+                async for event in events:
+                    _render_event(event, summary, parts, console, progress, answer, calls)
+                    if isinstance(event, NeedsApproval):
+                        progress.pause()
+                        console.print()
+                        calls.prompt_open, calls.interrupted = True, False
+                        try:
+                            raw = await in_thread(
+                                prompt_decision,
+                                console,
+                                _request_dict(event.request),
+                                input_fn=input_fn,
+                            )
+                        except (EOFError, KeyboardInterrupt):
+                            session.cancel_turn()  # nobody left to answer: stop the turn
+                            continue
+                        finally:
+                            calls.prompt_open = False
+                        if calls.interrupted:
+                            continue  # Ctrl-C while asking: never deliver the late answer
+                        # the id may be "<child session>:<call id>" — pass it through
+                        try:
+                            session.decide(event.request.call_id, Decision.from_dict(raw))
+                        except LunaCoreError as exc:
+                            console.print(
+                                f"approval not delivered: {exc}",
+                                style=PALETTE["mauve"],
+                                markup=False,
+                            )
+                        progress.resume()
+    finally:
+        answer.stop()
+        progress.close()
+    close_turn(console)
+    summary.text = "".join(parts).strip()
+    return summary
+
+
+@dataclass
+class _Calls:
+    """Per-turn render state: tool calls seen, approval prompt and Ctrl-C bookkeeping."""
+
+    started: set[str] = field(default_factory=set)
+    requested: dict[str, dict] = field(default_factory=dict)
+    prompt_open: bool = False  # an approval prompt is waiting for the user
+    interrupted: bool = False  # Ctrl-C arrived while it was open
+    announced: bool = False  # "turn cancelled" was already printed
+
+
+def _render_event(event, summary, parts, console, progress, answer, calls: _Calls) -> None:
+    """Render one turn event (approvals are handled by the caller)."""
+    if isinstance(event, TextDelta):
+        parts.append(event.text)
+        answer.append(event.text)
+    elif isinstance(event, ToolStarted):
+        answer.stop()
+        calls.started.add(event.call_id)
+        progress.start(event.call_id, event.name, event.args)
+    elif isinstance(event, NeedsApproval):
+        answer.stop()
+        calls.requested[event.request.call_id] = event.request.args
+    elif isinstance(event, ToolFinished):
+        summary.tools.add(event.name)
+        if event.call_id not in calls.started:
+            # refused before it ran (rejected, denied by a rule, unknown tool):
+            # still give it its "· error" line
+            answer.stop()
+            progress.start(event.call_id, event.name, calls.requested.get(event.call_id, {}))
+        progress.finish(event.call_id, event.ok, event.detail)
+    elif isinstance(event, Notice):
+        answer.stop()
+        level = engine.notice_level(event.text) if event.level == "info" else event.level
+        console.print(event.text, style=_NOTICE_STYLE.get(level, ""), markup=False)
+    elif isinstance(event, TodosUpdated):
+        answer.stop()
+        lines = (f"{_TODO_MARKS.get(t.get('status'), '·')} {t.get('content')}" for t in event.todos)
+        console.print("\n".join(lines), style="dim", markup=False)
+    elif isinstance(event, Compacted):
+        answer.stop()
+        console.print(f"compacted {event.removed} messages into a summary", style="dim")
+    elif isinstance(event, ReloadRequested):
+        summary.reload = True
+    elif isinstance(event, TurnDone):
+        summary.usage, summary.cost = event.usage, event.cost
+    elif isinstance(event, TurnError):
+        answer.stop()
+        summary.error = event.message
+        console.print(f"turn failed: {event.message}", style=PALETTE["mauve"], markup=False)
+    elif isinstance(event, Cancelled):
+        answer.stop()
+        summary.cancelled = True
+        if not calls.announced:
+            console.print("turn cancelled", style=PALETTE["mauve"])
+
+
+async def run_once(
+    bundle,
     prompt: str,
     *,
-    thread_id: str | None = None,
     console: Console,
+    log,
+    session: Session | None = None,
+    cfg: LunaConfig,
     input_fn: Callable[[str], str] = input,
-    index: SessionIndex | None = None,
-    workdir: str = ".",
-    session_id: str = "",  # accepted for API symmetry; snapshots run in the middleware
-    cfg: LunaConfig | None = None,
     output_format: str = "text",
+    hooks_state: dict | None = None,
 ) -> str:
-    """Run a single prompt and return the final assistant text (or "" in json mode)."""
-    thread_id = thread_id or _new_thread_id()
-    config = {"configurable": {"thread_id": thread_id}}
-    payload = {"messages": [{"role": "user", "content": prompt}]}
-    rules = load_rules(workdir)
-    quiet = Console(file=open(os.devnull, "w")) if output_format == "json" else console
-    try:
-        current_messages = agent.get_state(config).values.get("messages", [])
-    except Exception:  # noqa: BLE001 - a stub/broken agent must not block the turn
-        current_messages = []
-    undo.begin_turn(workdir, session_id, len(current_messages))
-    # captured *after* begin_turn so its own journal writes don't register as
-    # "newly dirty" when .luna/ isn't gitignored
-    dirty_before_turn = gitinfo.dirty_paths(workdir) if gitinfo.is_git_repo(workdir) else []
-    text, _, turn_usage, tool_names = _stream_turn_resilient(
-        agent,
-        payload,
-        config,
-        quiet,
-        input_fn,
-        rules=rules,
-        workdir=workdir,
-    )
-    if cfg is not None and tool_names & engine.MUTATING:
-        _format_and_diagnose(quiet, cfg, before=dirty_before_turn)
-        _run_verification(agent, config, quiet, cfg, input_fn, rules=rules)
-    if index is not None:
-        index.record(thread_id, workdir, make_title(prompt))
-        index.touch(thread_id)
-    if output_format == "json":
-        provider = cfg.provider if cfg is not None else ""
-        model = cfg.model if cfg is not None else None
-        overrides = cfg.pricing if cfg is not None else None
-        p = price(provider, model, overrides)
-        cost_usd = (
-            None
-            if p is None
-            else turn_usage.input_tokens / 1_000_000 * p[0]
-            + turn_usage.output_tokens / 1_000_000 * p[1]
+    """Run a single prompt; returns the answer text (``""`` in json mode, which prints JSON).
+
+    ``hooks_state`` is the dict the bundle's engine hooks read the session
+    state from (see :func:`run_repl`); it is pointed at this run's state.
+    """
+    workdir = str(bundle.agent.workspace.root)
+    session = session or Session.create(log, workdir, title=make_title(prompt))
+    state = SessionState(session.id, session.workdir)
+    if hooks_state is not None:
+        hooks_state["state"] = state
+    names = {n for n, _ in subagent_summaries(session.workdir)}
+    prepared = engine.prepare_turn(state, prompt, workdir=session.workdir, subagent_names=names)
+    if not session.title:
+        log.set_title(session.id, make_title(prepared.title_line))
+    await asyncio.to_thread(engine.before_turn, state)
+    with contextlib.ExitStack() as stack:
+        quiet = console
+        if output_format == "json":
+            quiet = Console(file=stack.enter_context(open(os.devnull, "w")))  # noqa: SIM115
+        result = await render_turn(
+            bundle.agent,
+            session,
+            prepared.text,
+            console=quiet,
+            input_fn=input_fn,
+            images=prepared.images,
         )
-        payload_out = {
-            "text": text,
-            "tools_used": sorted(tool_names),
-            "usage": {
-                "input": turn_usage.input_tokens,
-                "output": turn_usage.output_tokens,
-                "total": turn_usage.total_tokens,
-            },
-            "cost_usd": cost_usd,
-            "thread_id": thread_id,
-        }
-        print(json.dumps(payload_out))
+    if output_format == "json":
+        print(
+            json.dumps(
+                {
+                    "text": result.text,
+                    "tools_used": sorted(result.tools),
+                    "usage": {
+                        "input": result.usage.input,
+                        "output": result.usage.output,
+                        "total": result.usage.total,
+                    },
+                    "cost_usd": result.cost,
+                    "session_id": session.id,
+                    "error": result.error or None,
+                }
+            )
+        )
         return ""
-    return text
+    return result.text
 
 
-def _print_recap(agent, config, console, keep=6):
-    """Print the tail of a resumed thread's history (best effort)."""
+def print_recap(session: Session, console: Console, keep: int = 6) -> None:
+    """Print the tail of a resumed session's conversation (best effort)."""
+    messages = [m for m in session.messages() if m.text.strip()]
+    if not messages:
+        return
+    console.print(f"[{PALETTE['blue']}]— resuming, last {min(keep, len(messages))} messages —[/]")
+    for message in messages[-keep:]:
+        console.print(f"[dim]{message.role}:[/] ", end="")
+        console.print(message.text[:200], markup=False, highlight=False)
+
+
+async def _rebuild_bundle(ctx: CommandContext, console: Console) -> None:
+    """Auto-reload after a turn: the new bundle replaces the old one only when it builds."""
     try:
-        msgs = agent.get_state(config).values.get("messages", [])
-    except Exception:  # noqa: BLE001 - recap is cosmetic
+        await swap_bundle(ctx)
+    except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
+        console.print(f"[{PALETTE['mauve']}]auto-reload failed: {exc}[/]")
         return
-    if not msgs:
-        return
-    console.print(f"[{PALETTE['blue']}]— resuming, last {min(keep, len(msgs))} messages —[/]")
-    for m in msgs[-keep:]:
-        role = getattr(m, "type", "?")
-        text = (getattr(m, "content", "") or "")[:200]
-        if text:
-            console.print(f"[dim]{role}:[/] {text}")
+    console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")
 
 
-def run_repl(
-    agent,
+async def run_repl(
+    bundle,
     *,
     console: Console,
     input_fn: Callable[[str], str] = input,
-    rebuild: Callable[[], object] | None = None,
-    index: SessionIndex | None = None,
-    thread_id: str | None = None,
-    workdir: str = ".",
-    config: LunaConfig | None = None,
-    session_id: str = "",
+    rebuild: Callable | None = None,
+    log,
+    session: Session,
+    config: LunaConfig,
     plan_state: list | None = None,
+    hooks_state: dict | None = None,
 ) -> int:
-    """Interactive loop. Returns a process exit code."""
-    thread_id = thread_id or _new_thread_id()
-    config = config or LunaConfig()
-    plan_state = plan_state if plan_state is not None else [False]
-    console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
+    """Interactive line REPL (non-TTY fallback). Returns an exit code.
 
-    session_usage = SessionUsage()
-    pinned = PinnedFiles()
-    state = SessionState(thread_id, workdir, pinned=pinned, usage=session_usage)
-    rules = load_rules(workdir)
-    user_commands = usercmd.load(workdir)
-    subagent_names = {n for n, _ in subagent_summaries(workdir)}
+    ``rebuild`` is an async callable returning a new bundle. ``hooks_state``
+    is the dict the engine hooks of ``bundle`` read the session state from
+    (``engine.make_hooks(lambda: hooks_state.get("state"), ...)``); the REPL
+    keeps it pointing at the current session's state.
+    """
+    plan_state = plan_state if plan_state is not None else [False]
+    hooks_state = hooks_state if hooks_state is not None else {}
+    store = SessionStateStore()
+    state = store.load(session.id, session.workdir)
+    hooks_state["state"] = state
+    console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
     ctx = CommandContext(
         console=console,
         config=config,
-        agent=agent,
+        bundle=bundle,
         rebuild=rebuild,
-        thread_id=thread_id,
-        workdir=workdir,
-        index=index,
-        session_id=session_id,
-        usage=session_usage,
-        pinned=pinned,
-        permissions=rules,
+        session=session,
+        log=log,
+        state=state,
         input_fn=input_fn,
-        user_commands=user_commands,
+        user_commands=usercmd.load(session.workdir),
         plan_state=plan_state,
     )
-
-    if index is not None:
-        _print_recap(agent, {"configurable": {"thread_id": thread_id}}, console)
-
+    if session.has_user_messages:
+        print_recap(session, console)
     while True:
         try:
-            prompt_label = "luna (plan) › " if plan_state[0] else "luna › "
-            line = input_fn(prompt_label).strip()
+            label = "luna (plan) › " if plan_state[0] else "luna › "
+            line = (await in_thread(input_fn, label)).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             return 0
-
         if not line:
             continue
-
+        reload_after = False
         if line.startswith("/"):
-            ctx.agent = agent
-            ctx.thread_id = thread_id
-            res = dispatch(line, ctx)
+            res = await dispatch(line, ctx)
+            hooks_state["state"] = ctx.state
             if res.exit:
                 return 0
-            if res.prompt is not None:
-                line = res.prompt  # fall through to the normal turn-building code below
-            elif res.handled:
-                if res.agent is not None:
-                    agent = res.agent
-                    rules = load_rules(workdir)
-                    ctx.permissions = rules
-                    user_commands = usercmd.load(workdir)
-                    ctx.user_commands = user_commands
-                    subagent_names = {n for n, _ in subagent_summaries(workdir)}
-                if res.thread_id is not None:
-                    thread_id = res.thread_id
+            if res.prompt is None:
                 continue
-
-        turn_config = {"configurable": {"thread_id": thread_id}}
-        state.thread_id = thread_id
-        prepared = engine.prepare_turn(
-            state,
-            line,
-            agent=agent,
-            thread_id=thread_id,
-            workdir=workdir,
-            session_id=session_id,
-            subagent_names=subagent_names,
-        )
-        payload = {"messages": [{"role": "user", "content": prepared.content}]}
+            line, reload_after = res.prompt, res.reload_after
+        session, state = ctx.session, ctx.state
+        names = {n for n, _ in subagent_summaries(session.workdir)}
+        prepared = engine.prepare_turn(state, line, workdir=session.workdir, subagent_names=names)
+        if not session.title:
+            log.set_title(session.id, make_title(prepared.title_line))
+        await asyncio.to_thread(engine.before_turn, state)
         try:
-            _, reload_requested, turn_usage, tool_names = _stream_turn_resilient(
-                agent, payload, turn_config, console, input_fn, rules=rules, workdir=workdir
+            result = await render_turn(
+                ctx.bundle.agent,
+                session,
+                prepared.text,
+                console=console,
+                input_fn=input_fn,
+                images=prepared.images,
             )
-        except KeyboardInterrupt:
-            console.print(f"\n[{PALETTE['mauve']}]turn cancelled[/]")
+        except Exception as exc:  # noqa: BLE001 - an unexpected failure must not kill the session
+            console.print(f"turn failed: {exc}", style=PALETTE["mauve"], markup=False)
             continue
-        except Exception as exc:  # noqa: BLE001 - a provider/network/persistence error must not kill the session
-            console.print(f"[{PALETTE['mauve']}]turn failed: {exc}[/]")
-            continue
-        before = len(session_usage.turns)
-        try:
-            result = engine.finish_turn(
-                state,
-                prepared,
-                engine.TurnOutcome(usage=turn_usage, tool_names=tool_names),
-                cfg=config,
-                index=index,
-                thread_id=thread_id,
-                workdir=workdir,
+        finally:
+            store.save(state)
+        if result.usage.total:
+            cost = f" · ${result.cost:.4f}" if result.cost else ""
+            console.print(
+                f"[dim]{result.usage.input} in · {result.usage.output} out{cost}[/]",
+                highlight=False,
             )
-        except KeyboardInterrupt:
-            # Ctrl-C during a long format/verify cancels only that, never the REPL
-            console.print(f"\n[{PALETTE['mauve']}]verify fix-up cancelled[/]")
-            continue
-        if len(session_usage.turns) > before:
-            indicator = indicator_line(session_usage, config.provider, config.model, config.pricing)
-            console.print(f"[dim]{indicator}[/]")
-        _print_notices(console, result.notices)
-        if result.fixup_prompt is not None:
-            try:
-                fix_payload = {"messages": [{"role": "user", "content": result.fixup_prompt}]}
-                _stream_turn_resilient(
-                    agent, fix_payload, turn_config, console, input_fn, rules=rules, workdir=workdir
-                )
-                _print_notices(console, engine.finish_fixup(config))
-            except KeyboardInterrupt:
-                console.print(f"\n[{PALETTE['mauve']}]verify fix-up cancelled[/]")
-        if reload_requested and rebuild is not None:
-            try:
-                agent = rebuild()
-            except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
-                console.print(f"[{PALETTE['mauve']}]auto-reload failed: {exc}[/]")
-            else:
-                console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")
+        if (result.reload or reload_after) and rebuild is not None:
+            await _rebuild_bundle(ctx, console)

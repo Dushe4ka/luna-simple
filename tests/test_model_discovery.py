@@ -147,9 +147,7 @@ def test_list_models_keyless_custom_provider_sends_no_auth_header(monkeypatch):
         return _FakeResponse(200, {"data": [{"id": "local-model"}]})
 
     monkeypatch.setattr(model_discovery.httpx, "get", fake_get)
-    spec = ProviderSpec(
-        "mylocal", "openai", "local-model", None, "openai", "http://localhost:8000/v1"
-    )
+    spec = ProviderSpec("mylocal", "openai_chat", "local-model", None, "http://localhost:8000/v1")
     result = model_discovery.list_models("mylocal", spec, api_key=None)
     assert result == ["local-model"]
     assert "Authorization" not in captured["headers"]
@@ -220,6 +218,6 @@ def test_list_models_returns_none_on_invalid_url():
     from luna.config.providers import ProviderSpec
 
     spec = ProviderSpec(
-        "mylocal", "openai", "local-model", None, "openai", "http://localhost:notaport/v1"
+        "mylocal", "openai_chat", "local-model", None, "http://localhost:notaport/v1"
     )
     assert model_discovery.list_models("mylocal", spec, api_key=None) is None

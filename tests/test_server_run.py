@@ -243,3 +243,24 @@ def test_ensure_running_spawns_the_shared_server_outside_any_project(tmp_path, m
     monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
     ensure_running(str(tmp_path), on_warn=lambda m: None, _is_alive=lambda pid: False)
     assert captured["kwargs"]["cwd"] == str(Path.home())
+
+
+def test_token_and_log_files_are_created_private(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
+    write_token_file(port=1, token="secret", pid=1)
+    assert stat.S_IMODE(token_path().stat().st_mode) == 0o600
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            port = args[args.index("--port") + 1]
+            token = args[args.index("--token") + 1]
+            write_token_file(port=int(port), token=token, pid=4242)
+
+    monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
+    token_path().unlink()
+    ensure_running(str(tmp_path), on_warn=lambda m: None, _is_alive=lambda pid: False)
+    assert stat.S_IMODE(log_path().stat().st_mode) == 0o600

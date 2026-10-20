@@ -37,7 +37,8 @@ def format_status_line(
     parts.append(f"plan: {'on' if plan_mode else 'off'}")
     if pinned > 0:
         parts.append(f"pinned: {pinned}")
-    parts.append(f"undo: {undo_depth}")
+    if undo_depth > 0:
+        parts.append(f"undo: {undo_depth}")
     return " · ".join(parts)
 
 

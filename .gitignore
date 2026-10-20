@@ -10,3 +10,6 @@ build/
 
 # Luna per-project state (undo journal, permissions, memory)
 .luna/
+
+# Superpowers scratch and local state (brainstorm sessions, server logs, tokens)
+.superpowers/

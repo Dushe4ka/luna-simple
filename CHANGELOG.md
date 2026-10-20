@@ -4,10 +4,45 @@
 [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — по
 [семантическому версионированию](https://semver.org/lang/ru/).
 
-## [Unreleased]
+## [0.4.0] — luna-core
+
+### Ядро luna-core (пакет `packages/luna-core`, версия 0.1.0)
+
+- Собственный рантайм вместо `deepagents` / LangChain / LangGraph: асинхронный
+  агентный цикл, инструменты, журнал событий в SQLite, политика и подтверждения.
+  Публичный SDK: `from luna_core import Agent, Session, EventLog, ...`
+  (`docs/sdk/`, примеры в `examples/`, запускаются офлайн с `--fake`).
+- Пять нативных API провайдеров на `httpx` без вендорских SDK: Anthropic
+  Messages, OpenAI Responses, OpenAI Chat Completions (DeepSeek, Groq, OpenRouter,
+  Ollama и др.), нативный Gemini, GigaChat; пресет Yandex AI Studio.
+- Параллельные и фоновые агенты: `task(..., background=true)`, `task_status`,
+  `task_cancel`, `luna run --background`, `/agents`, Ctrl+G в TUI; изоляция
+  субагентов в git worktree.
+- Хуки (`[[hooks]]` в конфиге: `session_start`, `pre_tool`, `post_tool`,
+  `turn_end`, `pre_compact`), Docker-песочница (`[sandbox]`), ACP для
+  редакторов (`luna acp`).
+- Новые команды: `/rewind`, `/export`, `/btw`, `/steer`, `/fork`, `/background`.
+  Esc и Ctrl+C отменяют ход, поддержан ввод изображений.
+- Сессии начинаются с чистого листа: старые истории LangGraph не переносятся.
+  Ключ конфигурации `[agent] extra` удалён.
+- Время запуска (замеры приёмки): `luna --version` 21 мс (медиана из 5);
+  первый кадр TUI около 0,30–0,39 с в headless-режиме; схемы всех 18
+  инструментов агента около 1 820 токенов (оценка символы / 4). Приёмка с живыми
+  провайдерами не пройдена (нет ключей): `docs/superpowers/acceptance/luna-core.md`.
+
+### Изменено
+
+- Luna переехала на собственное ядро `luna-core`: `deepagents`, LangChain и
+  LangGraph удалены, extras провайдеров (`openai`, `google`, ...) больше не
+  нужны, остались `mcp`, `acp`, `lsp`, `websearch`. Версия 0.4.0.
+- Старые таблицы LangGraph в `sessions.db` удаляются при первом открытии;
+  прежние сессии не переносятся, доверенные папки сохраняются.
+- `luna --version` не импортирует ничего тяжёлого.
 
 ### Добавлено
 
+- `luna sessions [list|rm <id>|prune --days N]`, `luna run --background
+  "промпт"`, `luna acp`; `luna agents` показывает и фоновые запуски сервера.
 - TUI: работают все slash-команды. `/model` и `/provider` открывают окно
   выбора (текущая модель отмечена), `/undo` спрашивает подтверждение,
   `/help` показывает список по группам вместе с командами проекта из

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from luna_core.client import LunaClient, ServerError
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer
 
-from luna.server.client import ServerClient, ServerError
 from luna.tui.chat import ChatPane
+from luna.tui.errors import readable
 from luna.tui.sidebar_sessions import SessionsSidebar
 from luna.tui.theme import TUI_VARIABLES
 
@@ -33,7 +34,12 @@ class LunaApp(App):
     BINDINGS = [
         ("ctrl+b", "toggle_panels", "Панель"),
         ("ctrl+n", "new_session", "Новая сессия"),
+        ("ctrl+g", "send_background", "В фон"),
     ]
+
+    #: Run/task statuses that are still in flight.
+    _LIVE = ("queued", "running", "waiting")
+    _VERBS = {"done": "завершена", "failed": "ошибка", "cancelled": "отменена"}
 
     def __init__(
         self,
@@ -63,7 +69,15 @@ class LunaApp(App):
         # the app starts running), so storing the graph thread there would be
         # silently overwritten with an OS thread id before compose() runs.
         self._start_thread_id = thread_id
-        self.client = ServerClient(base_url=base_url, token=token)
+        self.client = LunaClient(base_url, token)
+        #: Last seen status of every background run (by session) and task (by handle).
+        self._runs: dict[str, str] = {}
+        self._tasks: dict[str, str] = {}
+        self._task_labels: dict[str, str] = {}
+        #: Task handles whose completion was already toasted.
+        self._announced: set[str] = set()
+        #: Poll on the next tick even if nothing looked live (a run was just started).
+        self._poll_armed = True
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
         """Make Luna's palette available as ``$bg``/``$peri``/etc. everywhere.
@@ -113,6 +127,82 @@ class LunaApp(App):
         """
         await self.query_one(SessionsSidebar).refresh_sessions()
         self.query_one("#chat-input").focus()
+        self.set_interval(3.0, self._tick)
+
+    async def _tick(self) -> None:
+        """Poll ``/agents`` every 3 s while something runs (or was just started)."""
+        live = any(s in self._LIVE for s in (*self._runs.values(), *self._tasks.values()))
+        if live or self._poll_armed or self.query_one(SessionsSidebar).any_running:
+            self._poll_armed = False
+            await self.poll_agents()
+
+    async def poll_agents(self) -> None:
+        """Announce background runs and tasks that finished since the last poll."""
+        try:
+            agents = await self.client.agents()
+        except ServerError:
+            return
+        changed = False
+        for run in agents.get("runs", []):
+            before = self._runs.get(run["session_id"])
+            self._runs[run["session_id"]] = run["status"]
+            changed = changed or before != run["status"]
+            if before in self._LIVE and run["status"] in self._VERBS:
+                self.notify(
+                    f"Фоновая сессия «{run['label']}» {self._VERBS[run['status']]}",
+                    severity="error" if run["status"] == "failed" else "information",
+                    markup=False,
+                )
+        for task in agents.get("tasks", []):
+            handle = task["handle"]
+            before = self._tasks.get(handle)
+            self._tasks[handle] = task["status"]
+            self._task_labels[handle] = task["label"]
+            if before in self._LIVE and task["status"] in self._VERBS:
+                self._announce_task(handle, task["status"])
+        if changed:
+            await self.query_one(SessionsSidebar).refresh_sessions()
+        chat = self.query_one(ChatPane)
+        asks = any(
+            r["session_id"] == chat.thread_id and r["status"] == "waiting"
+            for r in agents.get("runs", [])
+        ) or any(
+            t["session_id"] == chat.thread_id and t["status"] in self._LIVE
+            for t in agents.get("tasks", [])
+        )
+        if asks:
+            chat.watch_out_of_turn()
+
+    def _announce_task(self, handle: str, status: str) -> None:
+        if handle in self._announced:
+            return
+        self._announced.add(handle)
+        label = self._task_labels.get(handle, handle)
+        self.notify(
+            f"Фоновая задача «{label}» {self._VERBS.get(status, status)}",
+            severity="error" if status == "failed" else "information",
+            markup=False,
+        )
+
+    def announce_background_done(self, handle: str, ok: bool) -> None:
+        """Toast a ``background_done`` event (once per task, polling may see it too)."""
+        self._tasks[handle] = "done" if ok else "failed"
+        self._announce_task(handle, "done" if ok else "failed")
+
+    async def action_send_background(self) -> None:
+        """Ctrl+G: run the typed prompt in the background in this session."""
+        chat = self.query_one(ChatPane)
+        chat_input = self.query_one("#chat-input")
+        text = chat_input.value.strip()
+        if not text:
+            self.notify("Введите задачу, затем Ctrl+G.", severity="warning")
+            return
+        if chat.busy:
+            self.notify("Дождитесь окончания ответа.", severity="warning")
+            return
+        chat_input.value = ""
+        self._poll_armed = True
+        await chat.send_background(text)
 
     async def on_sessions_sidebar_session_selected(
         self, event: SessionsSidebar.SessionSelected
@@ -133,9 +223,14 @@ class LunaApp(App):
         try:
             thread_id = await self.client.create_session(self._workdir)
         except ServerError as exc:
-            self.notify(str(exc), severity="error")
+            self.notify(readable(exc), severity="error", markup=False)
             return
         await self._open_thread(thread_id)
+
+    async def on_chat_pane_switch_session(self, event: ChatPane.SwitchSession) -> None:
+        """Open the session a command (``/fork``) moved the conversation to."""
+        await self._open_thread(event.session_id, check_busy=False)
+        await self.query_one(SessionsSidebar).refresh_sessions()
 
     async def on_chat_pane_turn_finished(self, event: ChatPane.TurnFinished) -> None:
         """Re-fetch the list so a new session appears and the order updates."""
@@ -153,15 +248,16 @@ class LunaApp(App):
             return True
         return False
 
-    async def _open_thread(self, thread_id: str) -> None:
+    async def _open_thread(self, thread_id: str, *, check_busy: bool = True) -> None:
         """Point the chat at ``thread_id``, replay its history, sync the highlight.
 
         Without the reload, the transcript kept showing whatever the
         previously-open session had streamed into it.
         """
-        if self._turn_running():
+        if check_busy and self._turn_running():
             return
         chat = self.query_one(ChatPane)
+        chat.stop_watching()
         chat.thread_id = thread_id
         await chat.load_history()
         await chat.refresh_state()
