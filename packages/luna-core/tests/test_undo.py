@@ -24,6 +24,8 @@ def test_git_undo_redo_restores_and_removes_created_files(repo):
     j = UndoJournal(repo, "s1")
     assert j.is_git and j.depth == 0
     j.begin_turn("t1")
+    for rel in ("a.txt", "new.txt"):
+        j.before_write("t1", rel)
     (repo / "a.txt").write_text("two\n")
     (repo / "new.txt").write_text("created\n")
     assert j.depth == 1
@@ -197,6 +199,7 @@ def repo2(repo):
 def test_git_undo_keeps_user_changes_made_after_the_turn(repo2):
     j = UndoJournal(repo2, "s1")
     j.begin_turn("t1")
+    j.before_write("t1", "a.txt")
     (repo2 / "a.txt").write_text("two\n")
     j.end_turn("t1")
     (repo2 / "b.txt").write_text("user edit\n")
@@ -215,6 +218,8 @@ def test_git_undo_keeps_user_changes_made_after_the_turn(repo2):
 def test_git_undo_skips_a_turn_path_the_user_changed_since(repo2):
     j = UndoJournal(repo2, "s1")
     j.begin_turn("t1")
+    for rel in ("a.txt", "new.txt"):
+        j.before_write("t1", rel)
     (repo2 / "a.txt").write_text("two\n")
     (repo2 / "new.txt").write_text("created\n")
     j.end_turn("t1")
@@ -233,6 +238,8 @@ def test_git_undo_skips_a_turn_path_the_user_changed_since(repo2):
 def test_git_redo_skips_a_path_the_user_changed_after_the_undo(repo2):
     j = UndoJournal(repo2, "s1")
     j.begin_turn("t1")
+    for rel in ("a.txt", "b.txt"):
+        j.before_write("t1", rel)
     (repo2 / "a.txt").write_text("two\n")
     (repo2 / "b.txt").write_text("turn b\n")
     j.end_turn("t1")
@@ -294,3 +301,51 @@ def test_journal_undo_survives_an_oserror_mid_restore(tmp_path, monkeypatch):
     fresh.redo()
     assert (tmp_path / "a.txt").read_text() == "new\n"
     assert (tmp_path / "b.txt").read_text() == "new\n"
+
+
+# -- re-review R1: in git mode only paths touched by file tools are restored;
+# -- a turn that ran commands restores the whole diff but names the extra paths --
+
+
+def test_git_undo_leaves_files_edited_outside_luna_during_the_turn(repo2):
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    j.before_write("t1", "a.txt")
+    (repo2 / "a.txt").write_text("two\n")
+    (repo2 / "b.txt").write_text("user edit during the turn\n")  # the user's editor
+    j.end_turn("t1")
+    res = j.undo()
+    assert (repo2 / "a.txt").read_text() == "one\n"
+    assert (repo2 / "b.txt").read_text() == "user edit during the turn\n"
+    assert res.note == "files restored"
+    j.redo()
+    assert (repo2 / "a.txt").read_text() == "two\n"
+    assert (repo2 / "b.txt").read_text() == "user edit during the turn\n"
+
+
+def test_git_undo_of_a_turn_with_commands_restores_and_names_the_extra_paths(repo2):
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    j.before_write("t1", "a.txt")
+    (repo2 / "a.txt").write_text("two\n")
+    j.note_command("t1")
+    (repo2 / "b.txt").write_text("changed by a command\n")
+    j.end_turn("t1")
+    res = j.undo()
+    assert (repo2 / "a.txt").read_text() == "one\n"
+    assert (repo2 / "b.txt").read_text() == "bee\n"
+    assert "also restored (changed by commands or outside Luna): b.txt" in res.note
+    assert "a.txt" not in res.note
+
+
+def test_git_undo_without_a_recorded_end_restores_only_tool_paths(repo2):
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    j.before_write("t1", "a.txt")
+    (repo2 / "a.txt").write_text("two\n")
+    (repo2 / "b.txt").write_text("user edit\n")
+    j.note_command("t1")  # even with commands: without an end, "now" is not the turn's end
+    res = j.undo()  # no end_turn: the process died mid-turn
+    assert (repo2 / "a.txt").read_text() == "one\n"
+    assert (repo2 / "b.txt").read_text() == "user edit\n"
+    assert "also restored" not in res.note

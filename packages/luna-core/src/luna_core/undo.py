@@ -66,6 +66,11 @@ def _changed(root: Path, a: str, b: str) -> dict[str, str] | None:
     return {parts[i + 1]: parts[i][:1] for i in range(0, len(parts) - 1, 2) if parts[i]}
 
 
+def _in_scope(path: str, scope: list[str]) -> bool:
+    """Whether ``path`` is one of ``scope`` or lies below one of them (a deleted folder)."""
+    return any(path == s or path.startswith(s.rstrip("/") + "/") for s in scope)
+
+
 def _fingerprint(image: dict) -> str:
     """Compact identity of a pre/post-image (content hash for files)."""
     if image.get("kind") == "bytes":
@@ -188,6 +193,8 @@ class UndoJournal:
             data = self._load()
             record: dict = {"turn_id": turn_id, "ts": time.time()}
             if self.is_git:
+                # paths touched by file tools; ``commands``: a shell command ran
+                record.update(paths=[], commands=False)
                 tree = _snapshot_tree(self.root)
                 if tree:
                     record["pre_tree"] = tree
@@ -222,15 +229,35 @@ class UndoJournal:
             self._save(data)
 
     def before_write(self, turn_id: str, rel: str) -> None:
-        """Keep ``rel``'s pre-image for this turn (file-journal mode only)."""
+        """Note that a file tool is about to change ``rel`` in this turn.
+
+        Git mode remembers the path (undo restores only such paths); the
+        file journal keeps ``rel``'s pre-image.
+        """
         with self._lock:
-            if self.is_git:
-                return
             data = self._load()
             turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
-            if turn is None or rel in turn.setdefault("files", {}):
+            if turn is None:
                 return
-            turn["files"][rel] = self._read(rel)
+            if self.is_git:
+                paths = turn.setdefault("paths", [])
+                if rel in paths:
+                    return
+                paths.append(rel)
+            else:
+                if rel in turn.setdefault("files", {}):
+                    return
+                turn["files"][rel] = self._read(rel)
+            self._save(data)
+
+    def note_command(self, turn_id: str) -> None:
+        """Note that a shell command (which may touch any file) ran in this turn."""
+        with self._lock:
+            data = self._load()
+            turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
+            if turn is None or turn.get("commands"):
+                return
+            turn["commands"] = True
             self._save(data)
 
     def _read(self, rel: str) -> dict:
@@ -293,16 +320,42 @@ class UndoJournal:
             return UndoResult(turn["turn_id"], note)
 
     def _undo_git(self, turn: dict) -> tuple[str, dict]:
+        """Undo in git mode.
+
+        Only paths touched by file tools are restored — the end tree is a
+        whole-tree snapshot and also holds what the user edited meanwhile.
+        A turn that ran shell commands restores its whole diff (commands
+        can change any file) and names every path beyond the file tools'.
+        Without a recorded end (process died mid-turn) "now" stands in for
+        it, and then only file-tool paths are restored.
+        """
         pre = turn.get("pre_tree")
-        # A turn without a recorded end (crash, older journal): its end is "now".
-        end = turn.get("end_tree") or _snapshot_tree(self.root)
-        record = {"turn_id": turn["turn_id"], "pre_tree": pre, "post_tree": end}
+        paths = turn.get("paths")  # None: a journal from before paths were recorded
+        end = turn.get("end_tree")
+        commands = bool(turn.get("commands")) and end is not None
+        if end is None:
+            end = _snapshot_tree(self.root)
+        scope = None if commands or paths is None else paths
+        record = {
+            "turn_id": turn["turn_id"],
+            "pre_tree": pre,
+            "post_tree": end,
+            "scope": scope,
+            "paths": paths,
+            "commands": bool(turn.get("commands")),
+        }
         if not pre or not end:
             return "files could not be restored (no snapshot of the turn)", record
-        if pre == end:
+        result = self._apply_tree(end, pre, scope)
+        if result is None:
             return "no file changes in this turn", record
-        applied, skipped, failed = self._apply_tree(end, pre)
-        return _note("restored", applied, skipped, failed, "turn"), record
+        done, skipped, failed = result
+        note = _note("restored", len(done), skipped, failed, "turn")
+        if commands and paths is not None:
+            extra = sorted(p for p in done if not _in_scope(p, paths))
+            if extra:
+                note += f"; also restored (changed by commands or outside Luna): {', '.join(extra)}"
+        return note, record
 
     def _undo_files(self, turn: dict) -> tuple[str, dict]:
         files = turn.get("files", {})
@@ -349,17 +402,19 @@ class UndoJournal:
             try:
                 if self.is_git:
                     pre, end = record.get("pre_tree"), record.get("post_tree")
-                    if pre and end and pre != end:
-                        applied, skipped, failed = self._apply_tree(pre, end)
-                        note = _note("re-applied", applied, skipped, failed, "undo")
-                    data["turns"].append(
-                        {
-                            "turn_id": record["turn_id"],
-                            "pre_tree": pre,
-                            "end_tree": end,
-                            "ts": time.time(),
-                        }
+                    result = (
+                        self._apply_tree(pre, end, record.get("scope")) if pre and end else None
                     )
+                    if result is not None:
+                        done, skipped, failed = result
+                        note = _note("re-applied", len(done), skipped, failed, "undo")
+                    turn = {"turn_id": record["turn_id"], "pre_tree": pre, "ts": time.time()}
+                    if end:
+                        turn["end_tree"] = end
+                    if record.get("paths") is not None:
+                        turn["paths"] = record["paths"]
+                    turn["commands"] = record.get("commands", False)
+                    data["turns"].append(turn)
                 else:
                     note, turn = self._redo_files(record)
                     data["turns"].append(turn)
@@ -392,21 +447,36 @@ class UndoJournal:
         turn = {"turn_id": record["turn_id"], "files": files, "end": end, "ts": time.time()}
         return _note("re-applied", applied, skipped, failed, "undo"), turn
 
-    def _apply_tree(self, source: str, target: str) -> tuple[int, list[str], list[str]]:
+    def _apply_tree(
+        self, source: str, target: str, scope: list[str] | None = None
+    ) -> tuple[list[str], list[str], list[str]] | None:
         """Move the paths that differ between ``source`` and ``target`` to ``target``.
 
-        A path is only touched while the worktree still holds its ``source``
-        content; one already at ``target`` is left as is, any other is
-        skipped (changed by someone else). Returns ``(applied, skipped, failed)``.
+        Only paths inside ``scope`` (``None``: all) are considered. A path is
+        only touched while the worktree still holds its ``source`` content;
+        one already at ``target`` is left as is, any other is skipped
+        (changed by someone else). Returns ``(applied paths, skipped,
+        failed)``, or ``None`` when no path in scope differs.
         """
+        unavailable: tuple[list[str], list[str], list[str]] = (
+            [],
+            [],
+            ["(no snapshot of the worktree)"],
+        )
         paths = _changed(self.root, source, target)
+        if paths is None:
+            return unavailable
+        if scope is not None:
+            paths = {p: st for p, st in paths.items() if _in_scope(p, scope)}
+        if not paths:
+            return None
         current = _snapshot_tree(self.root)
-        if paths is None or current is None:
-            return 0, [], ["(no snapshot of the worktree)"]
+        if current is None:
+            return unavailable
         moved = _changed(self.root, source, current)
         pending = _changed(self.root, current, target)
         if moved is None or pending is None:
-            return 0, [], ["(no snapshot of the worktree)"]
+            return unavailable
         skipped = [p for p in paths if p in moved and p in pending]
         todo = [p for p in paths if p not in moved]
         restore = [p for p in todo if paths[p] != "D"]
@@ -424,7 +494,7 @@ class UndoJournal:
                     path.unlink()
             except OSError:
                 failed.append(rel)
-        return len(todo) - len(failed), skipped, failed
+        return [p for p in todo if p not in failed], skipped, failed
 
     def diff(self) -> str:
         """Unified diff of everything this session changed."""

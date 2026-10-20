@@ -104,6 +104,7 @@ def test_undo_also_reverts_files(log, tmp_path):
     s.append("turn_started", {"turn_id": "t1"})
     s.undo_journal.begin_turn("t1")
     s.append("user", {"message": message_to_dict(Message.user("edit"))})
+    s.undo_journal.before_write("t1", "f.txt")  # what the loop does before a file tool
     (tmp_path / "f.txt").write_text("two")
     res = s.undo()
     assert res.turn_id == "t1" and (tmp_path / "f.txt").read_text() == "one" and s.messages() == []
@@ -135,12 +136,14 @@ def test_undo_skips_a_ghost_journal_record_between_two_real_turns(log, tmp_path)
             "usage": Usage(1, 1).to_dict(),
         },
     )
+    s.undo_journal.before_write("t1", "f.txt")
     (tmp_path / "f.txt").write_text("one")
 
     # a turn cancelled before any message was logged: a journal record with
     # no visible turn in the conversation.
     s.append("turn_started", {"turn_id": "ghost"})
     s.undo_journal.begin_turn("ghost")
+    s.undo_journal.before_write("ghost", "f.txt")
     (tmp_path / "f.txt").write_text("ghost")
 
     s.append("turn_started", {"turn_id": "t2"})
@@ -153,6 +156,7 @@ def test_undo_skips_a_ghost_journal_record_between_two_real_turns(log, tmp_path)
             "usage": Usage(1, 1).to_dict(),
         },
     )
+    s.undo_journal.before_write("t2", "f.txt")
     (tmp_path / "f.txt").write_text("two")
 
     res2 = s.undo()
@@ -180,6 +184,7 @@ def test_redo_reports_the_journals_note(log, tmp_path):
             "usage": Usage(1, 1).to_dict(),
         },
     )
+    s.undo_journal.before_write("t1", "f.txt")
     (tmp_path / "f.txt").write_text("two")
     s.undo()
     res = s.redo()

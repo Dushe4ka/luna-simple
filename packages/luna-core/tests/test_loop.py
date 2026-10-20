@@ -555,3 +555,108 @@ async def test_undo_after_a_turn_skips_a_file_the_user_edited_since(tmp_path):
     assert (tmp_path / "n.py").read_text() == "x = 3  # user\n"
     assert "skipped n.py: changed since the turn" in res.note
     log.close()
+
+
+# -- re-review R1: git-mode undo restores file-tool paths only, unless a
+# -- command ran — then the extra paths are restored and named --
+
+
+def _git_project(tmp_path):
+    import subprocess
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    (root / "c.txt").write_text("user file\n")
+    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True, capture_output=True)
+    log = EventLog(tmp_path / "db" / "sessions.db")
+    return root, log, Session.create(log, str(root))
+
+
+async def test_git_undo_leaves_a_file_edited_outside_luna_during_the_turn(tmp_path):
+    root, log, session = _git_project(tmp_path)
+
+    @tool()
+    async def editor() -> str:
+        """Stands in for the user's editor saving a file while the turn runs."""
+        (root / "c.txt").write_text("saved in the editor\n")
+        return "ok"
+
+    script = [
+        Message.assistant(
+            [
+                ToolCall("c1", "write_file", {"file_path": "n.txt", "content": "new\n"}),
+                ToolCall("c2", "editor", {}),
+            ]
+        ),
+        FakeProvider.text("done"),
+    ]
+    agent = agent_for(root, script, policy=Policy(workspace=Workspace(root), yolo=True))
+    agent.add_tool(editor)
+    await collect(agent, session)
+    res = session.undo()
+    assert not (root / "n.txt").exists()
+    assert (root / "c.txt").read_text() == "saved in the editor\n"
+    assert "also restored" not in res.note
+    log.close()
+
+
+async def test_git_undo_after_a_command_restores_and_names_its_files(tmp_path):
+    root, log, session = _git_project(tmp_path)
+    script = [
+        FakeProvider.call("execute", {"command": "printf changed > c.txt"}, "c1"),
+        FakeProvider.text("done"),
+    ]
+    agent = agent_for(root, script, policy=Policy(workspace=Workspace(root), yolo=True))
+    await collect(agent, session)
+    assert (root / "c.txt").read_text() == "changed"
+    res = session.undo()
+    assert (root / "c.txt").read_text() == "user file\n"
+    assert "also restored (changed by commands or outside Luna): c.txt" in res.note
+    log.close()
+
+
+async def test_turn_end_is_recorded_after_an_unexpected_error(tmp_path):
+    log = EventLog(tmp_path / "db" / "s.db")
+    session = Session.create(log, str(tmp_path))
+
+    class Broken:
+        name = "fake"
+
+        async def stream(self, request):
+            raise RuntimeError("provider bug")
+            yield  # pragma: no cover
+
+    agent = Agent(Broken(), "fake-model", workspace=Workspace(tmp_path))
+    with pytest.raises(RuntimeError):
+        await collect(agent, session)
+    assert "end" in session.undo_journal._load()["turns"][-1]
+    log.close()
+
+
+async def test_turn_end_on_close_runs_off_the_event_loop_thread(tmp_path, monkeypatch):
+    import threading
+
+    from luna_core.undo import UndoJournal
+
+    log = EventLog(tmp_path / "db" / "s.db")
+    session = Session.create(log, str(tmp_path))
+    threads = []
+    real = UndoJournal.end_turn
+
+    def spy(self, turn_id):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(self, turn_id)
+
+    monkeypatch.setattr(UndoJournal, "end_turn", spy)
+    agent = agent_for(tmp_path, [FakeProvider.text("hello")])
+    run = agent.run(session, "hi")
+    async for event in run:
+        if isinstance(event, TextDelta):
+            break
+    await run.aclose()
+    assert threads == [False]
+    assert "end" in session.undo_journal._load()["turns"][-1]
+    log.close()

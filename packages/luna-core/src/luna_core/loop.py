@@ -279,8 +279,6 @@ class Agent:
                         await asyncio.to_thread(self._end_journal, session, turn_id)
                     yield event
         except (asyncio.CancelledError, GeneratorExit):
-            if not ended:
-                self._end_journal(session, turn_id)
             # A consumer closing us right after the final event is not a cancel.
             if not ended and not any(
                 r.type == "cancelled" and r.payload.get("turn_id") == turn_id
@@ -289,7 +287,20 @@ class Agent:
                 session.append("cancelled", {"turn_id": turn_id})
             raise
         finally:
-            session._end_turn()
+            try:
+                if not ended:  # cancelled, closed or crashed: still record the end
+                    await self._end_journal_off_loop(session, turn_id)
+            finally:
+                session._end_turn()
+
+    async def _end_journal_off_loop(self, session: Session, turn_id: str) -> None:
+        """``_end_journal`` in a worker thread (the git snapshot must not block the loop)."""
+        try:
+            await asyncio.to_thread(self._end_journal, session, turn_id)
+        except asyncio.CancelledError:
+            pass  # cancelled again: the worker thread still finishes the snapshot
+        except RuntimeError:  # no running loop to await on (closed from a finaliser)
+            self._end_journal(session, turn_id)
 
     @staticmethod
     def _end_journal(session: Session, turn_id: str) -> None:
@@ -709,6 +720,9 @@ class Agent:
                         rel = self.workspace.rel(self.workspace.resolve(raw))
                     if rel is not None:
                         await asyncio.to_thread(journal.before_write, journal_turn, rel)
+                elif journal is not None and (tool.name == "execute" or tool.mutating):
+                    # a command (or a mutating extension tool) may change any file
+                    await asyncio.to_thread(journal.note_command, journal_turn)
                 return await tool.invoke(ctx, args)
         except asyncio.CancelledError:
             return ToolOutput.error("cancelled by the user")
