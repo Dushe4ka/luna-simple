@@ -10,7 +10,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.core.store import conversations, is_conversation
+from luna.core.store import conversations
 from luna.server.trust import trust_error
 
 _MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
@@ -62,13 +62,7 @@ def relative_time(updated: float, *, now: float | None = None) -> str:
 
 def _conversations(log, workdir: str | None) -> list:
     """Top-level sessions that hold a conversation (``store.conversations`` semantics)."""
-    if workdir is not None:
-        return conversations(log, workdir)
-    return [
-        info
-        for info in log.list(None)
-        if is_conversation(info) and any(r.type == "user" for r in log.records(info.id))
-    ]
+    return conversations(log, workdir)
 
 
 async def list_sessions(request: Request) -> JSONResponse:

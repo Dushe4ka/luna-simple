@@ -65,22 +65,31 @@ def make_title(text: str) -> str:
     return clean if len(clean) <= _TITLE_MAX else clean[:_TITLE_MAX] + "…"
 
 
+#: ``EventLog.list`` limit meaning "every session" (rows are small; filtering comes after).
+_ALL = 1_000_000_000
+
+
 def is_conversation(info) -> bool:
     """Top-level session or a fork (a fork is a conversation of its own); not a child run."""
     return info.parent_id is None or info.meta.get("kind") == "fork"
 
 
-def conversations(log: EventLog, workdir: str, limit: int = 100) -> list[SessionInfo]:
-    """Top-level sessions of ``workdir`` that hold a conversation, newest first.
+def conversations(log: EventLog, workdir: str | None, limit: int = 100) -> list[SessionInfo]:
+    """Top-level sessions of ``workdir`` (every folder when ``None``) that hold a conversation.
+
+    Newest first.
 
     Subagent/background children and sessions nobody typed into (an
     empty REPL start or ``/new``) are skipped, so ``-c`` and the pickers
-    land on real work.
+    land on real work. Filtering happens before ``limit`` is applied: many
+    newer child runs must not push real conversations out of the list.
     """
     out = []
-    for info in log.list(workdir, limit=limit):
+    for info in log.list(workdir, limit=_ALL):
         if is_conversation(info) and any(r.type == "user" for r in log.records(info.id)):
             out.append(info)
+            if len(out) >= limit:
+                break
     return out
 
 

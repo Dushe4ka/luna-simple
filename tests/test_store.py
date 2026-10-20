@@ -86,3 +86,19 @@ def test_descendants_are_children_before_parents_and_skip_forks():
     fork = log.create("/w", parent_id=root, meta={"kind": "fork"})
     assert store.descendants(log, root) == [grand, child]
     assert fork not in store.descendants(log, root)
+
+
+def test_conversations_survive_many_newer_child_runs(tmp_path):
+    from luna.server.sessions import _conversations
+
+    log = EventLog(tmp_path / "s.db")
+    wd = str(tmp_path)
+    real = log.create(wd, title="real")
+    log.append(real, "user", {"message": {"role": "user", "content": []}})
+    for _ in range(120):
+        child = log.create(wd, parent_id=real, meta={"kind": "subagent"})
+        log.append(child, "user", {"message": {"role": "user", "content": []}})
+    assert [i.id for i in store.conversations(log, wd)] == [real]
+    assert [i.id for i in _conversations(log, None)] == [real]
+    assert len(store.conversations(log, wd, limit=1)) == 1
+    log.close()
