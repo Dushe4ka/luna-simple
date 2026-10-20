@@ -157,3 +157,46 @@ def test_append_rule_raises_on_unparsable_file(tmp_path):
     with pytest.raises(ValueError):
         append_rule(bad, "execute:ls *")
     assert bad.read_text() == before
+
+
+# -- final review I3: a commented [permissions] header and broken rule files --
+
+
+def test_append_rule_handles_a_permissions_header_with_a_comment(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[model]\nname = "x"\n\n[ permissions ]  # mine\ndeny = ["execute:rm *"]\n')
+    append_rule(cfg, "execute:ls *")
+    data = tomllib.loads(cfg.read_text())
+    assert data["model"]["name"] == "x"
+    assert data["permissions"] == {"allow": ["execute:ls *"], "deny": ["execute:rm *"]}
+
+
+def test_append_rule_refuses_a_splice_that_would_break_the_file(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('permissions.deny = ["execute:rm *"]\n\n[model]\nname = "x"\n')
+    before = cfg.read_text()
+    with pytest.raises(ValueError):
+        append_rule(cfg, "execute:ls *")
+    assert cfg.read_text() == before
+
+
+def test_rules_load_fails_closed_on_a_broken_file(tmp_path):
+    from luna_core.policy import RulesFileError
+
+    bad = tmp_path / "permissions.toml"
+    bad.write_text('deny = ["execute:rm *"\n')
+    with pytest.raises(RulesFileError) as info:
+        Rules.load([bad])
+    assert str(bad) in str(info.value)
+    wrong = tmp_path / "wrong.toml"
+    wrong.write_text('permissions = "deny everything"\n')
+    with pytest.raises(RulesFileError):
+        Rules.load([wrong])
+    assert Rules.load([tmp_path / "missing.toml"]).deny == []
+
+
+def test_policy_check_survives_an_invalid_path(tmp_path):
+    ws = Workspace(tmp_path)
+    policy = Policy(Rules(deny=["write_file:.env"]), workspace=ws)
+    verdict = policy.check(write_file, {"file_path": "a\x00b", "content": "x"})
+    assert verdict is not None

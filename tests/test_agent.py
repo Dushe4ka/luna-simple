@@ -339,3 +339,16 @@ async def test_a_failing_build_after_mcp_start_closes_the_manager(tmp_path, monk
     with pytest.raises(RuntimeError, match="compactor exploded"):
         await build_agent(LunaConfig(workdir=str(tmp_path)), provider=FakeProvider([]))
     assert calls == ["start", "close"]
+
+
+async def test_a_broken_project_rules_file_fails_the_build(tmp_path, fake_provider):
+    """Deny rules must never vanish silently: an invalid rules file stops the build."""
+    from luna.config.providers import LunaConfigError
+
+    rules = tmp_path / ".luna" / "permissions.toml"
+    rules.parent.mkdir()
+    rules.write_text('deny = ["execute:rm *"\n')
+    with pytest.raises(LunaConfigError, match="permissions.toml"):
+        await build_agent(
+            LunaConfig(workdir=str(tmp_path)), provider=fake_provider(FakeProvider.text("x"))
+        )

@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 
+from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
 from luna_core.tools.base import Tool, args_preview
-from luna_core.workspace import OutsideWorkspace, Workspace
+from luna_core.workspace import Workspace
 
 MUTATING_FILE_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_APPROVAL = frozenset({"write_file", "edit_file", "delete", "execute"})
@@ -77,13 +78,18 @@ class Rules:
 
     @classmethod
     def load(cls, paths: list[Path]) -> Rules:
-        """Merge rule files in order (missing or broken files are skipped)."""
+        """Merge rule files in order; a missing file is skipped.
+
+        Fails closed: an unreadable or invalid file raises
+        :class:`RulesFileError` instead of being skipped, because skipping
+        it would silently drop its deny rules.
+        """
         rules = cls()
         for path in paths:
             data = _read(Path(path))
             table = data.get("permissions", data)
             if not isinstance(table, dict):
-                continue
+                raise RulesFileError(f"{path}: [permissions] must be a table")
             for kind in ("allow", "deny", "ask"):
                 values = table.get(kind, [])
                 if isinstance(values, list):
@@ -92,15 +98,24 @@ class Rules:
         return rules
 
 
+class RulesFileError(LunaCoreError):
+    """A permission rules file exists but cannot be read or parsed."""
+
+
 def _read(path: Path) -> dict:
     try:
         with path.open("rb") as fh:
             return tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
+    except FileNotFoundError:
         return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RulesFileError(
+            f"cannot load permission rules from {path}: {exc} "
+            "(fix or remove the file; its deny rules would otherwise be lost)"
+        ) from exc
 
 
-_PERM_HEADER = re.compile(r"^\[permissions\][ \t]*$", re.MULTILINE)
+_PERM_HEADER = re.compile(r"^\[\s*permissions\s*\][ \t]*(#.*)?$", re.MULTILINE)
 _NEXT_HEADER = re.compile(r"^\[", re.MULTILINE)
 
 
@@ -135,8 +150,15 @@ def append_rule(path: Path, rule: str, kind: str = "allow") -> Path:
     if rule not in lists[kind]:
         lists[kind].append(rule)
     block = _permissions_block(lists)
+    text = block if not foreign else _splice_permissions(raw, block)
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(
+            f"cannot add a rule to {path} without breaking it ({exc}); edit it by hand"
+        ) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(block if not foreign else _splice_permissions(raw, block), encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -316,7 +338,7 @@ class Policy:
             return _relpath(raw)
         try:
             return self.workspace.rel(self.workspace.resolve(raw))
-        except OutsideWorkspace:
+        except (ToolError, OSError, ValueError):  # OutsideWorkspace, InvalidPath, ...
             return _relpath(raw)
 
     def check(self, tool: Tool, args: dict) -> Verdict:

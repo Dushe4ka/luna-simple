@@ -14,7 +14,7 @@ from luna_core.hooks import Hooks, load_command_hooks
 from luna_core.loop import Agent
 from luna_core.mcp import MCPManager
 from luna_core.memory import remember
-from luna_core.policy import DEFAULT_APPROVAL, Policy, Rules, append_rule
+from luna_core.policy import DEFAULT_APPROVAL, Policy, Rules, RulesFileError, append_rule
 from luna_core.providers.base import Provider
 from luna_core.roles import ModelRoles
 from luna_core.sandbox import DockerSandbox, LocalSandbox
@@ -26,7 +26,12 @@ from luna_core.workspace import Workspace
 
 from luna.config.config import LunaConfig, config_dir
 from luna.config.prompts import LUNA_SYSTEM_PROMPT
-from luna.config.providers import ProviderSpec, build_provider, merge_providers
+from luna.config.providers import (
+    LunaConfigError,
+    ProviderSpec,
+    build_provider,
+    merge_providers,
+)
 from luna.extensions import lspnav
 from luna.extensions import mcp as mcp_mod
 from luna.extensions.extension_tools import EXTENSION_APPROVALS, EXTENSION_TOOLS
@@ -115,8 +120,12 @@ async def build_agent(
             "use temperature, max_tokens and reasoning"
         )
     project_rules = workdir / ".luna" / "permissions.toml"
+    try:
+        rules = Rules.load([config_dir() / "config.toml", project_rules])
+    except RulesFileError as exc:  # fail closed: never run without the deny rules
+        raise LunaConfigError(str(exc)) from exc
     policy = Policy(
-        Rules.load([config_dir() / "config.toml", project_rules]),
+        rules,
         approval_tools=DEFAULT_APPROVAL | EXTENSION_APPROVALS,
         yolo=config.yolo,
         plan_mode=plan_flag or False,
