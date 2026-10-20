@@ -7,7 +7,7 @@
 `# [нужна сеть]` и т. п. показывают код, который нельзя выполнить без ключей,
 Docker или внешних серверов.
 
-Англоязычные страницы (`quickstart.md`, `concepts.md`, `providers.md`, `tools.md`,
+Страницы по отдельным темам (`quickstart.md`, `concepts.md`, `providers.md`, `tools.md`,
 `approvals-and-hooks.md`, `sessions.md`, `subagents-and-background.md`,
 `mcp-and-acp.md`) остаются справочником; при расхождении с кодом верен код.
 

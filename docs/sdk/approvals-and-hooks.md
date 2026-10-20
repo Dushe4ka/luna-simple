@@ -1,32 +1,32 @@
-# Approvals and hooks
+# Подтверждения и хуки
 
-## Policy
+## Политика
 
-`Policy` decides for every tool call whether to run it, refuse it, or ask a human:
+`Policy` для каждого вызова инструмента решает: выполнить, отказать или спросить человека:
 
 ```python
 from luna_core import Agent, Policy, Rules, Workspace
 
 workspace = Workspace(".")
 policy = Policy(
-    Rules.load([...]),                 # list of TOML paths with a [permissions] table
+    Rules.load([...]),                 # список путей к TOML с таблицей [permissions]
     workspace=workspace,
-    yolo=False,                        # True skips approvals (deny rules still apply)
+    yolo=False,                        # True пропускает подтверждения (правила deny действуют)
 )
 agent = Agent(provider, model, workspace=workspace, policy=policy)
 ```
 
-- By default `write_file`, `edit_file`, `delete` and `execute` need approval
-  (`approval_tools`); reads run freely.
-- `Rules` come from `[permissions] allow = [...] / deny = [...]` entries such as
-  `"execute:pytest*"` or `"write:.env"`. Deny wins, even over `yolo`.
-- `plan_mode=True` (or a callable returning a bool) refuses every mutating call.
-- Writes and edits to a file that changed on disk since the agent last read or wrote it are
-  refused with a message asking it to read the file again (the stale-anchor check).
+- По умолчанию `write_file`, `edit_file`, `delete` и `execute` требуют подтверждения
+  (`approval_tools`); чтения выполняются свободно.
+- `Rules` берутся из записей `[permissions] allow = [...] / deny = [...]`, например
+  `"execute:pytest*"` или `"write:.env"`. Запрет главнее, даже `yolo`.
+- `plan_mode=True` (или вызываемый объект, возвращающий bool) отклоняет каждый изменяющий вызов.
+- Запись или правка файла, изменившегося на диске с момента, когда агент последний раз его читал
+  или писал, отклоняется с сообщением, просящим прочитать файл заново (проверка устаревшего якоря).
 
-## Answering approvals
+## Ответы на подтверждения
 
-When a call needs a decision the turn yields `NeedsApproval(request)` and then waits:
+Когда вызов требует решения, ход отдаёт `NeedsApproval(request)` и ждёт:
 
 ```python
 from luna_core import Decision, NeedsApproval
@@ -35,31 +35,31 @@ async for event in agent.run(session, text):
     if isinstance(event, NeedsApproval):
         r = event.request                          # call_id, name, args, description, suggested_rule
         session.decide(r.call_id, Decision.approve())
-        # Decision.approve(always="execute:pytest*")  also remembers the rule
-        # Decision.edit({"command": "pytest -q"})      run with changed arguments
-        # Decision.reject("not in this repo")          the model sees the message
+        # Decision.approve(always="execute:pytest*")  также запоминает правило
+        # Decision.edit({"command": "pytest -q"})      выполнить с изменёнными аргументами
+        # Decision.reject("not in this repo")          модель увидит сообщение
 ```
 
-A plain dict works too: `{"type": "approve"}`, `{"type": "edit", "args": {...}}`,
-`{"type": "reject", "message": "..."}`, with an optional `"always": "<rule>"`.
-Pass `persist_rule=fn` to `Policy` to store "always" rules (for example
-`luna_core.policy.append_rule(path, rule)` into `.luna/permissions.toml`).
+Подойдёт и обычный словарь: `{"type": "approve"}`, `{"type": "edit", "args": {...}}`,
+`{"type": "reject", "message": "..."}`, с необязательным `"always": "<rule>"`.
+Передайте `persist_rule=fn` в `Policy`, чтобы сохранять правила «всегда» (например,
+`luna_core.policy.append_rule(path, rule)` в `.luna/permissions.toml`).
 
-Pitfalls: **an unanswered approval keeps the turn waiting**; `session.cancel_turn()` (or
-closing the generator) abandons the whole batch and runs nothing from it. In
-`run_sync` without an `approve` callback approvals are rejected. Approvals from subagents
-are routed through the parent session, so answer them on the session you ran.
-See `examples/approvals_web.py` for approvals over HTTP.
+Подводные камни: **неотвеченное подтверждение оставляет ход в ожидании**; `session.cancel_turn()`
+(или закрытие генератора) отбрасывает всю пачку и ничего из неё не выполняет. В `run_sync` без
+колбэка `approve` подтверждения отклоняются. Подтверждения субагентов идут через родительскую
+сессию, поэтому отвечайте на них в той сессии, которую вы запустили.
+Подтверждения по HTTP показаны в `examples/approvals_web.py`.
 
-## Hooks
+## Хуки
 
-Hooks are callbacks at five points: `session_start`, `pre_tool`, `post_tool`, `turn_end`,
-`pre_compact`. Payload keys (plus `event`): `session_start` has `session_id`, `workdir`;
-`pre_tool` has `session_id`, `tool`, `args`; `post_tool` adds `ok` and `output`; `turn_end` has
-`session_id`, `turn_id`, `text`; `pre_compact` has `session_id`, `messages`. A `turn_end` hook
-returning `block=True` with a `message` does not stop the turn: it continues, with `message`
-added as a new user message (while `max_steps` allows). A blocking `pre_compact` hook skips
-the compaction.
+Хуки это колбэки в пяти точках: `session_start`, `pre_tool`, `post_tool`, `turn_end`,
+`pre_compact`. Ключи payload (плюс `event`): у `session_start` это `session_id`, `workdir`;
+у `pre_tool`: `session_id`, `tool`, `args`; `post_tool` добавляет `ok` и `output`; у `turn_end`:
+`session_id`, `turn_id`, `text`; у `pre_compact`: `session_id`, `messages`. Хук `turn_end`,
+вернувший `block=True` с `message`, ход не останавливает: ход продолжается, а `message`
+добавляется как новое сообщение пользователя (пока позволяет `max_steps`). Блокирующий хук
+`pre_compact` пропускает сжатие.
 
 ```python
 from luna_core import Agent, HookResult, Hooks
@@ -77,27 +77,28 @@ hooks.add("pre_tool", no_force_push, match="execute", timeout=5)
 agent = Agent(provider, model, hooks=hooks)
 ```
 
-`HookResult` fields: `block` + `message` (the message goes back to the model), `args`
-(replace the tool arguments), `context` (text added to the conversation), `notices`.
-Hooks run in registration order; the first one that blocks stops the chain. An exception or
-timeout becomes a notice and never blocks the turn.
+Поля `HookResult`: `block` + `message` (сообщение возвращается модели), `args`
+(заменяют аргументы инструмента), `context` (текст, добавляемый в диалог), `notices`.
+Хуки выполняются в порядке регистрации; первый заблокировавший прерывает цепочку. Исключение
+или тайм-аут превращается в уведомление и ход не блокирует.
 
-### Command hooks from config
+### Командные хуки из конфигурации
 
 ```toml
 [[hooks]]
 event = "post_tool"
-match = "write_file"      # optional tool-name glob
+match = "write_file"      # необязательный glob по имени инструмента
 command = "ruff format ."
 timeout = 30
 ```
 
-`luna_core.hooks.load_command_hooks(entries, cwd)` turns such entries into a `Hooks`;
-merge with `hooks.extend(other)`. The command gets the JSON payload on stdin. Exit 0
-continues (stdout may add context), exit 2 blocks (stderr goes to the model), anything else
-is a warning. A timeout kills the whole process group.
+`luna_core.hooks.load_command_hooks(entries, cwd)` превращает такие записи в `Hooks`;
+объединяйте через `hooks.extend(other)`. Команда получает JSON payload на stdin. Код выхода 0
+продолжает ход (stdout может добавить контекст), код 2 блокирует (stderr уходит модели), любой
+другой считается предупреждением. Тайм-аут убивает всю группу процессов.
 
-## Cancelling
+## Отмена
 
-`session.cancel_turn()` stops the in-flight request and running tools (process groups are
-killed), records `Cancelled` and patches dangling tool calls so the next turn works.
+`session.cancel_turn()` останавливает текущий запрос и работающие инструменты (группы процессов
+убиваются), записывает `Cancelled` и исправляет повисшие вызовы инструментов, чтобы следующий
+ход работал.

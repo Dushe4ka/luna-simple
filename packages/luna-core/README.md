@@ -1,24 +1,24 @@
-Русское руководство по SDK: [docs/sdk/README.ru.md](../../docs/sdk/README.ru.md)
+Полное руководство одной страницей: [docs/sdk/README.ru.md](../../docs/sdk/README.ru.md). Страницы в `docs/sdk/` служат справочником по отдельным темам.
 
 # luna-core
 
-The agent runtime behind [Luna](https://github.com/Dushe4ka/luna-simple), usable as an SDK:
-an async agent loop, built-in coding tools, event-log sessions, provider adapters
-(OpenAI-compatible, OpenAI Responses, Anthropic, Google, GigaChat), approvals,
-hooks, sandboxes, subagents, background agents, MCP and ACP. No LangChain, no vendor SDKs.
+Рантайм агента, на котором построена [Luna](https://github.com/Dushe4ka/luna-simple), пригодный как SDK:
+асинхронный цикл агента, встроенные инструменты для кода, сессии в виде журнала событий, адаптеры
+провайдеров (OpenAI-совместимые, OpenAI Responses, Anthropic, Google, GigaChat), подтверждения,
+хуки, песочницы, субагенты, фоновые агенты, MCP и ACP. Без LangChain и вендорских SDK.
 
-## Install
+## Установка
 
 ```bash
 pip install luna-core                 # httpx, httpx-sse, pyyaml
-pip install "luna-core[mcp]"          # MCP servers as tools
-pip install "luna-core[acp]"          # serve over ACP (Zed, JetBrains)
+pip install "luna-core[mcp]"          # MCP-серверы как инструменты
+pip install "luna-core[acp]"          # отдавать по ACP (Zed, JetBrains)
 pip install "luna-core[lsp,websearch]"
 ```
 
 Python 3.11+.
 
-## Minimal example
+## Минимальный пример
 
 ```python
 import asyncio
@@ -47,14 +47,15 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Tools that change files or run commands ask for approval; answer a `NeedsApproval`
-event with `session.decide(...)` (see the approvals page) or the turn waits.
+Инструменты, которые меняют файлы или запускают команды, запрашивают подтверждение; ответьте на
+событие `NeedsApproval` через `session.decide(...)` (см. страницу о подтверждениях), иначе ход
+будет ждать.
 
-## Documentation
+## Документация
 
-- SDK guides: [`docs/sdk/`](../../docs/sdk/quickstart.md) (quickstart, concepts, providers,
-  tools, sessions, approvals and hooks, subagents and background work, MCP and ACP)
-- Wire protocol and event schema: [`docs/protocol.md`](../../docs/protocol.md)
-- Runnable examples (offline with `--fake`): [`examples/`](../../examples)
+- Руководства по SDK: [`docs/sdk/`](../../docs/sdk/quickstart.md) (быстрый старт, понятия,
+  провайдеры, инструменты, сессии, подтверждения и хуки, субагенты и фоновая работа, MCP и ACP)
+- Wire-протокол и схема событий: [`docs/protocol.md`](../../docs/protocol.md)
+- Запускаемые примеры (офлайн с `--fake`): [`examples/`](../../examples)
 
-The public API is the set of names in `luna_core.__all__`; it is semver-stable from 0.1.0.
+Публичный API это набор имён из `luna_core.__all__`; он стабилен по semver начиная с 0.1.0.

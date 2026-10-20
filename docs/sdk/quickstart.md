@@ -1,23 +1,24 @@
-Русское руководство по SDK: [README.ru.md](README.ru.md)
+Полное руководство одной страницей: [README.ru.md](README.ru.md). Эти страницы служат справочником по отдельным темам.
 
-# Quickstart
+# Быстрый старт
 
-`luna-core` is an async agent runtime: you give it a model provider, a folder and
-a few tools, and it runs the agent loop (model call, tool calls, approvals, repeat)
-while streaming typed events to you. Everything below is exported from `luna_core`.
+`luna-core` это асинхронный рантайм агента: вы передаёте ему провайдера модели, папку и
+несколько инструментов, а он запускает цикл агента (запрос к модели, вызовы инструментов,
+подтверждения, повтор) и потоково отдаёт вам типизированные события. Всё, что показано ниже,
+экспортируется из `luna_core`.
 
-## Install
+## Установка
 
 ```bash
 pip install luna-core                  # httpx, httpx-sse, pyyaml
-pip install "luna-core[mcp]"           # MCP servers as tools
-pip install "luna-core[acp]"           # serve the agent to editors over ACP
-pip install "luna-core[lsp,websearch]" # optional extras
+pip install "luna-core[mcp]"           # MCP-серверы как инструменты
+pip install "luna-core[acp]"           # отдавать агента редакторам по ACP
+pip install "luna-core[lsp,websearch]" # необязательные extras
 ```
 
-Python 3.11+. There are no vendor SDKs: providers talk to the HTTP APIs directly.
+Python 3.11+. Вендорских SDK нет: провайдеры обращаются к HTTP API напрямую.
 
-## One turn
+## Один ход
 
 ```python
 import asyncio
@@ -29,7 +30,7 @@ from luna_core import (
 
 
 async def main() -> None:
-    provider, model = providers.resolve("anthropic")  # reads ANTHROPIC_API_KEY
+    provider, model = providers.resolve("anthropic")  # читает ANTHROPIC_API_KEY
     workspace = Workspace(".")
     agent = Agent(provider, model, workspace=workspace, policy=Policy(workspace=workspace))
     log = EventLog(".luna/example.db")
@@ -48,21 +49,21 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Run it offline: `python examples/minimal_agent.py --fake --workdir .` replaces the
-provider with a scripted `FakeProvider`.
+Запуск офлайн: `python examples/minimal_agent.py --fake --workdir .` подменяет
+провайдера скриптовым `FakeProvider`.
 
-## Non-async callers
+## Синхронный вызов
 
-`agent.run_sync(session, text, approve=callback)` returns the list of events;
-`approve` receives an `ApprovalRequest` and returns a `Decision`. Without a callback
-any approval is rejected.
+`agent.run_sync(session, text, approve=callback)` возвращает список событий;
+`approve` получает `ApprovalRequest` и возвращает `Decision`. Без колбэка
+любое подтверждение отклоняется.
 
-## Where next
+## Что дальше
 
-- [concepts](concepts.md) for how the pieces fit together
+- [concepts](concepts.md): как устроены части вместе
 - [providers](providers.md), [tools](tools.md), [sessions](sessions.md)
-- [approvals and hooks](approvals-and-hooks.md)
-- [subagents and background work](subagents-and-background.md)
-- [MCP and ACP](mcp-and-acp.md)
-- [wire protocol](../protocol.md) when you consume events from another language
-- runnable programs in `examples/`
+- [подтверждения и хуки](approvals-and-hooks.md)
+- [субагенты и фоновая работа](subagents-and-background.md)
+- [MCP и ACP](mcp-and-acp.md)
+- [wire-протокол](../protocol.md), если вы читаете события из другого языка
+- запускаемые программы в `examples/`

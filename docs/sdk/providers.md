@@ -1,17 +1,17 @@
-# Providers
+# Провайдеры
 
-A provider is any object with a `name` and an async generator `stream(request)` that
-yields model events. Five adapters ship with the core, all on plain `httpx`:
+Провайдер это любой объект с `name` и асинхронным генератором `stream(request)`, который
+отдаёт события модели. В ядре пять адаптеров, все на чистом `httpx`:
 
-| API | Adapter | Used for |
+| API | Адаптер | Для чего |
 |---|---|---|
-| `anthropic` | `AnthropicMessages` | Claude (cache breakpoints, thinking signatures) |
-| `openai_responses` | `OpenAIResponses` | OpenAI reasoning models |
+| `anthropic` | `AnthropicMessages` | Claude (точки кеша, подписи рассуждений) |
+| `openai_responses` | `OpenAIResponses` | reasoning-модели OpenAI |
 | `openai_chat` | `OpenAIChat` | Chat Completions: DeepSeek, Groq, OpenRouter, Ollama, xAI, Mistral, ... |
-| `google` | `GoogleGenAI` | native Gemini (thought signatures) |
-| `gigachat` | `GigaChat` | GigaChat (OAuth token exchange, optional CA bundle) |
+| `google` | `GoogleGenAI` | нативный Gemini (подписи мыслей) |
+| `gigachat` | `GigaChat` | GigaChat (обмен OAuth-токена, необязательный CA-бандл) |
 
-## Resolve a preset
+## Выбор пресета
 
 ```python
 from luna_core import providers
@@ -22,14 +22,14 @@ print(sorted(providers.PRESETS))
 ```
 
 `resolve(provider, *, model=None, api_key=None, base_url=None, options=None, custom=None, env=os.environ)`
-returns `(provider, model_id)`. A missing key raises `LunaCoreError` naming the environment
-variable. Built-in presets always win over `custom` entries with the same key.
-Presets: `anthropic`, `openai`, `openai_chat`, `deepseek`, `google`, `gigachat`, `yandex`,
-`ollama` (no key needed), `mistral`, `xai`, `groq`, `fireworks`, `together`, `openrouter`,
-`perplexity`, `cerebras` (see `providers.PRESETS`). Yandex AI Studio needs
-`YANDEX_FOLDER_ID`; GigaChat reads `GIGACHAT_SCOPE` and `GIGACHAT_CA_BUNDLE`.
+возвращает `(provider, model_id)`. Если ключа нет, бросается `LunaCoreError` с именем
+переменной окружения. Встроенные пресеты всегда главнее записей `custom` с тем же ключом.
+Пресеты: `anthropic`, `openai`, `openai_chat`, `deepseek`, `google`, `gigachat`, `yandex`,
+`ollama` (ключ не нужен), `mistral`, `xai`, `groq`, `fireworks`, `together`, `openrouter`,
+`perplexity`, `cerebras` (см. `providers.PRESETS`). Yandex AI Studio требует
+`YANDEX_FOLDER_ID`; GigaChat читает `GIGACHAT_SCOPE` и `GIGACHAT_CA_BUNDLE`.
 
-## Custom OpenAI-compatible endpoint
+## Свой OpenAI-совместимый эндпоинт
 
 ```python
 from luna_core.providers import Preset, resolve
@@ -38,7 +38,7 @@ mine = Preset("mylocal", "openai_chat", "local-model", None, "http://localhost:8
 provider, model = resolve("mylocal", custom={"mylocal": mine})
 ```
 
-## Write your own
+## Свой провайдер
 
 ```python
 from luna_core.events import StopEvent, TextDelta, UsageReport
@@ -54,22 +54,23 @@ class EchoProvider:
         yield StopEvent("end")                # end | tool_use | max_tokens | refusal
 ```
 
-`ModelRequest` carries `model`, `system`, `messages`, `tools` (specs), `max_tokens`,
-`temperature`, `reasoning` and `cache`. To call tools, emit `ToolCallStart(index, id, name)`
-followed by `ToolCallDelta(index, args_json)` and stop with `StopEvent("tool_use")`.
-See `examples/custom_provider.py`. Wrap the network part with
-`luna_core.providers.base.with_retries` and `post_sse` to get backoff and error mapping
-for free.
+`ModelRequest` содержит `model`, `system`, `messages`, `tools` (спецификации), `max_tokens`,
+`temperature`, `reasoning` и `cache`. Чтобы вызвать инструменты, отдайте `ToolCallStart(index, id, name)`,
+затем `ToolCallDelta(index, args_json)` и завершите `StopEvent("tool_use")`.
+См. `examples/custom_provider.py`. Сетевую часть оберните в
+`luna_core.providers.base.with_retries` и `post_sse`: повторы с задержкой и разбор ошибок
+получаются без дополнительной работы.
 
-## Scripted provider for tests
+## Скриптовый провайдер для тестов
 
-`FakeProvider([...])` replays a script; each item is a `Message` (`FakeProvider.text(...)`,
-`FakeProvider.call(name, args)`) or a list of model events, and it records the requests.
-It raises an assertion when the script is exhausted.
+`FakeProvider([...])` проигрывает сценарий; каждый элемент это `Message` (`FakeProvider.text(...)`,
+`FakeProvider.call(name, args)`) или список событий модели; запросы он записывает.
+Когда сценарий исчерпан, он поднимает assertion.
 
-## Pitfalls
+## Подводные камни
 
-- Retries happen only before the first event of a stream; a mid-stream failure ends the turn
-  with `TurnError`.
-- Model ids and prices live in `providers/__init__.py` and `data/models.toml`, never in
-  your agent logic; unknown models get safe defaults and no cost.
+- Повторы происходят только до первого события потока; сбой в середине потока завершает ход
+  событием `TurnError`.
+- Идентификаторы моделей и цены живут в `providers/__init__.py` и `data/models.toml`, а не
+  в логике вашего агента; для неизвестных моделей берутся безопасные значения по умолчанию и
+  стоимость не считается.

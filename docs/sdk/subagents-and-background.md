@@ -1,16 +1,16 @@
-# Subagents and background work
+# Субагенты и фоновая работа
 
-## Subagents
+## Субагенты
 
-The `task(description, subagent_type, background, isolation)` tool runs a child `Agent` in a
-fresh session branch with its own tool subset and model.
+Инструмент `task(description, subagent_type, background, isolation)` запускает дочерний `Agent` в
+новой ветке сессии со своим набором инструментов и своей моделью.
 
 ```python
 from luna_core import Agent, BackgroundTasks, SubagentRunner, builtin_tools, task_tool
 from luna_core.subagents import BUILTIN_SUBAGENTS, SubagentSpec
 from luna_core.tools.tasks import task_cancel_tool, task_status_tool
 
-specs = dict(BUILTIN_SUBAGENTS)          # researcher, reviewer (read-only), general-purpose
+specs = dict(BUILTIN_SUBAGENTS)          # researcher, reviewer (только чтение), general-purpose
 specs["tester"] = SubagentSpec(
     "tester", "Run the test suite and report failures.", "You run tests and report.",
     tools=("ls", "read_file", "grep", "execute"), unsafe=True,
@@ -21,34 +21,34 @@ agent = Agent(provider, model, tools=tools, services={"background": BackgroundTa
 ```
 
 - `SubagentSpec(name, description, prompt, tools, model, unsafe, isolation, max_steps, max_cost)`.
-  A subagent is read-only by default (`ls`, `read_file`, `glob`, `grep`). Mutating tools
-  (`write_file`, `edit_file`, `delete`, `execute`) in a `subagents.toml` entry require
-  `unsafe = true`, otherwise loading fails with `SubagentConfigError`. Only
-  `load_subagents` checks this; constructing `SubagentSpec` in code does not.
-- `load_subagents(files)` merges `[subagent.<name>]` tables from TOML files over the built-ins.
-- Several `task` calls in one assistant message run concurrently, up to `max_parallel`.
-- The child inherits policy, sandbox and hooks; its approvals are answered through the
-  parent session. `max_cost` and the parent's remaining budget are checked before spawning.
+  По умолчанию субагент работает только на чтение (`ls`, `read_file`, `glob`, `grep`). Изменяющие
+  инструменты (`write_file`, `edit_file`, `delete`, `execute`) в записи `subagents.toml` требуют
+  `unsafe = true`, иначе загрузка завершается `SubagentConfigError`. Это проверяет только
+  `load_subagents`; создание `SubagentSpec` в коде не проверяет.
+- `load_subagents(files)` накладывает таблицы `[subagent.<name>]` из TOML-файлов поверх встроенных.
+- Несколько вызовов `task` в одном сообщении ассистента выполняются параллельно, до `max_parallel`.
+- Дочерний агент наследует политику, песочницу и хуки; его подтверждения отвечаются через
+  родительскую сессию. `max_cost` и оставшийся бюджет родителя проверяются до запуска.
 
-### Worktree isolation
+### Изоляция через git worktree
 
-A writing subagent runs in its own git worktree on a `luna/sub/*` branch by default
-(`isolation="auto"`), so parallel edits never collide. The parent gets a summary plus the
-branch and diff to merge. Pitfalls:
+Пишущий субагент по умолчанию работает в собственном git worktree на ветке `luna/sub/*`
+(`isolation="auto"`), поэтому параллельные правки не сталкиваются. Родитель получает сводку,
+а также ветку и diff для слияния. Подводные камни:
 
-- Worktrees need git, and the project root must be the git toplevel; otherwise `auto` falls
-  back to the shared workspace (writes to one path are then serialised) and an explicit
-  `isolation="worktree"` is an error.
-- The snapshot taken for the worktree includes untracked, non-ignored files.
-- A child that changed nothing leaves no branch behind.
+- Для worktree нужен git, а корень проекта должен быть корнем git-репозитория; иначе `auto`
+  возвращается к общему рабочему пространству (записи в один путь тогда выполняются
+  последовательно), а явный `isolation="worktree"` это ошибка.
+- Снимок для worktree включает неотслеживаемые файлы, не попавшие под игнорирование.
+- Дочерний агент, ничего не изменивший, не оставляет после себя ветку.
 
-## Background tasks
+## Фоновые задачи
 
-`task(..., background=true)` returns a handle at once and the parent continues. When the
-child finishes, its result is appended to the log, `BackgroundDone` is delivered to
-`session.subscribe(fn)` listeners (via `session.notify`; it is not part of the `agent.run`
-stream) and the text is delivered to the parent **at its next step boundary** (not instantly). `task_status`
-and `task_cancel` inspect and stop a task; they only see tasks of their own session.
+`task(..., background=true)` сразу возвращает дескриптор, а родитель продолжает работу. Когда
+дочерний агент завершается, его результат дописывается в журнал, `BackgroundDone` доставляется
+слушателям `session.subscribe(fn)` (через `session.notify`; в поток `agent.run` он не входит), а
+текст доставляется родителю **на его ближайшей границе шага** (не мгновенно). `task_status`
+и `task_cancel` проверяют и останавливают задачу; они видят только задачи своей сессии.
 
 ```python
 from luna_core import BackgroundTasks
@@ -59,30 +59,30 @@ handle = background.start("label", lambda: some_coroutine(), session=session)
 info = await background.wait(handle)        # TaskInfo(status, summary, ...)
 ```
 
-Finished entries are kept (the most recent 200) for status queries.
+Завершённые записи сохраняются (последние 200) для запросов статуса.
 
-## Background sessions
+## Фоновые сессии
 
-`AgentManager` runs whole turns detached from any consumer, which is how a server keeps a run
-alive after the UI closes:
+`AgentManager` запускает целые ходы отдельно от любого потребителя; так сервер сохраняет запуск
+живым после закрытия интерфейса:
 
 ```python
 from luna_core import AgentManager
 
 manager = AgentManager(max_parallel=4)
 run = manager.start(agent, session, "refactor the parser", label="parser")
-unsubscribe = manager.subscribe(session.id, print)     # wire-event dicts; replay with events()
+unsubscribe = manager.subscribe(session.id, print)     # словари wire-событий; повтор через events()
 await manager.wait(session.id)
 ```
 
-`manager.events(session_id, after=-1)` replays buffered events for late attachers,
-`manager.cancel(session_id)` stops a run, `manager.list()` gives `RunInfo` per run. The Luna
-app exposes this as `luna run --background`, `/agents`, Ctrl+G in the TUI and
-`POST /sessions/{id}/background`.
+`manager.events(session_id, after=-1)` воспроизводит буферизованные события для опоздавших
+подписчиков, `manager.cancel(session_id)` останавливает запуск, `manager.list()` отдаёт `RunInfo`
+на каждый запуск. Приложение Luna открывает это как `luna run --background`, `/agents`, Ctrl+G в
+TUI и `POST /sessions/{id}/background`.
 
-## Model roles
+## Роли моделей
 
-`ModelRoles(fast=..., plan=..., vision=..., summarize=...)` maps roles to model ids (or
-`(provider, model)` pairs). Subagents default to `fast`, plan mode uses `plan`, image input
-falls back to `vision` when the main model cannot see, and compaction uses `summarize`.
-Pass it as `Agent(roles=...)`.
+`ModelRoles(fast=..., plan=..., vision=..., summarize=...)` сопоставляет роли идентификаторам
+моделей (или парам `(provider, model)`). Субагенты по умолчанию используют `fast`, режим плана
+использует `plan`, ввод изображений переключается на `vision`, когда основная модель не видит, а
+сжатие использует `summarize`. Передаётся как `Agent(roles=...)`.

@@ -1,7 +1,7 @@
-# Tools
+# Инструменты
 
-A `Tool` is a name, a description, a JSON schema and a function. Build one from a typed
-function with `@tool`:
+`Tool` это имя, описание, схема JSON и функция. Создайте его из типизированной функции
+через `@tool`:
 
 ```python
 from luna_core import Agent, ToolContext, builtin_tools, tool
@@ -14,38 +14,38 @@ def word_count(ctx: ToolContext, file_path: str) -> str:
     Args:
         file_path: Path of the file, relative to the project root.
     """
-    path = ctx.workspace.resolve(file_path)   # a path outside the project is a tool error
+    path = ctx.workspace.resolve(file_path)   # путь вне проекта это ошибка инструмента
     return f"{file_path}: {len(path.read_text('utf-8').split())} words"
 
 
 agent = Agent(provider, model, tools=[*builtin_tools(), word_count])
 ```
 
-- The first parameter named `ctx` receives a `ToolContext` and is hidden from the schema.
-- The docstring summary is the description; the `Args:` section documents parameters.
-- Supported annotations: `str`, `int`, `float`, `bool`, `dict`, `list[...]`,
-  `Literal[...]`, `X | None` / `Optional`. Others are rejected when the tool is defined.
-- Return a `str`, a `ToolOutput` (`ToolOutput.text(text, detail)` / `ToolOutput.error(text)`),
-  or raise `ToolError`; any exception becomes an error result for the model.
-- `@tool(mutating=True)` marks a tool that changes state. It does **not** by itself ask for approval: plan mode
-  refuses it, calls with the same `file_path`/`path` are serialised, and undo treats it as a
-  command that may have changed any file. To require approval add its name to
-  `Policy(approval_tools=...)` or an `ask` rule.
-- For dynamic tools (MCP), build `Tool(name, description, parameters, fn, raw=True)` where
-  `fn(ctx, args) -> ToolOutput`.
+- Первый параметр с именем `ctx` получает `ToolContext` и скрыт из схемы.
+- Первая строка докстринга становится описанием; секция `Args:` описывает параметры.
+- Поддерживаемые аннотации: `str`, `int`, `float`, `bool`, `dict`, `list[...]`,
+  `Literal[...]`, `X | None` / `Optional`. Остальные отклоняются при определении инструмента.
+- Верните `str`, `ToolOutput` (`ToolOutput.text(text, detail)` / `ToolOutput.error(text)`)
+  или бросьте `ToolError`; любое исключение становится для модели результатом с ошибкой.
+- `@tool(mutating=True)` помечает инструмент, меняющий состояние. Сам по себе он подтверждения
+  **не** требует: режим плана отклоняет такой вызов, вызовы с одним и тем же `file_path`/`path`
+  выполняются последовательно, а undo считает его командой, которая могла изменить любой файл.
+  Чтобы требовать подтверждение, добавьте его имя в `Policy(approval_tools=...)` или в правило `ask`.
+- Для динамических инструментов (MCP) создайте `Tool(name, description, parameters, fn, raw=True)`,
+  где `fn(ctx, args) -> ToolOutput`.
 
-`ToolContext` carries `workspace`, `sandbox`, `session_id`, `call_id`, `emit(event)`
-(push a `Notice` or other event into the turn), `state`, `cancel` (an `asyncio.Event`) and
-`services` (objects the app injects, for example `"agent"`, `"session"`, `"background"`).
+`ToolContext` содержит `workspace`, `sandbox`, `session_id`, `call_id`, `emit(event)`
+(отправить в ход `Notice` или другое событие), `state`, `cancel` (`asyncio.Event`) и
+`services` (объекты, которые подставляет приложение, например `"agent"`, `"session"`, `"background"`).
 
-## Built-in tools
+## Встроенные инструменты
 
-`builtin_tools()` returns `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`,
-`grep`, `execute` and `write_todos`. `task`, `task_status` and `task_cancel` come with
-[subagents](subagents-and-background.md). The schemas of the built-ins fit a budget of
-2 000 tokens (checked by `test_builtin_schemas_fit_the_token_budget`).
+`builtin_tools()` возвращает `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`,
+`grep`, `execute` и `write_todos`. `task`, `task_status` и `task_cancel` поставляются вместе с
+[субагентами](subagents-and-background.md). Схемы встроенных инструментов укладываются в бюджет
+2 000 токенов (проверяется тестом `test_builtin_schemas_fit_the_token_budget`).
 
-| Tool | Parameters |
+| Инструмент | Параметры |
 |---|---|
 | `ls` | `path` |
 | `read_file` | `file_path`, `offset`, `limit` |
@@ -57,16 +57,16 @@ agent = Agent(provider, model, tools=[*builtin_tools(), word_count])
 | `execute` | `command`, `timeout` |
 | `write_todos` | `todos` |
 
-## Workspace and paths
+## Workspace и пути
 
-`Workspace(root)` resolves agent paths: relative paths are project-relative, a leading
-`/` means the project root, and anything that resolves outside the root (including via
-`..` or symlinks) raises `OutsideWorkspace`, a `ToolError`. It is never silently remapped.
-`workspace.rel(path)` gives the project-relative POSIX form.
+`Workspace(root)` разрешает пути агента: относительные пути отсчитываются от проекта,
+ведущий `/` означает корень проекта, а всё, что оказывается за пределами корня (в том числе
+через `..` или симлинки), вызывает `OutsideWorkspace`, то есть `ToolError`. Путь никогда не
+подменяется молча. `workspace.rel(path)` даёт POSIX-вид относительно проекта.
 
-## Sandbox
+## Песочница
 
-`execute` runs through `Agent(sandbox=...)`:
+`execute` выполняется через `Agent(sandbox=...)`:
 
 ```python
 from luna_core import DockerSandbox, LocalSandbox
@@ -74,15 +74,15 @@ from luna_core import DockerSandbox, LocalSandbox
 agent = Agent(provider, model, sandbox=DockerSandbox(".", image="python:3.12-slim", network="none"))
 ```
 
-`LocalSandbox` runs on the host (default). `DockerSandbox` starts one container per session
-(`await sandbox.start()`, done lazily by the first command) with the project mounted at
-`/workspace`; `network` is `"none"` or `"bridge"`. Call `await agent.sandbox.close()` when
-done so the container is removed. A custom sandbox implements
-`async run(command, *, cwd, timeout, env, cancel)` and `async close()`.
+`LocalSandbox` работает на хосте (по умолчанию). `DockerSandbox` запускает один контейнер на
+сессию (`await sandbox.start()`, лениво выполняется первой командой) с проектом, смонтированным в
+`/workspace`; `network` равен `"none"` или `"bridge"`. По окончании вызовите
+`await agent.sandbox.close()`, чтобы контейнер был удалён. Своя песочница реализует
+`async run(command, *, cwd, timeout, env, cancel)` и `async close()`.
 
-## Pitfalls
+## Подводные камни
 
-- Large results are written to `.luna/tool-output/<id>.txt` and replaced by an excerpt.
-- Independent calls in one assistant message run concurrently; keep tools thread-safe or
-  mutate only through paths so per-path locking applies.
-- Tool timeouts end the call with an error result; they do not raise.
+- Большие результаты записываются в `.luna/tool-output/<id>.txt` и заменяются выдержкой.
+- Независимые вызовы в одном сообщении ассистента выполняются параллельно; делайте инструменты
+  потокобезопасными или меняйте состояние только через пути, чтобы работала блокировка по путям.
+- Тайм-аут инструмента завершает вызов результатом с ошибкой, исключение не бросается.

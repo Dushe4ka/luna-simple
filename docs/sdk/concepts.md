@@ -1,58 +1,59 @@
-# Concepts
+# Основные понятия
 
-| Concept | Class | Role |
+| Понятие | Класс | Роль |
 |---|---|---|
-| Provider | any object with `name` and `async stream(request)` | Talks to a model API and yields model events |
-| Agent | `Agent` | Configuration (model, tools, policy, hooks, sandbox) plus `run(session, text)` |
-| Session | `Session` over `EventLog` | A conversation stored as an append-only SQLite event log |
-| Tool | `Tool`, built with `@tool` | A function the model may call, with a JSON schema |
-| Policy | `Policy`, `Rules` | Decides per call: run, refuse, or ask a human |
-| Workspace | `Workspace` | The project root and the rules for resolving agent paths |
-| Sandbox | `LocalSandbox`, `DockerSandbox` | Where `execute` runs shell commands |
-| Hooks | `Hooks`, `HookResult` | Callbacks around the loop (`pre_tool`, `turn_end`, ...) |
+| Провайдер | любой объект с `name` и `async stream(request)` | Обращается к API модели и отдаёт события модели |
+| Агент | `Agent` | Конфигурация (модель, инструменты, политика, хуки, песочница) и `run(session, text)` |
+| Сессия | `Session` поверх `EventLog` | Диалог, хранящийся как журнал событий SQLite с записью только в конец |
+| Инструмент | `Tool`, создаётся через `@tool` | Функция, которую может вызвать модель, со схемой JSON |
+| Политика | `Policy`, `Rules` | Для каждого вызова решает: выполнить, отказать или спросить человека |
+| Workspace | `Workspace` | Корень проекта и правила разрешения путей агента |
+| Песочница | `LocalSandbox`, `DockerSandbox` | Где `execute` выполняет команды оболочки |
+| Хуки | `Hooks`, `HookResult` | Колбэки вокруг цикла (`pre_tool`, `turn_end`, ...) |
 
-## The loop
+## Цикл
 
-`agent.run(session, text)` is an async generator. One call is one turn:
+`agent.run(session, text)` это асинхронный генератор. Один вызов это один ход:
 
-1. `TurnStarted` is yielded and the undo snapshot is taken; on the first turn of a session
-   the `session_start` hooks run; then the user message is appended to the log.
-2. Compaction runs if the context is over 80% of the model window.
-3. The request is streamed from the provider; `TextDelta` / `ThinkingDelta` events are yielded.
-4. Each tool call is checked by the policy. Calls that need approval yield
-   `NeedsApproval` and the turn waits for `session.decide(call_id, decision)`.
-5. Allowed calls run (reads concurrently, writes to one path serialised); the results
-   are appended and the loop repeats until the model stops or `max_steps` is reached.
-6. The turn ends with exactly one of `TurnDone`, `TurnError` or `Cancelled`.
+1. Отдаётся `TurnStarted` и делается снимок для undo; на первом ходе сессии
+   выполняются хуки `session_start`; затем сообщение пользователя дописывается в журнал.
+2. Если контекст занимает больше 80% окна модели, запускается сжатие.
+3. Запрос потоково уходит провайдеру; отдаются события `TextDelta` / `ThinkingDelta`.
+4. Каждый вызов инструмента проверяется политикой. Вызовы, требующие подтверждения, отдают
+   `NeedsApproval`, и ход ждёт `session.decide(call_id, decision)`.
+5. Разрешённые вызовы выполняются (чтения параллельно, записи в один путь последовательно);
+   результаты дописываются, и цикл повторяется, пока модель не остановится или не будет
+   достигнут `max_steps`.
+6. Ход заканчивается ровно одним из событий `TurnDone`, `TurnError` или `Cancelled`.
 
-A failing tool never raises out of `run`: it becomes an error result the model sees. A
-`ProviderError` becomes `TurnError`; any other exception from a provider (a bug, or an
-exhausted `FakeProvider`) propagates out of `run`.
+Упавший инструмент никогда не бросает исключение из `run`: он превращается в результат с
+ошибкой, который видит модель. `ProviderError` становится `TurnError`; любое другое
+исключение провайдера (ошибка в коде или исчерпанный `FakeProvider`) выходит из `run`.
 
-## Events
+## События
 
-Turn events are the public protocol: `TurnStarted`, `TextDelta`, `ThinkingDelta`,
+События хода составляют публичный протокол: `TurnStarted`, `TextDelta`, `ThinkingDelta`,
 `ToolStarted`, `ToolFinished`, `NeedsApproval`, `TodosUpdated`, `Notice`, `UsageUpdate`,
 `Compacted`, `BackgroundDone`, `ReloadRequested`, `TurnDone`, `TurnError`, `Cancelled`.
-`to_wire(event)` turns any of them into the JSON form described in
+`to_wire(event)` превращает любое из них в JSON-вид, описанный в
 [protocol.md](../protocol.md).
 
-## Messages
+## Сообщения
 
-`Message` holds blocks: `Text`, `Thinking` (with the provider signature needed to
-round-trip reasoning), `Image`, `ToolCall`, `ToolResult`. `image_from_file(path)` builds an
-`Image`; pass images to a turn with `agent.run(session, text, images=[...])`.
+`Message` состоит из блоков: `Text`, `Thinking` (с подписью провайдера, нужной для
+повторной передачи рассуждений), `Image`, `ToolCall`, `ToolResult`. `image_from_file(path)`
+создаёт `Image`; изображения передаются в ход через `agent.run(session, text, images=[...])`.
 
-## Errors
+## Ошибки
 
-`LunaCoreError` is the base class. `ProviderError` has a `kind` (`auth`, `rate_limit`,
-`context_length`, `bad_request`, `server`, `network`), `status` and `retry_after`.
-`ToolError` (and its subclasses such as `OutsideWorkspace`) is what tool code raises to
-produce an error result.
+`LunaCoreError` это базовый класс. У `ProviderError` есть `kind` (`auth`, `rate_limit`,
+`context_length`, `bad_request`, `server`, `network`), `status` и `retry_after`.
+`ToolError` (и его подклассы, например `OutsideWorkspace`) это то, что код инструмента
+бросает, чтобы вернуть результат с ошибкой.
 
-## Usage and cost
+## Расход и стоимость
 
-`Usage(input, output, cache_read, cache_write, reasoning)` is attached to `UsageUpdate`
-and `TurnDone`. `session.usage()` and `session.cost()` accumulate over the session; cost comes
-from the packaged `models.toml` catalogue (override with `Agent(model_overrides=...)`) and
-is `None` for a model without a price. `Agent(max_cost=...)` stops the loop at a budget.
+`Usage(input, output, cache_read, cache_write, reasoning)` прикрепляется к `UsageUpdate`
+и `TurnDone`. `session.usage()` и `session.cost()` накапливаются за сессию; стоимость берётся
+из поставляемого каталога `models.toml` (переопределяется через `Agent(model_overrides=...)`)
+и равна `None` для модели без цены. `Agent(max_cost=...)` останавливает цикл по достижении бюджета.
