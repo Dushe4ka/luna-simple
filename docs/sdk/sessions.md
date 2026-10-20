@@ -42,6 +42,16 @@ for info in log.list(workdir="/path/to/project"):    # SessionInfo, newest first
 Undo uses a git tree snapshot per turn in git repositories and a file journal elsewhere.
 `Session.create(..., undo=False)` disables it.
 
+Undo and redo touch only what the turn changed. Paths changed by the file tools
+(`write_file`, `edit_file`, `delete`) are restored; a path the user changed after the
+turn is skipped and named in the result. When the turn ran `execute` (or another
+mutating tool that is not a file tool), the whole tree diff of the turn is restored,
+because a command can change any file, and every path outside the file tools is named
+("also restored (changed by commands or outside Luna): …"). Known limitation: in such
+a turn a file the user edited during the turn is restored too, but it is named. A turn
+whose end was never recorded (a crash) restores only the file-tool paths. Undo, redo
+and rewind are refused while background tasks of the session are running.
+
 ## Compaction
 
 ```python
