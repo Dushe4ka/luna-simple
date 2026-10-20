@@ -113,3 +113,10 @@ def test_unset_api_key_works_with_a_custom_registry():
     set_api_key("mylocal", "sk-local-test", registry=custom_registry)
     assert unset_api_key("mylocal") is True
     assert get_api_key("mylocal") is None
+
+
+def test_credentials_file_is_never_created_world_readable(monkeypatch):
+    """The key must not sit in a 0644 file until a later chmod (there is none here)."""
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
+    path = set_api_key("openai", "sk-secret")
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600

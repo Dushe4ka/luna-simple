@@ -106,7 +106,10 @@ def ensure_running(
     else:
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", buffering=1) as log_file:
+        # The log may hold request details: private from creation on.
+        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a", buffering=1) as log_file:
             subprocess.Popen(
                 [sys.executable, "-m", "luna.server.run", "--port", str(port), "--token", token],
                 start_new_session=True,

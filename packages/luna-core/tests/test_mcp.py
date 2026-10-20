@@ -154,3 +154,12 @@ async def test_token_storage_never_uses_write_text(tmp_path, monkeypatch):
     storage = FileTokenStorage(tmp_path / "srv.json")
     await storage.set_tokens(OAuthToken(access_token="a", token_type="Bearer"))
     assert stat.S_IMODE((tmp_path / "srv.json").stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("name", ["../escape", "a/b", "/abs", "..", "", "a\\b"])
+async def test_oauth_token_file_name_must_stay_in_the_token_dir(tmp_path, name):
+    from luna_core.mcp import MCPConfigError
+
+    manager = MCPManager({}, on_warn=lambda _m: None, token_dir=tmp_path / "tokens")
+    with pytest.raises(MCPConfigError):
+        await manager._oauth(name, {"url": "https://example.invalid/mcp", "oauth": True})

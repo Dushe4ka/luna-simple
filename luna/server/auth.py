@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import stat
 from collections.abc import Mapping
 from pathlib import Path
 
 from luna.config.config import config_dir
+from luna.config.credentials import write_private
 
 
 def token_path(env: Mapping[str, str] | None = None) -> Path:
@@ -33,13 +32,10 @@ def write_token_file(
     rather than being reused forever. ``None`` when the caller has no
     fingerprint to record (e.g. a test double).
     """
-    path = token_path(env)
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = {"port": port, "token": token, "pid": pid}
     if fingerprint is not None:
         data["fingerprint"] = fingerprint
-    path.write_text(json.dumps(data))
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    write_private(token_path(env), json.dumps(data))
 
 
 def read_token_file(*, env: Mapping[str, str] | None = None) -> dict | None:

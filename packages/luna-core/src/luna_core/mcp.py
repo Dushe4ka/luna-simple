@@ -305,11 +305,21 @@ class MCPManager:
             if isinstance(exc, asyncio.CancelledError):
                 raise
 
+    def _token_file(self, name: str) -> Path:
+        """Return server ``name``'s OAuth token file; refuse a name leaving the token dir."""
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            raise MCPConfigError(f"MCP server name {name!r} cannot name a token file")
+        path = self.token_dir / f"{name}.json"
+        if path.resolve().parent != self.token_dir.resolve():
+            raise MCPConfigError(f"MCP server name {name!r} cannot name a token file")
+        return path
+
     async def _oauth(self, name: str, spec: dict):
         from mcp.client.auth import OAuthClientProvider
         from mcp.shared.auth import OAuthClientMetadata
         from pydantic import AnyUrl
 
+        token_file = self._token_file(name)
         redirect_uri, code_future = await _callback_listener()
 
         async def redirect(url: str) -> None:
@@ -332,7 +342,7 @@ class MCPManager:
         return OAuthClientProvider(
             server_url=server_url,
             client_metadata=metadata,
-            storage=FileTokenStorage(self.token_dir / f"{name}.json"),
+            storage=FileTokenStorage(token_file),
             redirect_handler=redirect,
             callback_handler=callback,
         )
