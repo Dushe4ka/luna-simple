@@ -32,7 +32,7 @@ unless it says so.
 
 ## 3. Spec criteria (design spec, sections 2 to 4 and Testing)
 
-Suite state behind these rows: 1002 passed, 8 skipped (7 live provider tests without keys, `test_docker_sandbox_real` without the image); the skipped tests are the ones marked NOT VERIFIED for live providers and a real Docker daemon.
+Suite state behind these rows: 1039 passed, 8 skipped (7 live provider tests without keys, `test_docker_sandbox_real` without the image); the skipped tests are the ones marked NOT VERIFIED for live providers and a real Docker daemon.
 
 | Criterion | Status |
 |---|---|
@@ -92,7 +92,7 @@ To close these, put a funded key for each provider in the environment and run
 ## 5. Whole suite
 
 `uv run pytest -q -o addopts=""` (both suites, live tests included in selection but skipped
-without keys): **1002 passed, 8 skipped** (7 live provider tests without keys, `test_docker_sandbox_real` without the image) in 95.8 s. `uv run ruff check .` and
+without keys): **1039 passed, 8 skipped** (7 live provider tests without keys, `test_docker_sandbox_real` without the image) in 98.5 s. `uv run ruff check .` and
 `uv run ruff format --check .` are clean.
 
 ## 6. "Find and fix a bug" procedure (for the blocked rows)
