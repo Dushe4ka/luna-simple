@@ -165,3 +165,30 @@ async def test_an_empty_edited_command_is_refused_and_edit_mode_stays():
 
     app = await _run_modal(request, steps)
     assert app.result == {"type": "edit", "args": {"command": "pwd"}}
+
+
+@pytest.mark.asyncio
+async def test_approval_modal_buttons_are_in_russian_and_not_truncated():
+    from textual.app import App
+    from textual.widgets import Button
+
+    class _TestApp(App):
+        @work
+        async def on_mount(self) -> None:
+            await self.push_screen_wait(
+                ApprovalModal({"action": "execute", "args": {"command": "ls"}})
+            )
+
+    app = _TestApp()
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause()
+        buttons = {b.id: b for b in app.screen.query(Button)}
+        labels = {bid: str(b.label) for bid, b in buttons.items()}
+        assert labels == {
+            "approve-button": "Разрешить",
+            "always-button": "Разрешить всегда",
+            "edit-button": "Изменить",
+            "reject-button": "Отклонить",
+        }
+        for button in buttons.values():
+            assert button.content_region.width >= len(str(button.label))

@@ -37,11 +37,11 @@ class ApprovalModal(ModalScreen[dict]):
         """Render the pending action's description and the decision buttons."""
         with Vertical():
             yield Static(describe_action(self._action_request))
-            yield Button("Approve", id="approve-button", variant="success")
-            yield Button("Always allow", id="always-button")
+            yield Button("Разрешить", id="approve-button", variant="success")
+            yield Button("Разрешить всегда", id="always-button")
             if self._tool == "execute":
-                yield Button("Edit", id="edit-button")
-            yield Button("Reject", id="reject-button", variant="error")
+                yield Button("Изменить", id="edit-button")
+            yield Button("Отклонить", id="reject-button", variant="error")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Dismiss with the decision dict matching the button pressed."""
