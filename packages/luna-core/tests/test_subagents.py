@@ -429,3 +429,76 @@ async def test_budget_is_rechecked_after_waiting_for_a_slot(tmp_path, log):
     refused = [r for r in results if r.is_error]
     assert len(done) == 1 and " done" in done[0].text
     assert len(refused) == 1 and "budget reached" in refused[0].text
+
+
+# -- final review I1: a failing commit must never drop the subagent's work --
+
+
+def test_finish_worktree_commits_despite_a_failing_hook_and_gpgsign(tmp_path):
+    init_repo(tmp_path)
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    git(tmp_path, "config", "commit.gpgsign", "true")
+    git(tmp_path, "config", "gpg.program", "false")
+    path, branch, base = create_worktree(tmp_path, "w1")
+    (path / "work.txt").write_text("precious\n")
+    stat, diff = finish_worktree(tmp_path, path, branch, base, "m")
+    assert "work.txt" in stat and "precious" in diff
+    shown = subprocess.run(
+        ["git", "show", f"{branch}:work.txt"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert shown.stdout == "precious\n"
+
+
+def test_finish_worktree_keeps_the_worktree_when_the_commit_fails(tmp_path, monkeypatch):
+    import luna_core.subagents as sub
+
+    init_repo(tmp_path)
+    path, branch, base = create_worktree(tmp_path, "w2")
+    (path / "work.txt").write_text("precious\n")
+    real = sub._git
+
+    def failing(root, *args, env=None):
+        if "commit" in args:
+            return subprocess.CompletedProcess(args, 1, "", "hook said no")
+        return real(root, *args, env=env)
+
+    monkeypatch.setattr(sub, "_git", failing)
+    with pytest.raises(sub.WorktreeCommitError) as info:
+        finish_worktree(tmp_path, path, branch, base, "m")
+    assert str(path) in str(info.value) and "hook said no" in str(info.value)
+    assert (path / "work.txt").read_text() == "precious\n"
+    assert branch in luna_branches(tmp_path)
+
+
+async def test_subagent_result_names_the_kept_worktree_on_commit_failure(
+    tmp_path, log, monkeypatch
+):
+    import luna_core.subagents as sub
+
+    init_repo(tmp_path)
+    real = sub._git
+
+    def failing(root, *args, env=None):
+        if "commit" in args:
+            return subprocess.CompletedProcess(args, 1, "", "hook said no")
+        return real(root, *args, env=env)
+
+    monkeypatch.setattr(sub, "_git", failing)
+    child = Routing(
+        {
+            "first": [
+                FakeProvider.call("write_file", {"file_path": "notes.md", "content": "one\n"}),
+                FakeProvider.text("wrote one"),
+            ]
+        }
+    )
+    call = Message.assistant([ToolCall("t1", "task", {"description": "first"})])
+    agent = parent_agent(tmp_path, [call, FakeProvider.text("ok")], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    [e async for e in agent.run(session, "go")]
+    result = session.messages()[2].results[0]
+    kept = list((tmp_path / ".luna" / "worktrees").iterdir())
+    assert len(kept) == 1 and (kept[0] / "notes.md").read_text() == "one\n"
+    assert str(kept[0]) in result.text and "hook said no" in result.text

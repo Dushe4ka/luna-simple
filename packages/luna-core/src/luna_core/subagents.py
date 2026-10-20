@@ -214,12 +214,26 @@ def _create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
     return path, branch, base
 
 
+class WorktreeCommitError(LunaCoreError):
+    """The subagent's changes could not be committed; its worktree and branch are kept."""
+
+    def __init__(self, path: Path, branch: str, detail: str) -> None:
+        self.path = path
+        self.branch = branch
+        super().__init__(
+            f"could not commit the subagent's changes ({detail.strip() or 'git failed'}); "
+            f"they are kept in the worktree {path} (branch {branch})"
+        )
+
+
 def finish_worktree(
     root: Path, path: Path, branch: str, base: str, message: str
 ) -> tuple[str, str]:
     """Commit the child's changes on its branch, remove the worktree, return (diffstat, diff).
 
     When the child changed nothing the branch is deleted and the diffstat is empty.
+    Raises :class:`WorktreeCommitError` (worktree and branch left in place) when
+    the changes cannot be committed.
     """
     with _GIT_LOCK:
         return _finish_worktree(root, path, branch, base, message)
@@ -228,9 +242,23 @@ def finish_worktree(
 def _finish_worktree(
     root: Path, path: Path, branch: str, base: str, message: str
 ) -> tuple[str, str]:
-    _git(path, "add", "-A")
+    added = _git(path, "add", "-A")
+    if added.returncode != 0:
+        raise WorktreeCommitError(path, branch, added.stderr)
     if _git(path, "diff", "--cached", "--quiet").returncode != 0:
-        _git(path, "commit", "-qm", message, env=_IDENTITY)
+        # Luna's own bookkeeping commit: no user hooks, no signing prompt.
+        committed = _git(
+            path,
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "-qm",
+            message,
+            env=_IDENTITY,
+        )
+        if committed.returncode != 0:
+            raise WorktreeCommitError(path, branch, committed.stderr or committed.stdout)
     stat = _git(root, "diff", "--stat", base, branch).stdout.strip()
     diff = _git(root, "diff", base, branch).stdout
     _git(root, "worktree", "remove", "--force", str(path))
@@ -363,7 +391,12 @@ class SubagentRunner:
             branch = base = None
             diffstat = ""
             if worktree is not None:
-                diffstat, _diff = await asyncio.to_thread(finish_worktree, root, *worktree, message)
+                try:
+                    diffstat, _diff = await asyncio.to_thread(
+                        finish_worktree, root, *worktree, message
+                    )
+                except WorktreeCommitError as exc:
+                    ok, error = False, str(exc)
                 if diffstat:
                     branch, base = worktree[1], worktree[2]
             return SubagentResult(name, ok, text, error, branch, base, diffstat, child_id)
