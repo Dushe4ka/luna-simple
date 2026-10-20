@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 #: session; prompt = becomes a message to the agent.
 KINDS = ("ui", "read", "mutate", "prompt")
 
+#: Commands that rewrite files and history: refused while background tasks run.
+HISTORY_COMMANDS = frozenset({"/undo", "/redo", "/rewind"})
+
 
 @dataclass(frozen=True)
 class Choice:
@@ -102,6 +105,9 @@ class CommandEnv(Protocol):
     @property
     def can_rebuild(self) -> bool:
         """Whether this surface can rebuild the agent."""
+
+    def live_tasks(self) -> bool:
+        """Whether a background task of this session is queued or running."""
 
     def get_plan(self) -> bool | None:
         """Plan mode state, or ``None`` when plan mode is not available."""

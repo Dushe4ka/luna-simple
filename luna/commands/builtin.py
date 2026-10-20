@@ -127,8 +127,24 @@ def _last_user_line(session) -> str:
     return ""
 
 
+_BACKGROUND_BUSY = (
+    "background tasks are still running and may be writing files — "
+    "wait for them (or cancel them) before /undo, /redo or /rewind"
+)
+
+
+def _background_busy(env) -> CommandResult | None:
+    """Refuse history commands while a background subagent of the session runs."""
+    live = getattr(env, "live_tasks", None)
+    if live is not None and live():
+        return CommandResult(notices=[Notice("error", _BACKGROUND_BUSY)])
+    return None
+
+
 @register("/undo", "revert the last turn (files + conversation)", "mutate")
 async def _undo(env, arg):
+    if (refused := _background_busy(env)) is not None:
+        return refused
     if not env.session.turn_ids():
         return CommandResult(notices=[Notice("dim", "nothing to undo")])
     if arg.strip() != "--yes":
@@ -150,6 +166,8 @@ async def _undo(env, arg):
 
 @register("/redo", "re-apply the last undone turn", "mutate")
 async def _redo(env, arg):
+    if (refused := _background_busy(env)) is not None:
+        return refused
     result = await asyncio.to_thread(env.session.redo)
     if result is None:
         return CommandResult(notices=[Notice("dim", "nothing to redo")])
@@ -161,6 +179,8 @@ async def _redo(env, arg):
 
 @register("/rewind", "undo the last N turns (/rewind 3)", "mutate")
 async def _rewind(env, arg):
+    if (refused := _background_busy(env)) is not None:
+        return refused
     parts = arg.split()
     numbers = [p for p in parts if p != "--yes"]
     if len(numbers) > 1 or (numbers and not numbers[0].isdigit()) or numbers[:1] == ["0"]:

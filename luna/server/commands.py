@@ -11,7 +11,7 @@ import asyncio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.commands import command_kind, list_commands, needs_agent, run_line
+from luna.commands import HISTORY_COMMANDS, command_kind, list_commands, needs_agent, run_line
 from luna.repl import usercmd
 from luna.server.runtime import runtime_for
 from luna.server.trust import trust_error
@@ -50,6 +50,9 @@ class _ServerEnv:
 
     def set_plan(self, on: bool) -> None:
         self._rt.set_plan(on)
+
+    def live_tasks(self) -> bool:
+        return self._rt.has_live_tasks
 
     async def _after_rebuild(self) -> None:
         self._config = None
@@ -100,6 +103,9 @@ async def post_command(request: Request) -> JSONResponse:
         return JSONResponse({"error": "client_command"}, status_code=400)
     busy = runtime.lock.locked() or request.app.state.runtimes.running(session_id)
     if kind != "read" and busy:
+        return JSONResponse({"error": "session_busy"}, status_code=409)
+    if name in HISTORY_COMMANDS and runtime.has_live_tasks:
+        # a background subagent may still be writing files of this session
         return JSONResponse({"error": "session_busy"}, status_code=409)
 
     if kind == "read":

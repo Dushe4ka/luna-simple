@@ -218,6 +218,14 @@ class _ReplEnv:
     def can_rebuild(self) -> bool:
         return self._ctx.rebuild is not None
 
+    def live_tasks(self) -> bool:
+        bundle = self._ctx.bundle
+        background = bundle.agent.services.get("background") if bundle is not None else None
+        if background is None:
+            return False
+        tasks = background.list(self.session.id)
+        return any(t.status in ("queued", "running") for t in tasks)
+
     def get_plan(self):
         return None if self._ctx.plan_state is None else self._ctx.plan_state[0]
 

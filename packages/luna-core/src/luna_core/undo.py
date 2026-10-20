@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import difflib
+import hashlib
 import json
 import os
 import shutil
@@ -38,14 +38,51 @@ class UndoResult:
     note: str
 
 
-def _git(root: Path, args: list[str], env: dict | None = None) -> str | None:
+def _git(root: Path, args: list[str], env: dict | None = None, *, raw: bool = False) -> str | None:
     try:
         proc = subprocess.run(
             ["git", *args], cwd=root, capture_output=True, text=True, timeout=30, env=env
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return proc.stdout.strip() if proc.returncode == 0 else None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout if raw else proc.stdout.strip()
+
+
+def _changed(root: Path, a: str, b: str) -> dict[str, str] | None:
+    """``{path: status}`` of the paths that differ between trees ``a`` and ``b``.
+
+    ``A`` = only in ``b``, ``D`` = only in ``a``, anything else = in both.
+    """
+    out = _git(
+        root,
+        ["diff", "--name-status", "--no-renames", "-z", a, b, "--", ".", *_EXCLUDES],
+        raw=True,
+    )
+    if out is None:
+        return None
+    parts = out.split("\0")
+    return {parts[i + 1]: parts[i][:1] for i in range(0, len(parts) - 1, 2) if parts[i]}
+
+
+def _fingerprint(image: dict) -> str:
+    """Compact identity of a pre/post-image (content hash for files)."""
+    if image.get("kind") == "bytes":
+        return "sha256:" + hashlib.sha256(base64.b64decode(image["data"])).hexdigest()
+    return str(image.get("kind"))
+
+
+def _note(verb: str, applied: int, skipped: list[str], failed: list[str], since: str) -> str:
+    """Human summary of an undo/redo; names every path it did not touch or could not."""
+    if not skipped and not failed:
+        return f"files {verb}"
+    parts = [f"{verb} {applied} files"]
+    if skipped:
+        parts.append(f"skipped {', '.join(sorted(skipped))}: changed since the {since}")
+    if failed:
+        parts.append(f"could not restore: {', '.join(sorted(failed))}")
+    return "; ".join(parts)
 
 
 def _is_git(root: Path) -> bool:
@@ -163,6 +200,27 @@ class UndoJournal:
             data["redo"] = []
             self._save(data)
 
+    def end_turn(self, turn_id: str) -> None:
+        """Record what ``turn_id`` left behind, so undo can tell later user edits apart.
+
+        Git mode keeps the end tree; journal mode a fingerprint of every
+        journaled file. Undo/redo then touch only the paths the turn changed
+        and skip any whose content moved on since (edited by the user).
+        """
+        with self._lock:
+            data = self._load()
+            turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
+            if turn is None:
+                return
+            if self.is_git:
+                tree = _snapshot_tree(self.root)
+                if not tree:
+                    return
+                turn["end_tree"] = tree
+            else:
+                turn["end"] = {rel: _fingerprint(self._read(rel)) for rel in turn.get("files", {})}
+            self._save(data)
+
     def before_write(self, turn_id: str, rel: str) -> None:
         """Keep ``rel``'s pre-image for this turn (file-journal mode only)."""
         with self._lock:
@@ -212,97 +270,161 @@ class UndoJournal:
     def undo(self) -> UndoResult | None:
         """Revert the newest turn's files.
 
-        The turn record is popped (and a redo record pushed) even when the
-        files could not actually be restored — the note says so instead of
-        claiming "no file changes" (which would be indistinguishable from a
-        turn that genuinely made none).
+        Only paths the turn itself changed are touched, and a path whose
+        content changed after the turn ended (a user edit) is skipped and
+        named in the note. The turn record is popped (and a redo record
+        pushed) even when files could not be restored — the note says so
+        instead of claiming "no file changes". The journal is saved even
+        when a restore fails half-way.
         """
         with self._lock:
             data = self._load()
             if not data["turns"]:
                 return None
             turn = data["turns"].pop()
-            if self.is_git:
-                post = _snapshot_tree(self.root)
-                pre = turn.get("pre_tree")
-                if not pre or not post:
-                    note = "files could not be restored (no snapshot of the turn)"
-                elif pre == post:
-                    note = "no file changes in this turn"
+            try:
+                if self.is_git:
+                    note, record = self._undo_git(turn)
                 else:
-                    self._restore_tree(pre, post)
-                    note = "files restored"
-                data["redo"].append(
-                    {"turn_id": turn["turn_id"], "pre_tree": pre, "post_tree": post}
-                )
-            else:
-                files = turn.get("files", {})
-                post_images = {rel: self._read(rel) for rel in files}
-                skipped = [rel for rel, image in files.items() if not self._write(rel, image)]
-                data["redo"].append(
-                    {
-                        "turn_id": turn["turn_id"],
-                        "files": files,
-                        "post": post_images,
-                        "skipped": skipped,
-                    }
-                )
-                restored = len(files) - len(skipped)
-                if not files:
-                    note = "no file changes in this turn"
-                elif skipped:
-                    missed = ", ".join(sorted(skipped))
-                    note = f"restored {restored} files; could not restore: {missed}"
-                else:
-                    note = "files restored"
-            self._save(data)
+                    note, record = self._undo_files(turn)
+                data["redo"].append(record)
+            finally:
+                self._save(data)
             return UndoResult(turn["turn_id"], note)
 
+    def _undo_git(self, turn: dict) -> tuple[str, dict]:
+        pre = turn.get("pre_tree")
+        # A turn without a recorded end (crash, older journal): its end is "now".
+        end = turn.get("end_tree") or _snapshot_tree(self.root)
+        record = {"turn_id": turn["turn_id"], "pre_tree": pre, "post_tree": end}
+        if not pre or not end:
+            return "files could not be restored (no snapshot of the turn)", record
+        if pre == end:
+            return "no file changes in this turn", record
+        applied, skipped, failed = self._apply_tree(end, pre)
+        return _note("restored", applied, skipped, failed, "turn"), record
+
+    def _undo_files(self, turn: dict) -> tuple[str, dict]:
+        files = turn.get("files", {})
+        end = turn.get("end")
+        post: dict[str, dict] = {}
+        skipped: list[str] = []
+        failed: list[str] = []
+        for rel, image in files.items():
+            now = self._read(rel)
+            if end is not None and _fingerprint(now) != end.get(rel):
+                if _fingerprint(now) != _fingerprint(image):
+                    skipped.append(rel)
+                continue
+            try:
+                ok = self._write(rel, image)
+            except OSError:
+                ok = False
+            if ok:
+                post[rel] = now
+            else:
+                failed.append(rel)
+        record = {
+            "turn_id": turn["turn_id"],
+            "files": files,
+            "post": post,
+            "skipped": skipped + failed,
+        }
+        if not files:
+            return "no file changes in this turn", record
+        return _note("restored", len(post), skipped, failed, "turn"), record
+
     def redo(self) -> UndoResult | None:
-        """Re-apply the most recently undone turn's files."""
+        """Re-apply the most recently undone turn's files.
+
+        A path whose content is no longer what the undo left (edited since)
+        is skipped and named in the note.
+        """
         with self._lock:
             data = self._load()
             if not data["redo"]:
                 return None
             record = data["redo"].pop()
-            if self.is_git:
-                if record.get("post_tree") and record.get("pre_tree"):
-                    self._restore_tree(record["post_tree"], record["pre_tree"])
-                data["turns"].append(
-                    {
-                        "turn_id": record["turn_id"],
-                        "pre_tree": record.get("pre_tree"),
-                        "ts": time.time(),
-                    }
-                )
-            else:
-                for rel, image in record.get("post", {}).items():
-                    self._write(rel, image)
-                data["turns"].append(
-                    {
-                        "turn_id": record["turn_id"],
-                        "files": record.get("files", {}),
-                        "ts": time.time(),
-                    }
-                )
-            self._save(data)
-            return UndoResult(record["turn_id"], "files re-applied")
+            note = "files re-applied"
+            try:
+                if self.is_git:
+                    pre, end = record.get("pre_tree"), record.get("post_tree")
+                    if pre and end and pre != end:
+                        applied, skipped, failed = self._apply_tree(pre, end)
+                        note = _note("re-applied", applied, skipped, failed, "undo")
+                    data["turns"].append(
+                        {
+                            "turn_id": record["turn_id"],
+                            "pre_tree": pre,
+                            "end_tree": end,
+                            "ts": time.time(),
+                        }
+                    )
+                else:
+                    note, turn = self._redo_files(record)
+                    data["turns"].append(turn)
+            finally:
+                self._save(data)
+            return UndoResult(record["turn_id"], note)
 
-    def _restore_tree(self, target: str, current: str) -> None:
-        _git(self.root, ["restore", "--source", target, "--worktree", "--", ".", *_EXCLUDES])
-        # restore never deletes files that exist only in ``current``.
-        added = (
-            _git(
-                self.root,
-                ["diff", "--name-only", "--diff-filter=A", target, current, "--", ".", *_EXCLUDES],
-            )
-            or ""
-        )
-        for rel in added.splitlines():
+    def _redo_files(self, record: dict) -> tuple[str, dict]:
+        files = record.get("files", {})
+        # Paths not re-applied stay at their pre-image: a later undo leaves them alone.
+        end = {rel: _fingerprint(image) for rel, image in files.items()}
+        skipped: list[str] = []
+        failed: list[str] = []
+        applied = 0
+        for rel, image in record.get("post", {}).items():
+            now = self._read(rel)
+            if _fingerprint(now) != _fingerprint(files.get(rel, {})):
+                if _fingerprint(now) != _fingerprint(image):
+                    skipped.append(rel)
+                continue
+            try:
+                ok = self._write(rel, image)
+            except OSError:
+                ok = False
+            if ok:
+                applied += 1
+                end[rel] = _fingerprint(image)
+            else:
+                failed.append(rel)
+        turn = {"turn_id": record["turn_id"], "files": files, "end": end, "ts": time.time()}
+        return _note("re-applied", applied, skipped, failed, "undo"), turn
+
+    def _apply_tree(self, source: str, target: str) -> tuple[int, list[str], list[str]]:
+        """Move the paths that differ between ``source`` and ``target`` to ``target``.
+
+        A path is only touched while the worktree still holds its ``source``
+        content; one already at ``target`` is left as is, any other is
+        skipped (changed by someone else). Returns ``(applied, skipped, failed)``.
+        """
+        paths = _changed(self.root, source, target)
+        current = _snapshot_tree(self.root)
+        if paths is None or current is None:
+            return 0, [], ["(no snapshot of the worktree)"]
+        moved = _changed(self.root, source, current)
+        pending = _changed(self.root, current, target)
+        if moved is None or pending is None:
+            return 0, [], ["(no snapshot of the worktree)"]
+        skipped = [p for p in paths if p in moved and p in pending]
+        todo = [p for p in paths if p not in moved]
+        restore = [p for p in todo if paths[p] != "D"]
+        remove = [p for p in todo if paths[p] == "D"]
+        failed: list[str] = []
+        for i in range(0, len(restore), 100):
+            chunk = restore[i : i + 100]
+            args = ["--literal-pathspecs", "restore", "--source", target, "--worktree", "--"]
+            if _git(self.root, [*args, *chunk]) is None:
+                failed += chunk
+        for rel in remove:
             path = self.root / rel
-            if path.is_file():
-                with contextlib.suppress(OSError):
+            try:
+                if path.is_file() or path.is_symlink():
                     path.unlink()
+            except OSError:
+                failed.append(rel)
+        return len(todo) - len(failed), skipped, failed
 
     def diff(self) -> str:
         """Unified diff of everything this session changed."""

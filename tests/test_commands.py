@@ -606,3 +606,22 @@ async def test_rewind_validates_and_clamps(env):
 async def test_steer_when_idle_says_next_turn(env):
     res = await run_line("/steer more", env)
     assert "next turn" in res.notices[0].text
+
+
+async def test_undo_redo_rewind_refused_while_background_tasks_run(make_ctx):
+    import asyncio
+
+    ctx = await make_ctx(input_fn=None)
+    _turn(ctx.session, "t1", "first", "a")
+    background = ctx.bundle.agent.services["background"]
+    gate = asyncio.Event()
+    handle = background.start("slow", gate.wait, session=ctx.session)
+    await asyncio.sleep(0)
+    try:
+        for line in ("/undo", "/rewind 1", "/redo"):
+            await dispatch(line, ctx)
+    finally:
+        gate.set()
+        await background.wait(handle)
+    assert [m.text for m in ctx.session.messages()] == ["first", "a"]
+    assert _out(ctx).count("background tasks are still running") == 3

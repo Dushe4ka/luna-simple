@@ -224,3 +224,23 @@ async def test_commands_that_need_no_agent_work_with_a_broken_config(api, tmp_pa
     async with c:
         plan = await _cmd(c, wd, "/plan")
     assert plan.status_code == 200
+
+
+async def test_undo_redo_rewind_are_409_while_background_tasks_run(api):
+    c, app, wd = api()
+    async with c:
+        runtime = await app.state.runtimes.get("t1", wd)
+        gate = asyncio.Event()
+        handle = runtime.background.start("slow", gate.wait, session=runtime.session)
+        await asyncio.sleep(0)
+        try:
+            codes = [
+                (await _cmd(c, wd, line)).status_code
+                for line in ("/undo --yes", "/redo", "/rewind 1 --yes")
+            ]
+            plan = await _cmd(c, wd, "/plan")
+        finally:
+            gate.set()
+            await runtime.background.wait(handle)
+    assert codes == [409, 409, 409]
+    assert plan.status_code == 200

@@ -535,3 +535,23 @@ async def test_overflow_file_is_written_off_the_event_loop(env, monkeypatch):
     ]
     await collect(agent_for(tmp, script, tool_output_budget=5000), session)
     assert "_save_overflow" in offloaded
+
+
+# -- final review C1: the loop records each turn's end so /undo can tell user
+# -- edits made after the turn apart from the turn's own changes --
+
+
+async def test_undo_after_a_turn_skips_a_file_the_user_edited_since(tmp_path):
+    log = EventLog(tmp_path / ".luna" / "sessions.db")
+    session = Session.create(log, str(tmp_path))
+    script = [
+        FakeProvider.call("write_file", {"file_path": "n.py", "content": "x = 2\n"}, "c1"),
+        FakeProvider.text("done"),
+    ]
+    await collect(agent_for(tmp_path, script), session, decide=lambda r: Decision.approve())
+    assert (tmp_path / "n.py").read_text() == "x = 2\n"
+    (tmp_path / "n.py").write_text("x = 3  # user\n")
+    res = session.undo()
+    assert (tmp_path / "n.py").read_text() == "x = 3  # user\n"
+    assert "skipped n.py: changed since the turn" in res.note
+    log.close()

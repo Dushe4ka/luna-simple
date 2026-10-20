@@ -274,8 +274,13 @@ class Agent:
             async with contextlib.aclosing(turn) as events:
                 async for event in events:
                     ended = isinstance(event, (TurnDone, TurnError, Cancelled))
+                    if ended:
+                        # Before the last event: a consumer may close us right after it.
+                        await asyncio.to_thread(self._end_journal, session, turn_id)
                     yield event
         except (asyncio.CancelledError, GeneratorExit):
+            if not ended:
+                self._end_journal(session, turn_id)
             # A consumer closing us right after the final event is not a cancel.
             if not ended and not any(
                 r.type == "cancelled" and r.payload.get("turn_id") == turn_id
@@ -285,6 +290,13 @@ class Agent:
             raise
         finally:
             session._end_turn()
+
+    @staticmethod
+    def _end_journal(session: Session, turn_id: str) -> None:
+        """Record the turn's end state for /undo (a failure only weakens /undo's checks)."""
+        if session.undo_journal is not None:
+            with contextlib.suppress(Exception):
+                session.undo_journal.end_turn(turn_id)
 
     def run_sync(
         self,

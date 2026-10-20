@@ -180,3 +180,117 @@ def test_parallel_before_write_keeps_every_pre_image(tmp_path):
         (tmp_path / name).write_text("new\n")
     journal.undo()
     assert all((tmp_path / n).read_text() == f"old {n}\n" for n in names)
+
+
+# -- final review C1: undo/redo touch only what the turn changed and never
+# -- overwrite a path the user edited since --
+
+
+@pytest.fixture
+def repo2(repo):
+    (repo / "b.txt").write_text("bee\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "b")
+    return repo
+
+
+def test_git_undo_keeps_user_changes_made_after_the_turn(repo2):
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    (repo2 / "a.txt").write_text("two\n")
+    j.end_turn("t1")
+    (repo2 / "b.txt").write_text("user edit\n")
+    (repo2 / "notes.md").write_text("my notes\n")
+    res = j.undo()
+    assert (repo2 / "a.txt").read_text() == "one\n"
+    assert (repo2 / "b.txt").read_text() == "user edit\n"
+    assert (repo2 / "notes.md").read_text() == "my notes\n"
+    assert "skipped" not in res.note
+    j.redo()
+    assert (repo2 / "a.txt").read_text() == "two\n"
+    assert (repo2 / "b.txt").read_text() == "user edit\n"
+    assert (repo2 / "notes.md").read_text() == "my notes\n"
+
+
+def test_git_undo_skips_a_turn_path_the_user_changed_since(repo2):
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    (repo2 / "a.txt").write_text("two\n")
+    (repo2 / "new.txt").write_text("created\n")
+    j.end_turn("t1")
+    (repo2 / "a.txt").write_text("user edit\n")
+    res = j.undo()
+    assert (repo2 / "a.txt").read_text() == "user edit\n"
+    assert not (repo2 / "new.txt").exists()
+    assert "skipped a.txt: changed since the turn" in res.note
+    # redo skips it too: its content is no longer the turn's pre-image
+    res = j.redo()
+    assert (repo2 / "a.txt").read_text() == "user edit\n"
+    assert (repo2 / "new.txt").read_text() == "created\n"
+    assert "skipped a.txt: changed since" in res.note
+
+
+def test_git_redo_skips_a_path_the_user_changed_after_the_undo(repo2):
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    (repo2 / "a.txt").write_text("two\n")
+    (repo2 / "b.txt").write_text("turn b\n")
+    j.end_turn("t1")
+    j.undo()
+    (repo2 / "a.txt").write_text("user edit\n")
+    res = j.redo()
+    assert (repo2 / "a.txt").read_text() == "user edit\n"
+    assert (repo2 / "b.txt").read_text() == "turn b\n"
+    assert "skipped a.txt" in res.note
+
+
+def test_journal_undo_and_redo_skip_files_the_user_edited(tmp_path):
+    (tmp_path / "a.txt").write_text("one\n")
+    (tmp_path / "b.txt").write_text("bee\n")
+    j = UndoJournal(tmp_path, "s1")
+    j.begin_turn("t1")
+    for rel in ("a.txt", "b.txt"):
+        j.before_write("t1", rel)
+        (tmp_path / rel).write_text(f"turn {rel}\n")
+    j.end_turn("t1")
+    (tmp_path / "b.txt").write_text("user edit\n")
+    res = j.undo()
+    assert (tmp_path / "a.txt").read_text() == "one\n"
+    assert (tmp_path / "b.txt").read_text() == "user edit\n"
+    assert "skipped b.txt: changed since the turn" in res.note
+    (tmp_path / "a.txt").write_text("user again\n")
+    res = j.redo()
+    assert (tmp_path / "a.txt").read_text() == "user again\n"
+    assert (tmp_path / "b.txt").read_text() == "user edit\n"
+    assert "skipped" in res.note and "a.txt" in res.note
+
+
+def test_journal_undo_survives_an_oserror_mid_restore(tmp_path, monkeypatch):
+    for rel in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / rel).write_text(f"old {rel}\n")
+    j = UndoJournal(tmp_path, "s1")
+    j.begin_turn("t1")
+    for rel in ("a.txt", "b.txt", "c.txt"):
+        j.before_write("t1", rel)
+        (tmp_path / rel).write_text("new\n")
+    j.end_turn("t1")
+    real = UndoJournal._write
+
+    def flaky(self, rel, image):
+        if rel == "b.txt":
+            raise PermissionError("read-only")
+        return real(self, rel, image)
+
+    monkeypatch.setattr(UndoJournal, "_write", flaky)
+    res = j.undo()
+    assert (tmp_path / "a.txt").read_text() == "old a.txt\n"
+    assert (tmp_path / "c.txt").read_text() == "old c.txt\n"
+    assert (tmp_path / "b.txt").read_text() == "new\n"
+    assert "could not restore" in res.note and "b.txt" in res.note
+    # the journal was saved: the turn moved to the redo stack
+    fresh = UndoJournal(tmp_path, "s1")
+    assert fresh.depth == 0 and fresh.redo_depth == 1
+    monkeypatch.setattr(UndoJournal, "_write", real)
+    fresh.redo()
+    assert (tmp_path / "a.txt").read_text() == "new\n"
+    assert (tmp_path / "b.txt").read_text() == "new\n"
