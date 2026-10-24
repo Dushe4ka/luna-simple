@@ -66,29 +66,46 @@ class _Outcome:
 
 
 class PathLocks:
-    """Named asyncio locks; mutating tools hold one per path."""
+    """Named asyncio locks; mutating tools hold one per path.
+
+    An entry exists only while somebody holds or awaits its key, so the table
+    does not grow with every path ever touched.
+    """
 
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
+        self._users: dict[str, int] = {}
 
     def locked(self, key: str) -> bool:
         """Return True while ``key`` is held."""
         lock = self._locks.get(key)
         return bool(lock and lock.locked())
 
+    def _release_user(self, key: str) -> None:
+        self._users[key] -= 1
+        if self._users[key] <= 0:
+            del self._users[key]
+            del self._locks[key]
+
     @contextlib.asynccontextmanager
     async def hold(self, keys: list[str]):
         """Hold every key (sorted, so two holders never deadlock)."""
-        acquired: list[asyncio.Lock] = []
+        acquired: list[str] = []
         try:
             for key in sorted(set(keys)):
                 lock = self._locks.setdefault(key, asyncio.Lock())
-                await lock.acquire()
-                acquired.append(lock)
+                self._users[key] = self._users.get(key, 0) + 1
+                try:
+                    await lock.acquire()
+                except BaseException:
+                    self._release_user(key)
+                    raise
+                acquired.append(key)
             yield
         finally:
-            for lock in reversed(acquired):
-                lock.release()
+            for key in reversed(acquired):
+                self._locks[key].release()
+                self._release_user(key)
 
 
 def readable_error(exc: ProviderError, provider_name: str) -> str:

@@ -351,6 +351,55 @@ async def test_path_locks_are_reentrant_free_and_ordered():
     assert not locks.locked("a")
 
 
+async def test_path_locks_do_not_grow_with_distinct_paths():
+    locks = PathLocks()
+    for i in range(500):
+        async with locks.hold([f"p{i}"]):
+            pass
+    assert len(locks._locks) == 0
+
+
+async def test_path_locks_keep_an_entry_while_held_or_awaited_then_prune():
+    locks = PathLocks()
+    release = asyncio.Event()
+
+    async def first():
+        async with locks.hold(["k"]):
+            await release.wait()
+
+    async def second():
+        async with locks.hold(["k"]):
+            pass
+
+    one = asyncio.create_task(first())
+    await asyncio.sleep(0)
+    two = asyncio.create_task(second())
+    await asyncio.sleep(0)
+    assert locks.locked("k") and len(locks._locks) == 1
+    release.set()
+    await asyncio.gather(one, two)
+    assert len(locks._locks) == 0 and not locks.locked("k")
+
+
+async def test_path_locks_prune_when_a_waiter_is_cancelled():
+    locks = PathLocks()
+    release = asyncio.Event()
+
+    async def holder():
+        async with locks.hold(["k"]):
+            await release.wait()
+
+    one = asyncio.create_task(holder())
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(locks.hold(["k"]).__aenter__())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    release.set()
+    await one
+    await asyncio.gather(waiter, return_exceptions=True)
+    assert len(locks._locks) == 0
+
+
 async def test_closing_the_generator_stops_tools_and_records(env):
     tmp, session = env
     marker = tmp / "late.txt"
