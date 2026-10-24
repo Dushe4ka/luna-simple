@@ -191,6 +191,18 @@ def _dump(model: Any) -> dict:
     )
 
 
+def _unknown_session(session_id: str) -> Exception:
+    """ACP ``invalid_params`` error for a session this agent does not know."""
+    from acp import RequestError
+
+    return RequestError.invalid_params(
+        {
+            "sessionId": session_id,
+            "reason": "unknown session: create it with session/new or open it with session/load",
+        }
+    )
+
+
 class LunaAcpAgent:
     """The ACP agent: one Luna session per ACP session."""
 
@@ -242,6 +254,8 @@ class LunaAcpAgent:
         """Reopen a session and replay its transcript as updates."""
         from acp import schema
 
+        if self.log.info(session_id) is None:
+            raise _unknown_session(session_id)
         session = Session.open(self.log, session_id)
         # Build the agent for the directory the session's log says it lives in, not
         # whatever ``cwd`` the client happens to pass (e.g. reopening the same
@@ -267,7 +281,10 @@ class LunaAcpAgent:
         """Run one turn and stream it to the editor."""
         from acp import schema
 
-        agent, session = self._sessions[session_id]
+        entry = self._sessions.get(session_id)
+        if entry is None:
+            raise _unknown_session(session_id)
+        agent, session = entry
         text, images = prompt_to_input([_dump(b) for b in prompt])
         window = agent.model_info.context_window
         seen: list[object] = []

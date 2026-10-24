@@ -25,6 +25,17 @@ class ServerError(LunaCoreError):
         self.status = status
 
 
+def _decode(text: str, what: str, status: int | None) -> dict:
+    """Parse a JSON object from the server, or raise :class:`ServerError`."""
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ServerError(f"malformed {what} from the Luna server: {text[:200]!r}", status) from exc
+    if not isinstance(data, dict):
+        raise ServerError(f"malformed {what} from the Luna server: {text[:200]!r}", status)
+    return data
+
+
 def _error(resp: httpx.Response) -> ServerError:
     try:
         message = resp.json().get("error") or resp.text
@@ -53,7 +64,7 @@ class LunaClient:
             raise ServerError(f"cannot reach the Luna server: {type(exc).__name__}") from exc
         if resp.is_error:
             raise _error(resp)
-        return resp.json()
+        return _decode(resp.text, "answer", resp.status_code)
 
     async def _stream(self, method: str, path: str, **kwargs) -> AsyncIterator[dict]:
         try:
@@ -65,7 +76,7 @@ class LunaClient:
                     raise _error(resp)
                 async for line in resp.aiter_lines():
                     if line.startswith("data:"):
-                        yield json.loads(line[5:].strip())
+                        yield _decode(line[5:].strip(), "event", resp.status_code)
         except httpx.TransportError as exc:
             raise ServerError(
                 f"connection to the Luna server dropped: {type(exc).__name__}"

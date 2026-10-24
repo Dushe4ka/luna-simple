@@ -1252,7 +1252,9 @@ asyncio.run(run_acp(make_agent, EventLog("acp.db")))
 `session.cancel_turn()`; текст и рассуждения идут как message chunks, вызовы
 инструментов как `tool_call`/`tool_call_update`, todos как `plan`, расход как
 `usage_update`, подтверждения как `session/request_permission` (разрешить один
-раз, всегда, отклонить). Ловушки: stdout это канал протокола, ничего не печатайте
+раз, всегда, отклонить). `prompt` для сессии, которую агент не создавал и не
+открывал (и `load_session` для несуществующей), отвечает ACP-ошибкой
+`invalid_params` (-32602, `data.sessionId`), а не `internal_error`. Ловушки: stdout это канал протокола, ничего не печатайте
 в него (логируйте в stderr), и он должен быть каналом, а не файлом. Проверить
 без редактора можно `python examples/acp_agent.py --self-test`.
 
@@ -1293,7 +1295,9 @@ asyncio.run(main())
 `history`, `state`, `send` (SSE-поток словарей), `decide`, `cancel`, `commands`,
 `run_command`, `background`, `agents`, `attach(session_id, after=-1)` (подключение
 к фоновому запуску с повтором пропущенного), `aclose`. Ошибки HTTP и недоступность
-сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`).
+сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`); ответ или
+строка `data:` в SSE, которые не являются JSON-объектом, тоже дают `ServerError`
+(«malformed …»), а не `JSONDecodeError`.
 Неотвеченное подтверждение держит поток, как и локально. Рабочий пример:
 `python examples/remote_client.py --fake`.
 
