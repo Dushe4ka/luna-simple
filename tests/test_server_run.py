@@ -182,7 +182,7 @@ def test_ensure_running_redirects_the_real_spawns_output_to_a_log_file(tmp_path,
         def __init__(self, args, **kwargs):
             captured["kwargs"] = kwargs
             port = args[args.index("--port") + 1]
-            token = args[args.index("--token") + 1]
+            token = kwargs["env"]["LUNA_SERVER_TOKEN"]
             write_token_file(port=int(port), token=token, pid=4242)
 
     monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
@@ -237,7 +237,7 @@ def test_ensure_running_spawns_the_shared_server_outside_any_project(tmp_path, m
         def __init__(self, args, **kwargs):
             captured["kwargs"] = kwargs
             port = args[args.index("--port") + 1]
-            token = args[args.index("--token") + 1]
+            token = kwargs["env"]["LUNA_SERVER_TOKEN"]
             write_token_file(port=int(port), token=token, pid=4242)
 
     monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
@@ -257,10 +257,53 @@ def test_token_and_log_files_are_created_private(tmp_path, monkeypatch):
     class _FakePopen:
         def __init__(self, args, **kwargs):
             port = args[args.index("--port") + 1]
-            token = args[args.index("--token") + 1]
+            token = kwargs["env"]["LUNA_SERVER_TOKEN"]
             write_token_file(port=int(port), token=token, pid=4242)
 
     monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
     token_path().unlink()
     ensure_running(str(tmp_path), on_warn=lambda m: None, _is_alive=lambda pid: False)
     assert stat.S_IMODE(log_path().stat().st_mode) == 0o600
+
+
+def test_spawned_server_command_line_carries_no_token(tmp_path, monkeypatch):
+    """The token used to be passed as ``--token`` — readable by anyone via ``ps``."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"], captured["kwargs"] = args, kwargs
+            token = kwargs["env"]["LUNA_SERVER_TOKEN"]
+            write_token_file(port=int(args[args.index("--port") + 1]), token=token, pid=4242)
+
+    monkeypatch.setattr("luna.server.run.subprocess.Popen", _FakePopen)
+    result = ensure_running(str(tmp_path), on_warn=lambda m: None, _is_alive=lambda pid: False)
+    assert "--token" not in captured["args"]
+    assert not any(result["token"] in str(arg) for arg in captured["args"])
+    assert captured["kwargs"]["env"]["LUNA_SERVER_TOKEN"] == result["token"]
+
+
+def test_serve_takes_the_token_from_the_environment(tmp_path, monkeypatch):
+    import os
+
+    from luna.server import run
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setenv("LUNA_SERVER_TOKEN", "from-env")
+    seen = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: seen.update(kw))
+    assert run.run_serve(["--port", "4321"]) == 0
+    assert read_token_file()["token"] == "from-env" and seen["port"] == 4321
+    # consumed: the server's own children (execute, hooks) never inherit it
+    assert "LUNA_SERVER_TOKEN" not in os.environ
+
+
+def test_serve_token_flag_still_wins_for_manual_runs(tmp_path, monkeypatch):
+    from luna.server import run
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("LUNA_SERVER_TOKEN", raising=False)
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: None)
+    run.run_serve(["--port", "4321", "--token", "manual"])
+    assert read_token_file()["token"] == "manual"
