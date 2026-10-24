@@ -6,9 +6,12 @@ Matched against the whole line, ``deny = ["execute:rm *"]`` is bypassed by
 shell's command separators (``&&``, ``||``, ``;``, ``|``, ``&``, newlines and
 subshell parentheses), pulls the bodies of ``$(...)`` / backtick substitutions
 and of ``bash -c '...'`` / ``sh -c`` / ``eval`` payloads out as segments of
-their own, and normalises each segment (leading ``NAME=value`` assignments and
-``sudo`` / ``command`` / ``env`` / ``exec`` / ``nohup`` / ``time`` prefixes are
-dropped). Quoting is respected: a separator inside quotes does not split.
+their own, and normalises each segment (leading ``NAME=value`` assignments,
+shell keywords and ``sudo`` / ``doas`` / ``command`` / ``env`` / ``exec`` /
+``nohup`` / ``nice`` / ``stdbuf`` / ``time`` / ``timeout`` prefixes are
+dropped). Quoting is respected — including bash's ``$'...'`` and here-docs:
+a separator inside quotes does not split. :func:`rough_subjects` is the
+quote-blind counterpart used as a safety net for deny/ask rules.
 
 This is a conservative approximation of the shell grammar for policy purposes,
 not a full parser: a line it cannot read (unbalanced quotes or parentheses)
@@ -23,16 +26,25 @@ from dataclasses import dataclass, field
 
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+# Words that may precede a command without being the program itself.
+_LEADING = frozenset({"{", "!", "if", "then", "else", "elif", "while", "until", "do"})
 # Prefixes that run the rest of the line as a command, with the options of
 # each that consume the following word.
 _PREFIXES: dict[str, frozenset[str]] = {
     "sudo": frozenset({"-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T"}),
+    "doas": frozenset({"-u", "-C"}),
     "command": frozenset(),
     "env": frozenset({"-u", "-C", "-S"}),
     "exec": frozenset({"-a"}),
     "nohup": frozenset(),
+    "nice": frozenset({"-n"}),
+    "stdbuf": frozenset({"-i", "-o", "-e"}),
     "time": frozenset({"-f", "-o"}),
+    "timeout": frozenset({"-s", "-k"}),
 }
+# Positional words a prefix takes before the command (``timeout 5 cmd``).
+_PREFIX_POSITIONAL = {"timeout": 1}
+_ROUGH_SPLIT = re.compile(r"\$\(|[;&|\n()`]")
 _MAX_DEPTH = 8
 
 
@@ -63,20 +75,57 @@ class CommandParts:
         return None
 
 
-def split_command(command: str) -> CommandParts | None:
-    """Return the segments of ``command``, or ``None`` when it cannot be parsed."""
+def split_command(command: str, *, ansi_c: bool = True) -> CommandParts | None:
+    """Return the segments of ``command``, or ``None`` when it cannot be parsed.
+
+    ``ansi_c`` reads ``$'...'`` as bash/zsh ANSI-C quoting; with ``False`` it
+    is read the POSIX ``sh`` way (``$`` followed by a single-quoted string).
+    Callers that must hold for every shell parse both ways.
+    """
     parts = CommandParts()
     try:
-        _collect(command, parts, 0)
+        _collect(command, parts, 0, ansi_c)
     except _Unparseable:
         return None
     return parts
 
 
-def _collect(text: str, parts: CommandParts, depth: int) -> None:
+def rough_subjects(command: str) -> list[str]:
+    """Quote-blind pieces of ``command`` for deny/ask matching.
+
+    Splits on every ``; & | ( )``, newline, backtick and ``$(`` regardless of
+    quoting, here-docs or comments, and strips quote characters. It over-
+    approximates on purpose: a deny rule may then also hit a quoted string,
+    but no command the shell would run can hide inside a quoting trick or a
+    line the splitter cannot parse.
+    """
+    out: list[str] = []
+    for piece in _ROUGH_SPLIT.split(command):
+        piece = piece.strip()
+        if not piece:
+            continue
+        bare = piece.translate({ord(c): None for c in "'\"\\"}).strip()
+        words = _normalise(bare.split())
+        for variant in (piece, bare, *_variants(words)):
+            if variant and variant not in out:
+                out.append(variant)
+    return out
+
+
+def _variants(words: list[str]) -> list[str]:
+    """Return the joined command, plus a form with the program path cut to its basename."""
+    if not words:
+        return []
+    out = [" ".join(words)]
+    if "/" in words[0]:
+        out.append(" ".join([words[0].rsplit("/", 1)[-1], *words[1:]]))
+    return out
+
+
+def _collect(text: str, parts: CommandParts, depth: int, ansi_c: bool) -> None:
     if depth > _MAX_DEPTH:
         raise _Unparseable("nested too deeply")
-    segments, substitutions = _scan(text)
+    segments, substitutions = _scan(text, ansi_c)
     for raw in segments:
         raw = raw.strip()
         if not raw:
@@ -92,36 +141,39 @@ def _collect(text: str, parts: CommandParts, depth: int) -> None:
             continue
         payload = _payload(words)
         normalised = " ".join(words)
-        if normalised not in parts.subjects:
-            parts.subjects.append(normalised)
+        for variant in _variants(words):
+            if variant not in parts.subjects:
+                parts.subjects.append(variant)
         if payload is None:
             parts.commands.append(normalised)
         else:
-            _collect(payload, parts, depth + 1)
+            _collect(payload, parts, depth + 1, ansi_c)
     for body in substitutions:
-        _collect(body, parts, depth + 1)
+        _collect(body, parts, depth + 1, ansi_c)
 
 
 def _normalise(words: list[str]) -> list[str]:
-    """Drop leading assignments, group braces and command-runner prefixes."""
+    """Drop leading assignments, keywords, group braces and command-runner prefixes."""
     words = list(words)
     changed = True
     while words and changed:
         changed = False
-        while words and (_ASSIGNMENT.match(words[0]) or words[0] in ("{", "!")):
+        while words and (_ASSIGNMENT.match(words[0]) or words[0] in _LEADING):
             words.pop(0)
             changed = True
         if words and words[-1] == "}":
             words.pop()
             changed = True
         if words and words[0] in _PREFIXES:
-            takes_value = _PREFIXES[words.pop(0)]
+            prefix = words.pop(0)
+            takes_value = _PREFIXES[prefix]
             while words and words[0].startswith("-"):
                 option = words.pop(0)
                 if option == "--":
                     break
                 if option in takes_value and words:
                     words.pop(0)
+            del words[: _PREFIX_POSITIONAL.get(prefix, 0)]
             changed = True
     return words
 
@@ -141,15 +193,101 @@ def _payload(words: list[str]) -> str | None:
     return None
 
 
-def _scan(text: str) -> tuple[list[str], list[str]]:
+_ANSI_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b"}
+
+
+def _ansi_c_end(text: str, start: int) -> tuple[int, str]:
+    """Read a ``$'...'`` body from ``start``; return the closing index and its value."""
+    out: list[str] = []
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            out.append(_ANSI_ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        if ch == "'":
+            return i, "".join(out)
+        out.append(ch)
+        i += 1
+    raise _Unparseable("unbalanced $'...' quoting")
+
+
+def _here_doc(text: str, i: int) -> tuple[int, tuple[str, bool, bool]]:
+    """Parse ``<<[-]WORD`` at ``text[i:]``; return the end index and (delim, strip, quoted)."""
+    j = i + 2
+    strip = text.startswith("-", j)
+    j += strip
+    while j < len(text) and text[j] in " \t":
+        j += 1
+    start = j
+    while j < len(text) and not text[j].isspace() and text[j] not in ";&|<>()":
+        j += 1
+    word = text[start:j]
+    quoted = any(c in word for c in "'\"\\")
+    delim = word.translate({ord(c): None for c in "'\"\\"})
+    if not delim:
+        raise _Unparseable("here-doc without a delimiter")
+    return j, (delim, strip, quoted)
+
+
+def _here_doc_bodies(
+    text: str, i: int, pending: list[tuple[str, bool, bool]]
+) -> tuple[int, list[str]]:
+    """Skip the bodies of ``pending`` here-docs starting at ``i``.
+
+    Returns the index after the last body and the bodies of unquoted ones
+    (they still undergo ``$(...)`` / backtick substitution).
+    """
+    expanded: list[str] = []
+    for delim, strip, quoted in pending:
+        lines: list[str] = []
+        while i < len(text):
+            end = text.find("\n", i)
+            end = len(text) if end < 0 else end
+            line = text[i:end]
+            i = end + 1
+            if (line.lstrip("\t") if strip else line) == delim:
+                break
+            lines.append(line)
+        if not quoted:
+            expanded.append("\n".join(lines))
+    return min(i, len(text)), expanded
+
+
+def _substitutions_in(body: str, ansi_c: bool) -> list[str]:
+    """Return the bodies of the ``$(...)`` and backtick substitutions in here-doc text."""
+    found: list[str] = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\":
+            i += 2
+        elif body.startswith("$(", i):
+            end = _closing_paren(body, i + 2, ansi_c)
+            found.append(body[i + 2 : end])
+            i = end + 1
+        elif body[i] == "`":
+            end = _closing_backtick(body, i + 1)
+            found.append(body[i + 1 : end])
+            i = end + 1
+        else:
+            i += 1
+    return found
+
+
+def _scan(text: str, ansi_c: bool = True) -> tuple[list[str], list[str]]:
     """Split ``text`` on unquoted separators; collect substitution bodies.
 
-    Returns the raw segments (substitutions left in place) and the bodies of
-    every ``$(...)``, ``<(...)``, ``>(...)`` and backtick substitution.
+    Returns the raw segments (substitutions left in place, ``$'...'`` turned
+    into an equivalent single-quoted word, here-doc bodies removed) and the
+    bodies of every ``$(...)``, ``<(...)``, ``>(...)`` and backtick
+    substitution, including those inside unquoted here-docs.
     """
     segments: list[str] = []
     substitutions: list[str] = []
     current: list[str] = []
+    pending: list[tuple[str, bool, bool]] = []
     i, n = 0, len(text)
     quote: str | None = None
 
@@ -166,6 +304,9 @@ def _scan(text: str) -> tuple[list[str], list[str]]:
             i += 1
             continue
         if ch == "\\":
+            if text.startswith("\n", i + 1):  # line continuation
+                i += 2
+                continue
             current.append(text[i : i + 2])
             i += 2
             continue
@@ -176,7 +317,7 @@ def _scan(text: str) -> tuple[list[str], list[str]]:
             i = end + 1
             continue
         if ch == "(" and i > 0 and text[i - 1] in "$<>":
-            end = _closing_paren(text, i + 1)
+            end = _closing_paren(text, i + 1, ansi_c)
             substitutions.append(text[i + 1 : end])
             current.append(text[i : end + 1])
             i = end + 1
@@ -187,6 +328,11 @@ def _scan(text: str) -> tuple[list[str], list[str]]:
                 quote = None
             i += 1
             continue
+        if ansi_c and text.startswith("$'", i):
+            end, value = _ansi_c_end(text, i + 2)
+            current.append(shlex.quote(value))
+            i = end + 1
+            continue
         if ch in "'\"":
             quote = ch
             current.append(ch)
@@ -196,15 +342,28 @@ def _scan(text: str) -> tuple[list[str], list[str]]:
             while i < n and text[i] != "\n":  # comment up to the end of the line
                 i += 1
             continue
+        if text.startswith("<<", i) and not text.startswith("<<<", i):
+            end, spec = _here_doc(text, i)
+            pending.append(spec)
+            current.append(text[i:end])
+            i = end
+            continue
         if text.startswith(("&&", "||"), i):
             cut()
             i += 2
             continue
-        if ch == "&" and (
+        if ch in "&|" and (
             (current and current[-1][-1:] in "<>") or text.startswith("&>", i)
-        ):  # ``2>&1`` / ``&>file`` are redirections, not separators
+        ):  # ``2>&1`` / ``&>file`` / ``>|file`` are redirections, not separators
             current.append(ch)
             i += 1
+            continue
+        if ch == "\n" and pending:
+            cut()
+            i, bodies = _here_doc_bodies(text, i + 1, pending)
+            for body in bodies:
+                substitutions += _substitutions_in(body, ansi_c)
+            pending.clear()
             continue
         if ch in ";|&\n()":
             cut()
@@ -230,7 +389,7 @@ def _closing_backtick(text: str, start: int) -> int:
     raise _Unparseable("unbalanced backticks")
 
 
-def _closing_paren(text: str, start: int) -> int:
+def _closing_paren(text: str, start: int, ansi_c: bool = True) -> int:
     """Return the index of the ``)`` closing a ``(`` opened just before ``start``."""
     depth, i, quote = 1, start, None
     while i < len(text):
@@ -244,6 +403,9 @@ def _closing_paren(text: str, start: int) -> int:
         elif quote == '"':
             if ch == '"':
                 quote = None
+        elif ansi_c and text.startswith("$'", i):
+            i = _ansi_c_end(text, i + 2)[0] + 1
+            continue
         elif ch in "'\"":
             quote = ch
         elif ch == "(":

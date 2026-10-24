@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
-from luna_core.shellsplit import split_command
+from luna_core.shellsplit import rough_subjects, split_command
 from luna_core.tools.base import Tool, args_preview
 from luna_core.workspace import OutsideWorkspace, Workspace
 
@@ -82,19 +82,24 @@ class Rules:
     def _match_execute(self, command: str) -> str | None:
         """Match a shell line segment by segment (see :mod:`luna_core.shellsplit`).
 
-        deny / ask: the whole line or any segment matching is enough. allow:
-        every simple command must match; a line that cannot be parsed is
-        never allowed by a rule.
+        deny / ask: the whole line, any parsed segment or any quote-blind
+        rough piece matching is enough. allow: every simple command must
+        match under both the bash (``$'...'`` as ANSI-C quoting) and the POSIX
+        ``sh`` reading; a line that cannot be parsed is never allowed by a rule.
         """
-        parts = split_command(command)
-        subjects = [command, *(parts.subjects if parts else ())]
+        readings = [split_command(command)]
+        if "$'" in command:
+            readings.append(split_command(command, ansi_c=False))
+        subjects = [command, *rough_subjects(command)]
+        for parts in readings:
+            subjects += parts.subjects if parts else ()
         for kind in ("deny", "ask"):
             rules = getattr(self, kind)
             if any(self._hit(rules, "execute", s) for s in subjects):
                 return kind
-        if parts is None:
+        if any(parts is None for parts in readings):
             return None
-        commands = parts.commands or [command]
+        commands = [c for parts in readings for c in parts.commands] or [command]
         if all(self._hit(self.allow, "execute", c) for c in commands):
             return "allow"
         return None

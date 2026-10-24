@@ -1,4 +1,5 @@
 import tomllib
+from pathlib import Path
 
 import pytest
 from luna_core.policy import AnchorTracker, Decision, Policy, Rules, append_rule, suggest_rule
@@ -247,7 +248,10 @@ def test_deny_matches_any_segment_of_a_compound_command(command):
     ],
 )
 def test_quoted_separators_do_not_split(command):
-    assert _DENY_RM.match("execute", {"command": command}) is None
+    # allow sees one ``echo`` command; deny additionally checks a quote-blind
+    # split, so a quoted ``rm`` is a (deliberate) deny false positive
+    rules = Rules(allow=["execute:echo *", "execute:ls *", "execute:cat", "execute:grep *"])
+    assert rules.match("execute", {"command": command}) == "allow"
 
 
 def test_allow_needs_every_segment_to_match():
@@ -287,3 +291,138 @@ def test_suggested_rule_uses_the_first_segment_program():
     assert suggest_rule("execute", {"command": "FOO=1 sudo pytest -q && ls"}) == (
         "execute:pytest *"
     )
+
+
+# --- fix round 1: review findings --------------------------------------------
+
+_ALLOW_ECHO = Rules(allow=["execute:echo *", "execute:ls *"])
+
+_ANSI_C = [
+    r"echo $'\'' ; touch PWNED ; echo $'\''",
+    "echo $'\\'' ; touch PWNED ; echo '",
+    "echo $'a\\' ; touch PWNED ; echo '",
+    "echo $'\\'' ; touch PWNED ; echo $'\\'' '",
+]
+
+
+@pytest.mark.parametrize("command", _ANSI_C)
+def test_ansi_c_quoting_does_not_hide_a_command_from_allow(command):
+    assert _ALLOW_ECHO.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize("command", [c.replace("touch PWNED", "rm -rf x") for c in _ANSI_C])
+def test_ansi_c_quoting_does_not_hide_a_command_from_deny(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+def test_ansi_c_quoted_program_is_matched():
+    assert _DENY_RM.match("execute", {"command": "$'rm' x"}) == "deny"
+    assert _ALLOW_ECHO.match("execute", {"command": "echo $'a\\tb'"}) == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'EOF'\n'\nEOF\nrm -rf x",
+        "cat <<EOF\n'\nEOF\nrm -rf x; echo '",
+        "cat <<EOF\n$(rm -rf x)\nEOF",
+        "echo 'unterminated; rm -rf x",
+    ],
+)
+def test_here_docs_and_unparseable_lines_still_hit_deny_under_yolo(tmp_path, command):
+    p = Policy(_DENY_RM, workspace=Workspace(tmp_path), yolo=True)
+    assert p.check(execute, {"command": command}).action == "deny"
+
+
+def test_here_doc_body_is_data_not_commands():
+    rules = Rules(allow=["execute:cat *"])
+    assert rules.match("execute", {"command": "cat <<'EOF'\nhello; world\nEOF"}) == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "if true; then rm x; fi",
+        "for f in a; do rm $f; done",
+        "while :; do rm x; done",
+        "until false; do rm x; done",
+        "if false; then :; else rm x; fi",
+        "if false; then :; elif rm x; then :; fi",
+        "/bin/rm x",
+        "nice rm x",
+        "nice -n 5 rm x",
+        "timeout 5 rm x",
+        "timeout -s KILL 5 rm x",
+        "doas rm x",
+        "doas -u root rm x",
+        "stdbuf -o0 rm x",
+    ],
+)
+def test_keywords_paths_and_more_prefixes_hit_deny(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+def test_basename_variant_is_not_used_for_allow():
+    assert Rules(allow=["execute:rm *"]).match("execute", {"command": "/tmp/evil/rm x"}) is None
+
+
+def test_redirection_forms_are_not_separators():
+    rules = Rules(allow=["execute:echo *"])
+    assert rules.match("execute", {"command": "echo hi >| out.txt"}) == "allow"
+    assert rules.match("execute", {"command": "echo a\\\nb"}) == "allow"
+
+
+# Cross-check against a real shell: whatever ``sh`` would run must be visible.
+_TOKS = ["$'", "'", "\\", '"', "\\'", "#", "`", "a", "$(", ")", "${", "}", "\n"]
+_TAILS = ["", "'", "$'", '"', "\\'", "#'", "`"]
+
+
+def _corpus(max_len: int) -> list[str]:
+    import itertools
+
+    out = []
+    for size in range(1, max_len + 1):
+        for combo in itertools.product(_TOKS, repeat=size):
+            for tail in _TAILS:
+                out.append("echo " + "".join(combo) + " ; touch PWNED ; echo " + tail)
+    return out
+
+
+def _sh_creates_pwned(command: str, tmp_path) -> bool:
+    import subprocess
+
+    marker = tmp_path / "PWNED"
+    marker.unlink(missing_ok=True)
+    subprocess.run(["/bin/sh", "-c", command], cwd=tmp_path, capture_output=True, timeout=5)
+    return marker.exists()
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="needs /bin/sh")
+def test_fuzz_allow_never_approves_a_line_that_runs_touch(tmp_path):
+    allowed = [c for c in _corpus(3) if _ALLOW_ECHO.match("execute", {"command": c}) == "allow"]
+    leaks = [c for c in allowed if _sh_creates_pwned(c, tmp_path)]
+    assert leaks == []
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="needs /bin/sh")
+def test_fuzz_deny_catches_every_line_that_runs_touch(tmp_path):
+    rules = Rules(deny=["execute:touch *"])
+    missed = [
+        c
+        for c in _corpus(2)
+        if rules.match("execute", {"command": c}) != "deny" and _sh_creates_pwned(c, tmp_path)
+    ]
+    assert missed == []
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="needs /bin/sh")
+def test_fuzz_parser_alone_sees_every_command_sh_runs(tmp_path):
+    """Without the quote-blind safety net, the parser must either see ``touch`` or give up."""
+    from luna_core.shellsplit import split_command
+
+    def sees_touch(command: str) -> bool:
+        readings = [split_command(command), split_command(command, ansi_c=False)]
+        return any(p is None or "touch PWNED" in p.commands for p in readings)
+
+    missed = [c for c in _corpus(2) if not sees_touch(c) and _sh_creates_pwned(c, tmp_path)]
+    assert missed == []
