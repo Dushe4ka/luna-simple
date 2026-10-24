@@ -98,6 +98,11 @@ async def read_file(
     _seen(ctx).add(rel)
     if not lines:
         return ToolOutput.text("(empty file)", rel)
+    if start >= len(lines):
+        return ToolOutput.text(
+            f"(offset {start} is past the end: the file has only {len(lines)} lines)",
+            f"{rel} ({len(lines)} lines)",
+        )
     if end < len(lines):
         out.append(f"… {len(lines) - end} more lines; read again with offset={end}")
     return ToolOutput.text("\n".join(out), f"{rel} {start + 1}-{end}")
