@@ -132,9 +132,13 @@ async def test_verify_without_command_and_with_failure(monkeypatch):
     assert (await run_line("/verify", FakeEnv())).notices == [
         Notice("dim", "set agent.verify_command in config first")
     ]
-    monkeypatch.setattr(builtin, "run_verify", lambda cmd, wd: (False, "E"))
-    env = FakeEnv(cfg=LunaConfig(verify_command="make check"))
+    seen = {}
+    monkeypatch.setattr(
+        builtin, "run_verify", lambda cmd, wd, **kw: seen.update(kw) or (False, "E")
+    )
+    env = FakeEnv(cfg=LunaConfig(verify_command="make check", execute_pass_env=("GH_TOKEN",)))
     assert (await run_line("/verify", env)).notices == [Notice("warn", "verify failed\nE")]
+    assert seen == {"pass_env": ("GH_TOKEN",)}
 
 
 async def test_reload_rebuilds_and_reports_failure():

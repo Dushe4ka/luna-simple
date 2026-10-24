@@ -211,7 +211,7 @@ async def test_format_only_touches_files_the_turn_actually_changed(tmp_path, mon
     seen_paths: list[list[str]] = []
     real_run = fmt_module.run
     monkeypatch.setattr(
-        fmt_module, "run", lambda c, w, p: seen_paths.append(list(p)) or real_run(c, w, p)
+        fmt_module, "run", lambda c, w, p, **k: seen_paths.append(list(p)) or real_run(c, w, p, **k)
     )
     script = [
         FakeProvider.call("write_file", {"file_path": "/b.txt", "content": "new\n"}),
@@ -239,7 +239,7 @@ async def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_
     fmt_calls: list[list[str]] = []
     real_run = fmt_module.run
     monkeypatch.setattr(
-        fmt_module, "run", lambda c, w, p: fmt_calls.append(list(p)) or real_run(c, w, p)
+        fmt_module, "run", lambda c, w, p, **k: fmt_calls.append(list(p)) or real_run(c, w, p, **k)
     )
     script = [
         FakeProvider.call("write_file", {"file_path": "/a.txt", "content": "edited too\n"}),

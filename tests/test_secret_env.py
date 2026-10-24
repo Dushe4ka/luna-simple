@@ -74,3 +74,48 @@ async def test_execute_pass_env_lets_a_named_var_through(tmp_path, monkeypatch):
     config.workdir, config.yolo = str(tmp_path), True
     output = await _run_env(tmp_path, config)
     assert "ghp-passed" in output and "sk-shell-openai" not in output
+
+
+def test_verify_format_and_diagnose_commands_are_scrubbed(tmp_path, monkeypatch):
+    from luna.turn import diagnose, fmt
+    from luna.turn.verify import run_verify
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shell-openai")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-passed")
+    show = "printenv OPENAI_API_KEY; printenv GITHUB_TOKEN; true"
+    ok, tail = run_verify(show, str(tmp_path))
+    assert ok and "sk-shell-openai" not in tail and "ghp-passed" not in tail
+    _, tail = run_verify(show, str(tmp_path), pass_env=("GITHUB_TOKEN",))
+    assert "ghp-passed" in tail and "sk-shell-openai" not in tail
+    assert diagnose.run("printenv OPENAI_API_KEY", str(tmp_path), []) == ""
+    assert diagnose.run("printenv GITHUB_TOKEN", str(tmp_path), [], pass_env=["GITHUB_TOKEN"])
+    fmt.run("env > fmt.txt", str(tmp_path), [])
+    assert "sk-shell-openai" not in (tmp_path / "fmt.txt").read_text()
+    fmt.run("env > fmt2.txt", str(tmp_path), [], pass_env=("GITHUB_TOKEN",))
+    assert "ghp-passed" in (tmp_path / "fmt2.txt").read_text()
+
+
+def test_engine_hands_pass_env_to_verify(tmp_path, monkeypatch):
+    from luna.turn import engine
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-passed")
+    cfg = LunaConfig(
+        workdir=str(tmp_path),
+        verify_command='test -n "$GITHUB_TOKEN"',
+        execute_pass_env=("GITHUB_TOKEN",),
+    )
+    assert engine.verify_step(cfg)[0]
+    cfg.execute_pass_env = ()
+    assert not engine.verify_step(cfg)[0]
+
+
+async def test_config_hooks_get_the_scrubbed_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shell-openai")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-passed")
+    hook = {"event": "pre_tool", "command": f"env >> {tmp_path}/hook.txt"}
+    config = LunaConfig(
+        workdir=str(tmp_path), yolo=True, hooks=[hook], execute_pass_env=("GITHUB_TOKEN",)
+    )
+    await _run_env(tmp_path, config)
+    seen = (tmp_path / "hook.txt").read_text()
+    assert "ghp-passed" in seen and "sk-shell-openai" not in seen

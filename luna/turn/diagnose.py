@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
+
+from luna_core.sandbox import scrub_env
 
 _TIMEOUT = 120
 _MAX_LINES = 40
@@ -29,7 +33,7 @@ def detect(workdir: str) -> str:
     return ""
 
 
-def run(command: str, workdir: str, paths: list[str]) -> str:
+def run(command: str, workdir: str, paths: list[str], *, pass_env: Iterable[str] = ()) -> str:
     """Run ``command`` and return a capped, best-effort diagnostics summary."""
     if not command.strip():
         return ""
@@ -42,7 +46,13 @@ def run(command: str, workdir: str, paths: list[str]) -> str:
     full = f"{command} {' '.join(shlex.quote(f'./{p}') for p in paths)}" if paths else command
     try:
         proc = subprocess.run(
-            full, shell=True, cwd=workdir, capture_output=True, text=True, timeout=_TIMEOUT
+            full,
+            shell=True,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            env=scrub_env(os.environ, passthrough=pass_env),
         )
     except (OSError, subprocess.SubprocessError):
         return ""

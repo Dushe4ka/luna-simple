@@ -111,3 +111,19 @@ async def test_load_command_hooks_from_config(tmp_path):
 
 def test_payload_is_json_serialisable_contract():
     assert json.dumps({"event": "pre_tool", "tool": "x", "args": {}, "session_id": "s"})
+
+
+async def test_command_hook_env_is_scrubbed_of_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-hook-leak")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-hook-pass")
+    hook = CommandHook("env", cwd=tmp_path, env_passthrough=("GITHUB_TOKEN",))
+    result = await hook({"event": "pre_tool"})
+    assert "ghp-hook-pass" in result.context and "sk-hook-leak" not in result.context
+
+
+async def test_load_command_hooks_passes_env_passthrough(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-hook-pass")
+    entries = [{"event": "turn_end", "command": f"printenv GITHUB_TOKEN > {tmp_path}/out"}]
+    hooks = load_command_hooks(entries, tmp_path, env_passthrough=("GITHUB_TOKEN",))
+    await hooks.run("turn_end", {"event": "turn_end"})
+    assert (tmp_path / "out").read_text().strip() == "ghp-hook-pass"

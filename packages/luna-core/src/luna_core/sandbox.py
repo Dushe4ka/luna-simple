@@ -22,6 +22,9 @@ SECRET_ENV_PATTERNS: tuple[str, ...] = (
     "*_API_KEY",
     "*_TOKEN",
     "*_SECRET",
+    "*_SECRET_*",
+    "*_PASSWORD",
+    "*_CREDENTIALS",
     "GIGACHAT_*",
     "LUNA_SERVER_TOKEN",
 )

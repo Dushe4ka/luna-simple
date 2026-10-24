@@ -156,6 +156,8 @@ def test_scrub_env_default_patterns():
     assert {"*_API_KEY", "*_TOKEN", "*_SECRET", "GIGACHAT_*", "LUNA_SERVER_TOKEN"} <= set(
         SECRET_ENV_PATTERNS
     )
+    more = {"AWS_SECRET_ACCESS_KEY": "a", "DB_PASSWORD": "b", "GOOGLE_CREDENTIALS": "c"}
+    assert scrub_env({**more, "PATH": "/bin"}) == {"PATH": "/bin"}
     env = {**_SECRETS, "PATH": "/bin", "HOME": "/h"}
     assert scrub_env(env) == {"PATH": "/bin", "HOME": "/h"}
     assert scrub_env(env, passthrough=["MY_SECRET"]) == {

@@ -204,7 +204,9 @@ async def test_subagent_turns_do_not_drive_the_parents_pipeline(tmp_path, monkey
     from luna.core.store import open_log
 
     verify_calls: list = []
-    monkeypatch.setattr(engine, "run_verify", lambda c, w: verify_calls.append(w) or (False, "red"))
+    monkeypatch.setattr(
+        engine, "run_verify", lambda c, w, **_: verify_calls.append(w) or (False, "red")
+    )
     cfg = LunaConfig(
         workdir=str(tmp_path),
         model="m",

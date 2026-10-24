@@ -60,7 +60,7 @@ async def test_mutating_turn_with_failing_verify_streams_notices_and_fixup(tmp_p
     from luna.turn import engine
 
     results = iter([(False, "boom"), (True, "")])
-    monkeypatch.setattr(engine, "run_verify", lambda cmd, wd: next(results))
+    monkeypatch.setattr(engine, "run_verify", lambda cmd, wd, **_: next(results))
     _project(tmp_path, verify="make check", yolo=True)
     app = make_app(
         default=[_write_call(), FakeProvider.text("wrote it"), FakeProvider.text("fixed it")]

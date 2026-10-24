@@ -160,7 +160,9 @@ async def build_agent(
         all_hooks = Hooks()
         if hooks is not None:
             all_hooks.extend(hooks)
-        all_hooks.extend(load_command_hooks(config.hooks, workdir))
+        all_hooks.extend(
+            load_command_hooks(config.hooks, workdir, env_passthrough=config.execute_pass_env)
+        )
         if config.sandbox == "docker":
             sandbox = DockerSandbox(
                 workdir,

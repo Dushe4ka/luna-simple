@@ -138,7 +138,9 @@ async def test_mutate_command_holds_the_session_lock(api, monkeypatch):
 
     from luna.commands import builtin
 
-    monkeypatch.setattr(builtin, "run_verify", lambda cmd, wd: (time.sleep(0.8), (True, ""))[1])
+    monkeypatch.setattr(
+        builtin, "run_verify", lambda cmd, wd, **_: (time.sleep(0.8), (True, ""))[1]
+    )
     c, app, wd = api()
     runtime = await app.state.runtimes.get("t1", wd)
     monkeypatch.setattr(type(runtime), "config", lambda self: _cfg_with_verify(self.workdir))
