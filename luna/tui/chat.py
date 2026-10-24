@@ -301,6 +301,8 @@ class ChatPane(Widget):
         self._asked: set[str] = set()
         #: ``time.monotonic()`` until which the idle watcher may re-attach.
         self._watch_until = 0.0
+        #: True while the history is being redrawn (a submit must wait).
+        self.loading_history = False
 
     def compose(self):
         """Build the transcript, autocomplete dropdown, input, and status bar.
@@ -592,6 +594,10 @@ class ChatPane(Widget):
         event.input.value = ""
         self.query_one("#autocomplete", ListView).display = False
         if not content.strip():
+            return
+        if self.loading_history:
+            self.notify("История обновляется, повторите через секунду.", severity="warning")
+            event.input.value = content
             return
         light = self._allowed_while_busy(content)
         if self.busy and not light:

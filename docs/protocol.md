@@ -172,11 +172,11 @@ entry summarises one finished tool call (`args_preview` is the same
 truncated, human-readable string a `tool_started` event carries — for a call
 approved with edited arguments, the edited ones; `detail` is the first line
 of the result). A `"notice"` entry is either `"прервано"` (level `dim`, where
-a turn ended with `cancelled`) or a run's completion notice, logged when the run finished with no client attached (a background
-run, or a turn whose client disconnected), so a client reopening the session
-sees it after the finished transcript. The whole conversation is shown —
-compaction only shortens the model's context — except undone turns. An id
-the server has never seen is created (empty) in that `workdir`.
+a turn ended with `cancelled`) or a run's completion notice, logged when the
+run finished with no client attached (a background run, or a turn whose client
+disconnected), so a client reopening the session sees it after the finished
+transcript. The whole conversation is shown — compaction only shortens the
+model's context — except undone turns. An id the server has never seen is created (empty) in that `workdir`.
 
 ```json
 → GET /sessions/s1/messages?workdir=/repo
@@ -305,7 +305,8 @@ session that already runs is `409 session_busy`.
 ```json
 → POST /sessions/s1/background {"workdir": "/repo", "content": "run the full test suite"}
 ← 200 {"session_id": "s1", "label": "run the full test suite", "status": "running",
-        "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": ""}
+        "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": "",
+        "origin": "background"}
 ```
 
 ### `GET /agents`
@@ -314,14 +315,17 @@ Every background session run and every background subagent task, across
 the whole server — for a dashboard of "what's running". `runs` are detached
 sessions (`luna_core.background.RunInfo`: `session_id`, `label`, `status`
 — `queued`/`running`/`waiting`/`done`/`failed`/`cancelled` —, `started`,
-`finished`, `error`, `cost`, `text`); `tasks` are `task(background=true)`
+`finished`, `error`, `cost`, `text`, `origin` — `"background"` for a run started
+with `POST /background`, `"message"` for an ordinary streamed turn, which is
+listed here too); `tasks` are `task(background=true)`
 subagent calls (`luna_core.background.TaskInfo`: `handle`, `label`,
 `session_id`, `status`, `started`, `finished`, `ok`, `summary`).
 
 ```json
 → GET /agents
 ← 200 {"runs": [{"session_id": "s1", "label": "run the full test suite", "status": "running",
-                  "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": ""}],
+                  "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": "",
+                  "origin": "background"}],
         "tasks": []}
 ```
 

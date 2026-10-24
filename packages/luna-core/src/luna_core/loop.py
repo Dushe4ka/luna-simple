@@ -35,6 +35,7 @@ from luna_core.providers.base import ModelRequest, Provider, StreamAccumulator
 from luna_core.roles import ModelRoles
 from luna_core.sandbox import LocalSandbox, Sandbox
 from luna_core.session import Session
+from luna_core.shellsplit import split_command
 from luna_core.tools import builtin_tools
 from luna_core.tools.base import Tool, ToolContext, ToolOutput, args_preview
 from luna_core.usage import Usage, cost
@@ -627,6 +628,14 @@ class Agent:
                             f"could not save the rule {rule!r} ({exc}); "
                             "it applies for this session only",
                         )
+            if decision.always and call.name == "execute":
+                parts = split_command(str(args.get("command", "")))
+                if parts is not None and parts.elevated:
+                    yield Notice(
+                        "info",
+                        "команды с sudo/env-префиксом или такими переменными "
+                        "всегда спрашиваются, даже с правилом «всегда»",
+                    )
             if decision.type == "reject":
                 suffix = f": {decision.message}" if decision.message else ""
                 yield _Outcome(("refuse", f"rejected by the user{suffix}"))

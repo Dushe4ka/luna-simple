@@ -726,3 +726,27 @@ def test_pager_and_editor_variables_are_not_auto_allowed():
     for var in ("PAGER", "GIT_PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "LESSOPEN",
                 "LESSCLOSE", "MANPAGER"):  # fmt: skip
         assert _ALLOW_GIT.match("execute", {"command": f"{var}='rm x' git log"}) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("for f in a b; do echo $f; done", ("execute:echo *",)),
+        ("if test -f x; then ls; fi", ("execute:test *", "execute:ls *")),
+        ("case $x in a) ls;; esac", ("execute:ls *",)),
+        ("{ ls; }", ("execute:ls *",)),
+    ],
+)
+def test_suggested_rules_skip_shell_syntax(command, expected):
+    from luna_core.policy import suggest_rules
+
+    assert suggest_rules("execute", {"command": command}) == expected
+
+
+def test_shell_syntax_words_do_not_stop_allow_rules_from_matching(tmp_path):
+    p = Policy(Rules(allow=["execute:echo *"]), workspace=Workspace(tmp_path))
+    assert p.check(execute, {"command": "for f in a b; do echo $f; done"}).action == "allow"
+    # a redirect on the terminator is a write, not syntax
+    assert p.check(execute, {"command": "for f in a; do echo $f; done > out.txt"}).action == "ask"
+    # a substitution in the header is still checked on its own
+    assert p.check(execute, {"command": "for f in $(rm x); do echo; done"}).action == "ask"

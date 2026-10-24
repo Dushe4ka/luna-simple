@@ -162,6 +162,9 @@ class RunInfo:
     error: str = ""
     cost: float = 0.0
     text: str = ""
+    #: ``"message"`` for a turn a client streamed (``POST /messages``), ``"background"``
+    #: for a run started detached (``POST /background``).
+    origin: str = "message"
 
 
 class AgentManager:
@@ -184,13 +187,24 @@ class AgentManager:
         self._listeners: dict[str, list[Callable[[dict], None]]] = {}
         self._done: OrderedDict[str, None] = OrderedDict()  # finished session ids, oldest first
 
-    def start(self, agent, session: Session, text: str, *, images=(), label: str = "") -> RunInfo:
+    def start(
+        self,
+        agent,
+        session: Session,
+        text: str,
+        *,
+        images=(),
+        label: str = "",
+        origin: str = "message",
+    ) -> RunInfo:
         """Run one turn of ``session`` detached from any client."""
         _require_loop("start a session run")
         current = self._tasks.get(session.id)
         if (current and not current.done()) or session.busy:
             raise LunaCoreError(f"session {session.id} is already running")
-        info = RunInfo(session.id, label or session.title or text[:60], "queued", time.time())
+        info = RunInfo(
+            session.id, label or session.title or text[:60], "queued", time.time(), origin=origin
+        )
         self._runs[session.id] = info
         self._sessions[session.id] = session
         self._events[session.id] = deque(maxlen=self._limit)

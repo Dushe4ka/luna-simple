@@ -56,7 +56,9 @@ def _prepare(runtime, content: str):
     return prepared
 
 
-async def _start(request: Request, body: dict, session_id: str, follower=None):
+async def _start(
+    request: Request, body: dict, session_id: str, follower=None, origin: str = "message"
+):
     """Start a turn: the common part of /messages and /background.
 
     Returns ``(runtime, info)``, a ``JSONResponse`` refusal, or an ``str``
@@ -94,6 +96,7 @@ async def _start(request: Request, body: dict, session_id: str, follower=None):
                 prepared.text,
                 images=images,
                 label=make_title(prepared.title_line),
+                origin=origin,
             )
         except LunaCoreError:
             return JSONResponse({"error": "session_busy"}, status_code=409)
@@ -196,7 +199,7 @@ async def post_message(request: Request):
 async def post_background(request: Request) -> JSONResponse:
     """Run a turn detached from any client."""
     session_id = request.path_params["session_id"]
-    started = await _start(request, await request.json(), session_id)
+    started = await _start(request, await request.json(), session_id, origin="background")
     if isinstance(started, JSONResponse):
         return started
     if isinstance(started, str):

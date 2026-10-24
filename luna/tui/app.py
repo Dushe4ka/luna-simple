@@ -75,6 +75,8 @@ class LunaApp(App):
         self._tasks: dict[str, str] = {}
         self._task_labels: dict[str, str] = {}
         self._run_labels: dict[str, str] = {}
+        #: Run origin by session: only ``"background"`` runs are announced / reload history.
+        self._run_origins: dict[str, str] = {}
         #: The open session's run finished while the pane was busy: reload when idle.
         self._history_stale = False
         #: Task handles whose completion was already toasted.
@@ -147,7 +149,11 @@ class LunaApp(App):
         if chat.busy:
             return
         self._history_stale = False
-        await chat.load_history()
+        chat.loading_history = True  # a submit during the reload would be wiped by it
+        try:
+            await chat.load_history()
+        finally:
+            chat.loading_history = False
         await chat.refresh_state()
 
     async def poll_agents(self) -> None:
@@ -166,8 +172,11 @@ class LunaApp(App):
             before = self._runs.get(sid)
             self._runs[sid] = run["status"]
             self._run_labels[sid] = run["label"]
+            self._run_origins[sid] = run.get("origin", "background")
             changed = changed or before != run["status"]
-            if before in self._LIVE and run["status"] in self._VERBS:
+            # an ordinary streamed turn is already on screen: nothing to announce or reload
+            announce = self._run_origins[sid] == "background"
+            if announce and before in self._LIVE and run["status"] in self._VERBS:
                 reload_history = reload_history or sid == chat.thread_id
                 self.notify(
                     f"Фоновая сессия «{run['label']}» {self._VERBS[run['status']]}",
@@ -176,14 +185,16 @@ class LunaApp(App):
                 )
         # A run the server no longer lists is over (it was pruned): say so once and stop polling.
         for sid in [s for s, status in self._runs.items() if s not in seen]:
-            if self._runs.pop(sid) in self._LIVE:
+            was_live = self._runs.pop(sid) in self._LIVE
+            if was_live and self._run_origins.get(sid) == "background":
                 changed = True
                 reload_history = reload_history or sid == chat.thread_id
                 self.notify(
-                    f"Фоновая сессия «{self._run_labels.get(sid, sid)}» завершена",
+                    f"Фоновая сессия «{self._run_labels.get(sid, sid)}» больше не отслеживается",
                     markup=False,
                 )
             self._run_labels.pop(sid, None)
+            self._run_origins.pop(sid, None)
         seen_tasks = set()
         for task in agents.get("tasks", []):
             seen_tasks.add(task["handle"])

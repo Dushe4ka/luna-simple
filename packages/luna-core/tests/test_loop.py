@@ -766,3 +766,18 @@ async def test_always_on_a_crafted_line_saves_no_catch_all_rule(env):
     )
     assert agent.policy.rules.allow == []
     assert any(isinstance(e, Notice) and "not saved" in e.text for e in events)
+
+
+async def test_always_on_an_elevated_line_says_it_will_keep_asking(env):
+    from luna_core.events import Notice
+
+    tmp, session = env
+    script = [
+        FakeProvider.call("execute", {"command": "sudo true"}, "c1"),
+        FakeProvider.text("done"),
+    ]
+    agent = agent_for(tmp, script)
+    events = await collect(
+        agent, session, decide=lambda r: Decision.approve(always=r.suggested_rule)
+    )
+    assert any(isinstance(e, Notice) and "sudo/env" in e.text for e in events)

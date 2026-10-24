@@ -111,7 +111,8 @@ class Rules:
             return None
         if any(parts.elevated for parts in readings):  # sudo/env/LD_PRELOAD=...: ask
             return None
-        commands = [c for parts in readings for c in parts.commands] or [command]
+        commands = [c for parts in readings for c in parts.commands if not is_shell_syntax(c)]
+        commands = commands or [command]
         if all(self._hit(self.allow, "execute", c) for c in commands):
             return "allow"
         return None
@@ -296,6 +297,27 @@ def _glob_escape(path: str) -> str:
     return "".join(_GLOB_ESCAPES.get(ch, ch) for ch in path)
 
 
+_SYNTAX_TERMINATORS = frozenset({"done", "fi", "esac", "}"})
+_SYNTAX_HEADER = re.compile(
+    r"^(?:for|select)\s+\w+(?:\s+in(?:\s.*)?)?$|^case\s.*\sin\s.*$|^case\s.*\sin$"
+)
+
+
+def is_shell_syntax(simple: str) -> bool:
+    """Return True for a "command" that is only shell syntax: ``done``, ``fi``, ``for x in a b``.
+
+    ``split_command`` lists loop/condition terminators and headers beside real
+    commands; they run nothing by themselves (a redirect or a ``$(...)`` /
+    backtick in a header is not syntax: the latter is listed on its own).
+    """
+    text = simple.strip()
+    if text in _SYNTAX_TERMINATORS:
+        return True
+    if any(token in text for token in ("$(", "`", "<", ">")):
+        return False
+    return bool(_SYNTAX_HEADER.match(text))
+
+
 def _program_rule(command: str) -> str | None:
     words = command.split()
     if not words:
@@ -326,6 +348,8 @@ def suggest_rules(tool: str, args: dict, rules: Rules | None = None) -> tuple[st
         if reading is None:
             return ()
         for simple in reading.commands:
+            if is_shell_syntax(simple):
+                continue
             if rules is not None and rules._hit(rules.allow, "execute", simple):
                 continue
             rule = _program_rule(simple)

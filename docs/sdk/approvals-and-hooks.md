@@ -95,8 +95,11 @@ agent = Agent(provider, model, workspace=workspace, policy=policy)
   разбиению, поэтому действуют и в `yolo` (который, как и раньше, выполняет всё, кроме
   deny/ask).
 - `suggested_rule` для «Всегда разрешать» строится по программе первого сегмента:
-  `FOO=1 sudo pytest -q && ls` → `execute:pytest *`. `suggested_rules` (кортеж,
-  `luna_core.policy.suggest_rules`) перечисляет по правилу `execute:<программа> *` на каждую
+  `FOO=1 pytest -q && ls` → `execute:pytest *`. Слова-синтаксис оболочки (`done`, `fi`, `esac`, `}`
+  и заголовки `for x in …` / `case … in`) правил не порождают и allow-сопоставлению не мешают.
+  Строка с `sudo`/`env`-префиксом или опасной переменной всегда спрашивается, даже если
+  «всегда» сохранило правило на её программу; в этом случае ход получает `Notice` об этом.
+  `suggested_rules` (кортеж, `luna_core.policy.suggest_rules`) перечисляет по правилу `execute:<программа> *` на каждую
   простую команду, которую allow ещё не покрывает: для `cd src && ls` это
   `("execute:cd *", "execute:ls *")`. Если клиент возвращает в `Decision.approve(always=...)`
   ровно `suggested_rule`, агент сохраняет **все** `suggested_rules`, и та же составная команда

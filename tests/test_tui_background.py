@@ -466,7 +466,7 @@ async def test_a_run_that_vanishes_from_agents_is_finished_and_polling_stops(mon
         client.agents_rows = {"runs": [], "tasks": []}
         await app.poll_agents()
         await app.poll_agents()
-        assert toasts == ["Фоновая сессия «bg» завершена"]
+        assert toasts == ["Фоновая сессия «bg» больше не отслеживается"]
         assert not any(s in app._LIVE for s in app._runs.values())
 
 
@@ -494,3 +494,42 @@ async def test_idle_watcher_reattaches_after_a_backoff(monkeypatch):
         await app.poll_agents()  # keeps the watch wanted
         await pilot.pause(0.5)
         assert len(client.attached) >= 2
+
+
+async def test_a_normal_turn_with_background_work_alive_neither_toasts_nor_reloads(monkeypatch):
+    task = {"handle": "h1", "label": "sub", "session_id": "s1", "status": "running"}
+    turn_run = {**_run("running"), "origin": "message"}
+    client = _HistoryClient(agents={"runs": [turn_run], "tasks": [task]})
+    app = make_app(client)
+    toasts = []
+    async with app.run_test(size=(130, 36)) as pilot:
+        monkeypatch.setattr(app, "notify", lambda text, **kw: toasts.append(text))
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        before = client.history_calls
+        client.agents_rows = {"runs": [{**turn_run, "status": "done"}], "tasks": [task]}
+        await app.poll_agents()
+        client.agents_rows = {"runs": [], "tasks": [task]}  # later pruned
+        await app.poll_agents()
+        assert client.history_calls == before
+        assert toasts == []
+
+
+async def test_history_reload_blocks_a_submit_until_it_is_done():
+    client = _HistoryClient(agents={"runs": [_run("running")], "tasks": []})
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        chat = app.query_one(ChatPane)
+        seen = []
+        original = client.history
+
+        async def slow_history(session_id, workdir):
+            seen.append(chat.loading_history)
+            return await original(session_id, workdir)
+
+        client.history = slow_history
+        client.agents_rows = {"runs": [_run("done")], "tasks": []}
+        await app.poll_agents()
+        assert seen == [True] and chat.loading_history is False
