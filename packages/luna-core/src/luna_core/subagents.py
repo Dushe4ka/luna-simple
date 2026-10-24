@@ -351,7 +351,8 @@ class SubagentResult:
                 f"\n\n[changes are committed on branch {self.branch}; diff stat:\n"
                 f"{self.diffstat or 'no changes'}\n"
                 "apply them to the main working tree with: "
-                f"git diff --binary {self.base} {self.branch} | git apply --3way --binary]"
+                f"git diff --binary {self.base} {self.branch} | git apply --3way --binary "
+                "(--3way also stages the applied changes in the index)]"
             )
         return head
 

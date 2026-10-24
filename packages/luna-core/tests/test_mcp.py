@@ -196,3 +196,20 @@ async def test_expanded_secret_values_are_redacted_from_warnings(tmp_path):
     await manager.close()
     assert warnings and secret not in warnings[0] and "${TOKEN}" in warnings[0]
     assert secret not in manager.status()["ghost"]
+
+
+async def test_tool_call_errors_are_redacted_too():
+    from types import SimpleNamespace
+
+    secret = "s3cr3t-token-value"
+
+    class Session:
+        async def call_tool(self, name, arguments):
+            raise RuntimeError(f"auth failed for {secret}")
+
+    manager = MCPManager({}, redactions={secret: "${TOKEN}"})
+    tool = SimpleNamespace(name="t", description="d", inputSchema=None, annotations=None)
+    built = manager._tool("srv", Session(), tool)
+    out = await built.invoke(ToolContext(), {})
+    text = out.content[0].text
+    assert out.is_error and secret not in text and "${TOKEN}" in text

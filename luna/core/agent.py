@@ -90,7 +90,11 @@ def _roles(config: LunaConfig, registry: dict[str, ProviderSpec]) -> ModelRoles:
         if sep and name in registry:
             values[role] = build_provider(name, rest or None, registry=registry)
         else:
-            close = difflib.get_close_matches(name, registry, n=1, cutoff=0.9) if sep and name not in _MODEL_FAMILIES else []
+            close = (
+                difflib.get_close_matches(name, registry, n=1, cutoff=0.9)
+                if sep and name not in _MODEL_FAMILIES
+                else []
+            )
             if close:
                 raise LunaConfigError(
                     f"model role {role!r}: {name!r} is not a known provider; did you mean "

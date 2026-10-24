@@ -399,11 +399,14 @@ class MCPManager:
                 )
             except TimeoutError:
                 return ToolOutput.error(f"{server}.{tool.name} timed out after {timeout:g}s")
+            except Exception as exc:  # noqa: BLE001 - SDK text may echo expanded secrets
+                reason = self._redact(f"{type(exc).__name__}: {exc}")
+                return ToolOutput.error(f"{server}.{tool.name} failed: {reason}")
             parts = []
             for item in result.content:
                 kind = getattr(item, "type", "")
                 if kind == "text":
-                    parts.append(Text(item.text))
+                    parts.append(Text(self._redact(item.text) if result.isError else item.text))
                 elif kind == "image":
                     parts.append(Image(item.mimeType, item.data))
                 else:
