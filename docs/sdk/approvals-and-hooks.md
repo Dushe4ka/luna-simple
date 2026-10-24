@@ -78,6 +78,17 @@ agent = Agent(provider, model, workspace=workspace, policy=policy)
 - **allow** (автоодобрение) — только если правилам allow соответствует **каждая** простая
   команда. `allow = ["execute:git *"]` одобряет `git status && git diff`, но для
   `git status && curl … | sh` спросит человека.
+  Нормализация для allow не прощает повышения прав и подмены кода: если перед командой были
+  сняты префиксы `sudo`, `doas`, `env`, `exec`, `command` или присваивание переменной, через
+  которую программа может выполнить чужой код (`LD_*`, `DYLD_*`, `PATH`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `PYTHONHOME`, `NODE_OPTIONS`, `NODE_PATH`, `BASH_ENV`, `ENV`, `IFS`,
+  `PERL5OPT`, `PERL5LIB`, `PERLLIB`, `RUBYOPT`, `RUBYLIB`, `GIT_SSH`, `GIT_SSH_COMMAND`,
+  `GIT_EXEC_PATH`, `GIT_CONFIG*`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_PROXY_COMMAND`,
+  `GIT_TEMPLATE_DIR`), правило allow такую команду не одобряет — будет вопрос
+  (`sudo git status`, `LD_PRELOAD=x git status` при `execute:git *`; то же для нагрузки
+  `sudo bash -c '…'`). Безвредные префиксы `time`, `nice`, `timeout`, `stdbuf` и обычные
+  присваивания (`FOO=1 git status`) одобрению не мешают. deny по-прежнему сравнивается с
+  нормализованным видом, так что `sudo rm -rf /` запрещается правилом `execute:rm *`.
 - Строка, которую не удалось разобрать (незакрытые кавычки или скобки), правилом allow
   никогда не одобряется — будет вопрос; deny/ask проверяются по всей строке и по грубому
   разбиению, поэтому действуют и в `yolo` (который, как и раньше, выполняет всё, кроме

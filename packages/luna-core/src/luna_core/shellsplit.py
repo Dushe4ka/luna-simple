@@ -66,6 +66,15 @@ _MAX_ROUGH_CUTS = 512
 #: An unparseable line longer than this is not trusted to the rough net alone.
 _MAX_UNPARSEABLE = 4096
 _MAX_DEPTH = 8
+# Prefixes that change who runs the command or how it is looked up.
+_ELEVATING_PREFIXES = frozenset({"sudo", "doas", "env", "exec", "command"})
+# Variables whose assignment can make an allowed program run other code.
+_INJECTING_VAR = re.compile(
+    r"^(?:LD_\w*|DYLD_\w*|PATH|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|NODE_OPTIONS|NODE_PATH"
+    r"|BASH_ENV|ENV|IFS|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB"
+    r"|GIT_SSH|GIT_SSH_COMMAND|GIT_EXEC_PATH|GIT_CONFIG\w*|GIT_ASKPASS|GIT_EXTERNAL_DIFF"
+    r"|GIT_PROXY_COMMAND|GIT_TEMPLATE_DIR)="
+)
 
 
 class _Unparseable(Exception):
@@ -79,11 +88,15 @@ class CommandParts:
     ``commands`` are the normalised simple commands that actually run (what
     an allow rule must cover); ``subjects`` additionally holds each raw
     segment and every wrapper (``bash -c '...'``) — everything a deny or ask
-    rule is checked against.
+    rule is checked against. ``elevated`` lists the commands whose
+    normalisation stripped a privilege/exec prefix (``sudo``, ``env``, ...)
+    or an assignment of a code-injecting variable (``LD_PRELOAD=...``): an
+    allow rule must not cover those.
     """
 
     commands: list[str] = field(default_factory=list)
     subjects: list[str] = field(default_factory=list)
+    elevated: list[str] = field(default_factory=list)
 
     @property
     def first_program(self) -> str | None:
@@ -179,7 +192,9 @@ def _variants(words: list[str]) -> list[str]:
     return out
 
 
-def _collect(text: str, parts: CommandParts, depth: int, ansi_c: bool) -> None:
+def _collect(
+    text: str, parts: CommandParts, depth: int, ansi_c: bool, elevated: bool = False
+) -> None:
     if depth > _MAX_DEPTH:
         raise _Unparseable("nested too deeply")
     segments, substitutions = _scan(text, ansi_c)
@@ -191,7 +206,9 @@ def _collect(text: str, parts: CommandParts, depth: int, ansi_c: bool) -> None:
             words = shlex.split(raw, comments=False, posix=True)
         except ValueError as exc:
             raise _Unparseable(str(exc)) from exc
-        words = _normalise(words)
+        flags: list[str] = []
+        words = _normalise(words, flags)
+        segment_elevated = elevated or bool(flags)
         if raw not in parts.subjects:
             parts.subjects.append(raw)
         if not words:
@@ -203,19 +220,28 @@ def _collect(text: str, parts: CommandParts, depth: int, ansi_c: bool) -> None:
                 parts.subjects.append(variant)
         if payload is None:
             parts.commands.append(normalised)
+            if segment_elevated:
+                parts.elevated.append(normalised)
         else:
-            _collect(payload, parts, depth + 1, ansi_c)
+            _collect(payload, parts, depth + 1, ansi_c, segment_elevated)
     for body in substitutions:
         _collect(body, parts, depth + 1, ansi_c)
 
 
-def _normalise(words: list[str]) -> list[str]:
-    """Drop leading assignments, keywords, group braces and command-runner prefixes."""
+def _normalise(words: list[str], flags: list[str] | None = None) -> list[str]:
+    """Drop leading assignments, keywords, group braces and command-runner prefixes.
+
+    Stripped privilege/exec prefixes and code-injecting assignments are
+    appended to ``flags`` when given.
+    """
     words = list(words)
+    flags = [] if flags is None else flags
     changed = True
     while words and changed:
         changed = False
         while words and (_ASSIGNMENT.match(words[0]) or words[0] in _LEADING):
+            if _INJECTING_VAR.match(words[0]):
+                flags.append(words[0])
             words.pop(0)
             changed = True
         if words and words[-1] == "}":
@@ -228,6 +254,8 @@ def _normalise(words: list[str]) -> list[str]:
             changed = True
         if words and words[0] in _PREFIXES:
             prefix = words.pop(0)
+            if prefix in _ELEVATING_PREFIXES:
+                flags.append(prefix)
             takes_value = _PREFIXES[prefix]
             while words and words[0].startswith("-"):
                 option = words.pop(0)

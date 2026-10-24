@@ -641,3 +641,47 @@ def test_long_unparseable_line_fails_closed(tmp_path):
     line = "echo " + "x " * 3000 + "'"
     assert Rules(deny=["execute:rm *"]).match("execute", {"command": line}) == "deny"
     assert Rules().match("execute", {"command": line}) == "ask"
+
+
+# --- allow never covers a privilege prefix or a code-injecting variable ---------
+
+_ALLOW_GIT = Rules(allow=["execute:git *", "execute:ls *"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo git status",
+        "doas git status",
+        "env git status",
+        "env X=1 git status",
+        "exec git status",
+        "command git status",
+        "LD_PRELOAD=evil.so git status",
+        "DYLD_INSERT_LIBRARIES=x git status",
+        "PATH=/tmp/evil:$PATH git status",
+        "GIT_SSH_COMMAND='sh -c evil' git fetch",
+        "GIT_CONFIG_GLOBAL=/tmp/c git status",
+        "GIT_EXEC_PATH=/tmp git status",
+        "PYTHONPATH=/tmp git status",
+        "NODE_OPTIONS=--require=x git status",
+        "BASH_ENV=/tmp/x git status",
+        "IFS=x git status",
+        "ls && sudo git status",
+    ],
+)
+def test_allow_does_not_cover_privilege_prefixes_or_injecting_variables(command):
+    assert _ALLOW_GIT.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["time git status", "nice git log", "timeout 5 git status", "stdbuf -o0 git log",
+     "FOO=1 git status", "GIT_PAGER_IN_USE=1 git log"],
+)  # fmt: skip
+def test_harmless_prefixes_and_assignments_still_allow(command):
+    assert _ALLOW_GIT.match("execute", {"command": command}) == "allow"
+
+
+def test_deny_still_sees_through_privilege_prefixes():
+    assert _DENY_RM.match("execute", {"command": "sudo LD_PRELOAD=x rm -rf /"}) == "deny"

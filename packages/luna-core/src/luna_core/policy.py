@@ -109,6 +109,8 @@ class Rules:
                 return kind
         if any(parts is None for parts in readings):
             return None
+        if any(parts.elevated for parts in readings):  # sudo/env/LD_PRELOAD=...: ask
+            return None
         commands = [c for parts in readings for c in parts.commands] or [command]
         if all(self._hit(self.allow, "execute", c) for c in commands):
             return "allow"
