@@ -169,9 +169,10 @@ session_busy` (cancel it first).
 
 The rendered transcript, oldest first — not the raw event log. A `"tool"`
 entry summarises one finished tool call (`args_preview` is the same
-truncated, human-readable string a `tool_started` event carries; `detail`
-is the first line of the result). A `"notice"` entry is a run's completion
-notice, logged when the run finished with no client attached (a background
+truncated, human-readable string a `tool_started` event carries — for a call
+approved with edited arguments, the edited ones; `detail` is the first line
+of the result). A `"notice"` entry is either `"прервано"` (level `dim`, where
+a turn ended with `cancelled`) or a run's completion notice, logged when the run finished with no client attached (a background
 run, or a turn whose client disconnected), so a client reopening the session
 sees it after the finished transcript. The whole conversation is shown —
 compaction only shortens the model's context — except undone turns. An id

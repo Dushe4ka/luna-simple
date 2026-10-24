@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from pathlib import Path
 
 from luna_core.client import ServerError
@@ -262,6 +263,11 @@ class ChatPane(Widget):
             self.session_id = session_id
             super().__init__()
 
+    #: Idle watcher: how long polling may go quiet before it stops re-attaching (s),
+    #: and the (first, longest) pause before re-opening an ended stream (s).
+    WATCH_GRACE = 8.0
+    WATCH_BACKOFF = (1.0, 5.0)
+
     thread_id: reactive[str | None] = reactive(None)
 
     def __init__(
@@ -293,6 +299,8 @@ class ChatPane(Widget):
         self._last_index: dict[str, int] = {}
         #: Approval call ids already put in front of the user.
         self._asked: set[str] = set()
+        #: ``time.monotonic()`` until which the idle watcher may re-attach.
+        self._watch_until = 0.0
 
     def compose(self):
         """Build the transcript, autocomplete dropdown, input, and status bar.
@@ -784,15 +792,39 @@ class ChatPane(Widget):
         follows a live run). Only one watcher runs; it stops on a session
         switch, when a turn starts and when the app exits.
         """
+        # every call renews the wish: the loop below stops once polling stops asking
+        self._watch_until = time.monotonic() + self.WATCH_GRACE
         if self.busy or any(w.group == "watch" and w.is_running for w in self.workers):
             return
-        self.run_worker(self._watch(self.thread_id), group="watch", exclusive=True)
+        self.run_worker(self._watch_loop(self.thread_id), group="watch", exclusive=True)
 
     def stop_watching(self) -> None:
         """Cancel the out-of-turn watcher (it closes its stream)."""
         self.workers.cancel_group(self, "watch")
 
-    async def _watch(self, session_id: str) -> None:
+    async def _watch_loop(self, session_id: str) -> None:
+        """Keep one stream attached; re-attach (with backoff) only when it ends.
+
+        The server closes ``/events`` at once when the session has no live
+        run (only background tasks), so the stream is re-opened after a
+        growing pause rather than on every poll tick, and only while polling
+        still wants it (``watch_out_of_turn`` renews the wish).
+        """
+        low, high = self.WATCH_BACKOFF
+        delay = low
+        while True:
+            try:
+                got_events = await self._watch(session_id)
+            except ServerError:
+                got_events = False
+            delay = low if got_events else min(delay * 2, high)
+            await asyncio.sleep(delay)
+            if time.monotonic() >= self._watch_until or self.busy:
+                return
+
+    async def _watch(self, session_id: str) -> bool:
+        """Follow one attached stream to its end; True when it delivered events."""
+        received = False
         queue: asyncio.Queue = asyncio.Queue()
         stream = self.app.client.attach(session_id, after=self._last_index.get(session_id, -1))
 
@@ -819,6 +851,7 @@ class ChatPane(Widget):
                     continue
                 if evt is None:
                     break
+                received = True
                 if "index" in evt:
                     self._last_index[session_id] = evt["index"]
                 kind = evt["event"]
@@ -838,6 +871,7 @@ class ChatPane(Widget):
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
+        return received
 
     async def _ask_pending(self, session_id: str, pending: dict[str, dict]) -> None:
         requests = list(pending.values())

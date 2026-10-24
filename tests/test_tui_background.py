@@ -392,3 +392,105 @@ async def test_pasting_a_path_of_an_unknown_user_home_is_pasted_as_text(tmp_path
         chat_input.post_message(events.Paste("~nosuchuser_luna/x.png"))
         await pilot.pause(0.1)
         assert chat_input.value == "~nosuchuser_luna/x.png"
+
+
+class _HistoryClient(FakeLunaClient):
+    """A fake whose history grows once the background run is over."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.history_rows: list[dict] = []
+        self.history_calls = 0
+
+    async def history(self, session_id, workdir):
+        self.history_calls += 1
+        return list(self.history_rows)
+
+
+def _run(status, session_id="s1"):
+    return {"session_id": session_id, "label": "bg", "status": status, "cost": 0.0}
+
+
+async def test_finished_background_run_of_the_open_session_reloads_its_history():
+    client = _HistoryClient(agents={"runs": [_run("running")], "tasks": []})
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        before = client.history_calls
+        client.history_rows = [{"role": "assistant", "content": "результат"}]
+        client.agents_rows = {"runs": [_run("done")], "tasks": []}
+        await app.poll_agents()
+        await pilot.pause(0.2)
+        assert client.history_calls > before
+        assert [w.source for w in app.query("LunaMessage")] == ["результат"]
+
+
+async def test_history_reload_waits_for_an_idle_pane():
+    client = _HistoryClient(agents={"runs": [_run("running")], "tasks": []})
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        chat = app.query_one(ChatPane)
+        chat.busy = True
+        before = client.history_calls
+        client.agents_rows = {"runs": [_run("done")], "tasks": []}
+        await app.poll_agents()
+        assert client.history_calls == before  # a streaming turn is not clobbered
+        chat.busy = False
+        await app.poll_agents()
+        assert client.history_calls == before + 1
+
+
+async def test_a_run_of_another_session_does_not_reload_the_open_history():
+    client = _HistoryClient(agents={"runs": [_run("running", "s2")], "tasks": []})
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        before = client.history_calls
+        client.agents_rows = {"runs": [_run("done", "s2")], "tasks": []}
+        await app.poll_agents()
+        assert client.history_calls == before
+
+
+async def test_a_run_that_vanishes_from_agents_is_finished_and_polling_stops(monkeypatch):
+    client = _HistoryClient(agents={"runs": [_run("running")], "tasks": []})
+    app = make_app(client)
+    toasts = []
+    async with app.run_test(size=(130, 36)) as pilot:
+        monkeypatch.setattr(app, "notify", lambda text, **kw: toasts.append(text))
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        client.agents_rows = {"runs": [], "tasks": []}
+        await app.poll_agents()
+        await app.poll_agents()
+        assert toasts == ["Фоновая сессия «bg» завершена"]
+        assert not any(s in app._LIVE for s in app._runs.values())
+
+
+async def test_idle_watcher_is_not_reattached_on_every_poll(monkeypatch):
+    task = {"handle": "h1", "label": "sub", "session_id": "s1", "status": "running"}
+    client = FakeLunaClient(agents={"runs": [], "tasks": [task]})  # attach() ends at once
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause(0.2)
+        for _ in range(4):
+            await app.poll_agents()
+            await pilot.pause(0.1)
+        assert len(client.attached) == 1
+
+
+async def test_idle_watcher_reattaches_after_a_backoff(monkeypatch):
+    monkeypatch.setattr(ChatPane, "WATCH_BACKOFF", (0.1, 0.1))
+    task = {"handle": "h1", "label": "sub", "session_id": "s1", "status": "running"}
+    client = FakeLunaClient(agents={"runs": [], "tasks": [task]})
+    app = make_app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await pilot.pause(0.2)
+        await app.poll_agents()
+        await pilot.pause(0.1)
+        await app.poll_agents()  # keeps the watch wanted
+        await pilot.pause(0.5)
+        assert len(client.attached) >= 2
