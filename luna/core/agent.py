@@ -168,7 +168,11 @@ async def build_agent(
             "installed — goto_definition/find_references/hover/symbol_range are unavailable"
         )
     servers = mcp_mod.load_mcp_config(str(workdir))
-    manager = MCPManager(servers, on_warn=on_warn) if servers else None
+    manager = (
+        MCPManager(servers, on_warn=on_warn, redactions=mcp_mod.mcp_redactions(str(workdir)))
+        if servers
+        else None
+    )
     try:
         runner = SubagentRunner(
             load_subagents(str(workdir), on_warn=on_warn), max_parallel=config.max_parallel

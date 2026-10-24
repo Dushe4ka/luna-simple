@@ -130,7 +130,7 @@ async def test_mcp_tool_colliding_with_an_existing_tool_is_skipped(tmp_path, mon
     closed = []
 
     class FakeManager:
-        def __init__(self, servers, *, on_warn):
+        def __init__(self, servers, *, on_warn, **_options):
             self.servers = servers
 
         async def start(self):
@@ -319,7 +319,7 @@ async def test_a_failing_build_after_mcp_start_closes_the_manager(tmp_path, monk
     calls: list[str] = []
 
     class FakeManager:
-        def __init__(self, servers, *, on_warn):
+        def __init__(self, servers, *, on_warn, **_options):
             pass
 
         async def start(self):

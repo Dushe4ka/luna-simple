@@ -37,6 +37,33 @@ def expand_env(value, environ: Mapping[str, str]):
     return value
 
 
+_MIN_REDACTED = 4  # shorter values would mangle ordinary text
+
+
+def _referenced_vars(value) -> set[str]:
+    if isinstance(value, str):
+        return set(_ENV.findall(value))
+    if isinstance(value, list):
+        return set().union(*map(_referenced_vars, value)) if value else set()
+    if isinstance(value, dict):
+        return set().union(*map(_referenced_vars, value.values())) if value else set()
+    return set()
+
+
+def env_redactions(files: list[Path], environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Map each value expanded from a ``${VAR}`` in ``files`` back to ``"${VAR}"``.
+
+    Pass the result as ``MCPManager(redactions=...)`` so SDK error text that echoes an
+    expanded secret is shown with the placeholder instead. Values shorter than 4
+    characters are left out (replacing them would mangle unrelated text).
+    """
+    env = os.environ if environ is None else environ
+    names: set[str] = set()
+    for path in files:
+        names |= _referenced_vars(_read(path))
+    return {env[n]: f"${{{n}}}" for n in sorted(names) if len(env.get(n, "")) >= _MIN_REDACTED}
+
+
 def _read(path: Path) -> dict:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -193,8 +220,18 @@ class MCPManager:
         call_timeout: float = 120.0,
         token_dir: Path | None = None,
         open_browser: Callable[[str], object] | None = None,
+        close_timeout: float = 5.0,
+        redactions: Mapping[str, str] | None = None,
     ) -> None:
+        """Configure the manager.
+
+        ``close_timeout`` is how long :meth:`close` lets servers wind down before it
+        cancels them. ``redactions`` maps expanded secret values to their ``${VAR}``
+        placeholders (see :func:`env_redactions`); they are replaced in warnings and status.
+        """
         self.servers = dict(servers)
+        self.close_timeout = close_timeout
+        self._redactions = dict(redactions or {})
         self.on_warn = on_warn
         self.connect_timeout = connect_timeout
         self.call_timeout = call_timeout
@@ -206,6 +243,11 @@ class MCPManager:
         self._status: dict[str, str] = {}
         self._stops: dict[str, asyncio.Event] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+
+    def _redact(self, text: str) -> str:
+        for value in sorted(self._redactions, key=len, reverse=True):
+            text = text.replace(value, self._redactions[value])
+        return text
 
     def status(self) -> dict[str, str]:
         """Return ``connected`` or ``failed: …`` per server."""
@@ -238,7 +280,7 @@ class MCPManager:
         try:
             session, tools = await asyncio.wait_for(ready, self.connect_timeout)
         except Exception as exc:  # noqa: BLE001 - one bad server must not break the agent
-            message = str(exc) or type(exc).__name__
+            message = self._redact(str(exc) or type(exc).__name__)
             self._status[name] = f"failed: {message}"
             self.on_warn(f"MCP server {name!r} did not start: {message}")
             stop.set()
@@ -394,7 +436,9 @@ class MCPManager:
         for stop in self._stops.values():
             stop.set()
         tasks = list(self._tasks.values())
-        done, pending = await asyncio.wait(tasks, timeout=5) if tasks else (set(), set())
+        done, pending = (
+            await asyncio.wait(tasks, timeout=self.close_timeout) if tasks else (set(), set())
+        )
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)

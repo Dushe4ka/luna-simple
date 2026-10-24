@@ -163,3 +163,36 @@ async def test_oauth_token_file_name_must_stay_in_the_token_dir(tmp_path, name):
     manager = MCPManager({}, on_warn=lambda _m: None, token_dir=tmp_path / "tokens")
     with pytest.raises(MCPConfigError):
         await manager._oauth(name, {"url": "https://example.invalid/mcp", "oauth": True})
+
+
+async def test_close_drain_timeout_is_configurable():
+    manager = MCPManager({}, close_timeout=0.1)
+    assert MCPManager({}).close_timeout == 5.0
+    stuck = asyncio.create_task(asyncio.sleep(60))
+    manager._tasks["stuck"] = stuck
+    manager._stops["stuck"] = asyncio.Event()
+    started = asyncio.get_running_loop().time()
+    await manager.close()
+    assert asyncio.get_running_loop().time() - started < 2
+    assert stuck.cancelled()
+
+
+async def test_expanded_secret_values_are_redacted_from_warnings(tmp_path):
+    from luna_core.mcp import env_redactions
+
+    secret = "s3cr3t-token-value"
+    conf = tmp_path / "mcp.json"
+    conf.write_text(
+        json.dumps({"mcpServers": {"ghost": {"command": str(tmp_path / "${TOKEN}" / "bin")}}})
+    )
+    environ = {"TOKEN": secret, "UNUSED": "never-referenced"}
+    servers = load_config([conf], environ)
+    assert secret in servers["ghost"]["command"]
+    redactions = env_redactions([conf], environ)
+    assert redactions == {secret: "${TOKEN}"}
+    warnings = []
+    manager = MCPManager(servers, on_warn=warnings.append, connect_timeout=5, redactions=redactions)
+    assert await manager.start() == []
+    await manager.close()
+    assert warnings and secret not in warnings[0] and "${TOKEN}" in warnings[0]
+    assert secret not in manager.status()["ghost"]
