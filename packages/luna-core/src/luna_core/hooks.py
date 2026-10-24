@@ -180,10 +180,11 @@ def load_command_hooks(
         if point not in POINTS or not isinstance(command, str) or not command.strip():
             continue
         timeout = float(entry.get("timeout", 60))
+        match = entry.get("match")  # missing or None means "every tool"
         hooks.add(
             point,
             CommandHook(command, cwd=cwd, timeout=timeout, env_passthrough=env_passthrough),
-            match=str(entry.get("match", "*")),
+            match="*" if match is None else str(match),
             timeout=timeout + 5,
         )
     return hooks

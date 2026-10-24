@@ -127,3 +127,12 @@ async def test_load_command_hooks_passes_env_passthrough(tmp_path, monkeypatch):
     hooks = load_command_hooks(entries, tmp_path, env_passthrough=("GITHUB_TOKEN",))
     await hooks.run("turn_end", {"event": "turn_end"})
     assert (tmp_path / "out").read_text().strip() == "ghp-hook-pass"
+
+
+async def test_command_hook_with_null_match_matches_every_tool(tmp_path):
+    hooks = load_command_hooks(
+        [{"event": "pre_tool", "match": None, "command": "exit 2"}],
+        tmp_path,
+    )
+    assert (await hooks.run("pre_tool", {"args": {}}, tool="execute")).block
+    assert (await hooks.run("pre_tool", {"args": {}}, tool="ls")).block
