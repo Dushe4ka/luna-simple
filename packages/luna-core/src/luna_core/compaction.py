@@ -22,6 +22,9 @@ _IMAGE_TOKENS = 1500
 #: An automatic attempt that failed or found nothing to compact waits for this many
 #: new entries before trying again (avoids retrying every single step).
 _BACKOFF_ENTRIES = 4
+#: After a ``pre_compact`` hook blocked an automatic attempt, wait for this many new
+#: entries before asking the hook (and showing its notice) again.
+_BLOCKED_BACKOFF_ENTRIES = 30
 #: The summariser input is trimmed to this fraction of the summary model's window.
 _TRIM_RATIO = 0.7
 _OMITTED_MARKER = "[earlier part omitted]\n\n"
@@ -113,7 +116,9 @@ class Compactor:
 
         An automatic attempt that just failed, or found nothing to compact,
         is not retried until the session has grown by ``_BACKOFF_ENTRIES``
-        entries (recorded in ``session.state["compaction_backoff"]``).
+        entries (recorded in ``session.state["compaction_backoff"]``). A
+        ``pre_compact`` hook that blocked an automatic attempt is not asked again
+        (and its notice not repeated) for ``_BLOCKED_BACKOFF_ENTRIES`` entries.
         """
         window = window if window is not None else agent.model_info.context_window
         if estimate_tokens(agent.request(session)) < self.threshold * window:
@@ -121,6 +126,11 @@ class Compactor:
         backoff_at = session.state.get("compaction_backoff")
         if backoff_at is not None and len(session.entries()) - backoff_at < _BACKOFF_ENTRIES:
             return
+        blocked_at = session.state.get("compaction_blocked")
+        if blocked_at is not None:
+            if len(session.entries()) - blocked_at < _BLOCKED_BACKOFF_ENTRIES:
+                return
+            del session.state["compaction_blocked"]
         async for event in self._run(agent, session, instructions="", automatic=True):
             yield event
 
@@ -158,6 +168,8 @@ class Compactor:
         for note in outcome.notices:
             yield Notice("info", note)
         if outcome.block:
+            if automatic:
+                session.state["compaction_blocked"] = len(session.entries())
             yield Notice("info", f"compaction skipped: {outcome.message or 'blocked by a hook'}")
             return
         previous = next(
