@@ -84,7 +84,8 @@ agent = Agent(provider, model, workspace=workspace, policy=policy)
   `PYTHONSTARTUP`, `PYTHONHOME`, `NODE_OPTIONS`, `NODE_PATH`, `BASH_ENV`, `ENV`, `IFS`,
   `PERL5OPT`, `PERL5LIB`, `PERLLIB`, `RUBYOPT`, `RUBYLIB`, `GIT_SSH`, `GIT_SSH_COMMAND`,
   `GIT_EXEC_PATH`, `GIT_CONFIG*`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_PROXY_COMMAND`,
-  `GIT_TEMPLATE_DIR`), правило allow такую команду не одобряет — будет вопрос
+  `GIT_TEMPLATE_DIR`, `GIT_PAGER`, `GIT_EDITOR`, `PAGER`, `MANPAGER`, `EDITOR`, `VISUAL`,
+  `LESSOPEN`, `LESSCLOSE`), правило allow такую команду не одобряет — будет вопрос
   (`sudo git status`, `LD_PRELOAD=x git status` при `execute:git *`; то же для нагрузки
   `sudo bash -c '…'`). Безвредные префиксы `time`, `nice`, `timeout`, `stdbuf` и обычные
   присваивания (`FOO=1 git status`) одобрению не мешают. deny по-прежнему сравнивается с
@@ -113,6 +114,15 @@ agent = Agent(provider, model, workspace=workspace, policy=policy)
   `execute:* *` не записать никаким путём, в том числе строкой `always` от клиента. Правила,
   вписанные в конфиг руками, не проверяются. TUI под кнопкой «Разрешить всегда» показывает,
   какие правила будут сохранены.
+- Для файловых инструментов «всегда» сохраняет правило ровно на этот путь: метасимволы `fnmatch`
+  в пути экранируются (`*` → `[*]`, `?` → `[?]`, `[` → `[[]`), так что файл с именем `*`
+  даёт `write_file:[*]`, а не `write_file:*`. Правило allow для файлового инструмента или
+  группы, которое совпадает с любым путём (`*`, `**`, `*/**`, `/**`, `./*`), через «всегда» и
+  `append_rule` не сохраняется.
+- Помните: «всегда» для интерпретаторов и сборщиков (`python`, `node`, `npx`, `uv`, `perl`,
+  `ruby`, `make`, `npm run`, `cargo` и т. п.) фактически разрешает произвольный код — им можно
+  передать любой скрипт или задачу. В `RUNNER_PROGRAMS` они не входят, чтобы не ломать обычную
+  работу; сохраняйте такие правила осознанно.
 
 Это консервативное приближение грамматики оболочки, а не полный парсер: команды, которые
 запускают другие программы из аргументов (`xargs rm`, `find -exec rm`, `busybox rm`, `watch rm`),

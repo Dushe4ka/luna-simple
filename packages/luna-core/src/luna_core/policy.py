@@ -265,9 +265,13 @@ def check_rule_safe(rule: str) -> None:
 
     An allow rule that applies to ``execute`` must name a plain program
     (``execute:pytest *``, ``execute:./run.sh *``), never a glob (``execute:*``,
-    ``execute:? *``), a variable or a command runner such as ``bash``.
+    ``execute:? *``), a variable or a command runner such as ``bash``. A rule
+    for a file tool or group must not be a bare match-everything pattern
+    (``write_file:*``, ``delete:**``, ``write:*/**``).
     """
     tool, _, pattern = rule.partition(":")
+    if tool != "execute" and _matches_everything(pattern):
+        raise UnsafeRule(f"refusing to save {rule!r}: it matches every path")
     if not _tool_matches(tool, "execute"):
         return
     words = pattern.split()
@@ -276,6 +280,20 @@ def check_rule_safe(rule: str) -> None:
         raise UnsafeRule(f"refusing to save {rule!r}: {program!r} is not a plain program name")
     if program.rsplit("/", 1)[-1] in RUNNER_PROGRAMS:
         raise UnsafeRule(f"refusing to save {rule!r}: {program!r} can run any command")
+
+
+def _matches_everything(pattern: str) -> bool:
+    """Return True for a path pattern of only wildcards, slashes and dots (``**/*``)."""
+    stripped = pattern.strip()
+    return not stripped or ("*" in stripped and set(stripped) <= set("*/."))
+
+
+_GLOB_ESCAPES = {"*": "[*]", "?": "[?]", "[": "[[]"}
+
+
+def _glob_escape(path: str) -> str:
+    """Escape ``fnmatch`` metacharacters so the pattern matches only ``path``."""
+    return "".join(_GLOB_ESCAPES.get(ch, ch) for ch in path)
 
 
 def _program_rule(command: str) -> str | None:
@@ -328,7 +346,8 @@ def suggest_rule(tool: str, args: dict) -> str:
             words = command.split()
             program = words[0] if words else None
         return f"execute:{program} *" if program else "execute:*"
-    return f"{tool}:{_subject(tool, args)}"
+    # a file literally named ``*`` must not turn into ``write_file:*``
+    return f"{tool}:{_glob_escape(_subject(tool, args))}"
 
 
 @dataclass(frozen=True)

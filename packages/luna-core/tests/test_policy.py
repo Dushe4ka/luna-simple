@@ -135,12 +135,12 @@ def test_deny_rule_matches_command_with_leading_space(tmp_path):
 def test_append_rule_preserves_other_tables(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text('[model]\nname = "x"\n\n[permissions]\nallow = ["read_file:*"]\n')
-    append_rule(cfg, "write_file:*")
+    append_rule(cfg, "write_file:src/*")
     text = cfg.read_text()
     assert "[model]" in text
     data = tomllib.loads(text)
     assert data["model"]["name"] == "x"
-    assert data["permissions"]["allow"] == ["read_file:*", "write_file:*"]
+    assert data["permissions"]["allow"] == ["read_file:*", "write_file:src/*"]
 
 
 def test_append_rule_escapes_control_characters(tmp_path):
@@ -685,3 +685,44 @@ def test_harmless_prefixes_and_assignments_still_allow(command):
 
 def test_deny_still_sees_through_privilege_prefixes():
     assert _DENY_RM.match("execute", {"command": "sudo LD_PRELOAD=x rm -rf /"}) == "deny"
+
+
+# --- fix round 4: file-tool "always" rules match only the literal path ----------
+
+
+@pytest.mark.parametrize(
+    ("path", "rule"),
+    [
+        ("*", "write_file:[*]"),
+        ("**", "write_file:[*][*]"),
+        ("src/[a-z]*", "write_file:src/[[]a-z][*]"),
+        ("a?.py", "write_file:a[?].py"),
+        ("src/a.py", "write_file:src/a.py"),
+    ],
+)
+def test_file_rules_escape_glob_characters(path, rule):
+    assert suggest_rule("write_file", {"file_path": path}) == rule
+    rules = Rules(allow=[rule])
+    assert rules.match("write_file", {"file_path": path}) == "allow"
+    assert rules.match("write_file", {"file_path": "other.py"}) is None
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["write_file:*", "delete:**", "write:*/**", "fs:/**", "edit_file:./*", "delete:**/*"],
+)
+def test_catch_all_file_rules_are_never_saved(tmp_path, rule):
+    from luna_core.policy import UnsafeRule
+
+    p = Policy(Rules(), workspace=Workspace(tmp_path))
+    with pytest.raises(UnsafeRule):
+        p.remember_always(rule)
+    with pytest.raises(UnsafeRule):
+        append_rule(tmp_path / "permissions.toml", rule)
+    assert p.rules.allow == []
+
+
+def test_pager_and_editor_variables_are_not_auto_allowed():
+    for var in ("PAGER", "GIT_PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "LESSOPEN",
+                "LESSCLOSE", "MANPAGER"):  # fmt: skip
+        assert _ALLOW_GIT.match("execute", {"command": f"{var}='rm x' git log"}) is None
