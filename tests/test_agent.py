@@ -352,3 +352,42 @@ async def test_a_broken_project_rules_file_fails_the_build(tmp_path, fake_provid
         await build_agent(
             LunaConfig(workdir=str(tmp_path)), provider=fake_provider(FakeProvider.text("x"))
         )
+
+
+@pytest.mark.parametrize("roles", [{"fsat": "small"}, {"fast": "small", "planing": "x"}])
+async def test_unknown_model_role_is_a_config_error(tmp_path, roles):
+    from luna.config.providers import LunaConfigError
+
+    cfg = LunaConfig(workdir=str(tmp_path), model="big", roles=roles)
+    with pytest.raises(LunaConfigError) as info:
+        await build_agent(cfg, provider=FakeProvider([]))
+    text = str(info.value)
+    assert next(k for k in roles if k not in ("fast",)) in text
+    assert "fast, plan, vision, summarize" in text
+
+
+async def test_misspelt_provider_prefix_of_a_role_is_an_error(tmp_path):
+    from luna.config.providers import LunaConfigError
+
+    cfg = LunaConfig(workdir=str(tmp_path), model="big", roles={"fast": "opnai:gpt-5-mini"})
+    with pytest.raises(LunaConfigError, match="openai"):
+        await build_agent(cfg, provider=FakeProvider([]))
+
+
+async def test_a_colon_in_a_model_id_is_still_a_model_id(tmp_path):
+    cfg = LunaConfig(workdir=str(tmp_path), model="big", roles={"fast": "llama3:8b"})
+    bundle = await build_agent(cfg, provider=FakeProvider([]))
+    assert bundle.agent.roles.fast == "llama3:8b"
+    await bundle.aclose()
+
+
+async def test_ignored_extra_warning_is_shown_once_per_process(tmp_path, monkeypatch):
+    import luna.core.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_WARNED_EXTRA", False, raising=False)
+    cfg = LunaConfig(workdir=str(tmp_path), model="big", ignored_extra=True)
+    seen: list[str] = []
+    for _ in range(3):
+        bundle = await build_agent(cfg, provider=FakeProvider([]), on_warn=seen.append)
+        await bundle.aclose()
+    assert sum("[agent] extra" in w for w in seen) == 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from luna_core.mcp import MCPManager
 from luna_core.memory import remember
 from luna_core.policy import DEFAULT_APPROVAL, Policy, Rules, RulesFileError, append_rule
 from luna_core.providers.base import Provider
-from luna_core.roles import ModelRoles
+from luna_core.roles import ROLES, ModelRoles
 from luna_core.sandbox import DockerSandbox, LocalSandbox
 from luna_core.subagents import SubagentRunner, task_tool
 from luna_core.tools import builtin_tools
@@ -65,17 +66,34 @@ def skill_dirs(workdir: str | Path) -> list[tuple[str, Path]]:
     return [("user", config_dir() / "skills"), ("project", Path(workdir) / ".luna" / "skills")]
 
 
+_WARNED_EXTRA = False
+
+
 def _roles(config: LunaConfig, registry: dict[str, ProviderSpec]) -> ModelRoles:
-    """Model roles from config: ``"model"`` (same provider) or ``"provider:model"``."""
+    """Model roles from config: ``"model"`` (same provider) or ``"provider:model"``.
+
+    An unknown role key, or a provider prefix that is a near-miss of a known provider
+    (``opnai:gpt-5``), is a :class:`LunaConfigError` rather than a silent model id.
+    """
     targets = dict(config.roles)
     if config.fast_model:  # ``fast_model`` is the alias of ``roles["fast"]``
         targets["fast"] = config.fast_model
     values: dict = {}
     for role, target in targets.items():
+        if role not in ROLES:
+            raise LunaConfigError(
+                f"unknown model role {role!r} in the config; valid roles: {', '.join(ROLES)}"
+            )
         name, sep, rest = target.partition(":")
         if sep and name in registry:
             values[role] = build_provider(name, rest or None, registry=registry)
         else:
+            close = difflib.get_close_matches(name, registry, n=1, cutoff=0.85) if sep else []
+            if close:
+                raise LunaConfigError(
+                    f"model role {role!r}: {name!r} is not a known provider; did you mean "
+                    f"{close[0]!r}? (write {close[0]}:{rest} or drop the prefix)"
+                )
             values[role] = target
     return ModelRoles(**values)
 
@@ -114,7 +132,9 @@ async def build_agent(
         provider, model = build_provider(config.provider, config.model, registry=registry)
     else:
         model = config.model or "fake-model"
-    if config.ignored_extra:
+    global _WARNED_EXTRA
+    if config.ignored_extra and not _WARNED_EXTRA:
+        _WARNED_EXTRA = True  # rebuilds (/reload, auto-reload) must not repeat it
         on_warn(
             "[agent] extra is no longer used (it held LangChain model kwargs); "
             "use temperature, max_tokens and reasoning"
