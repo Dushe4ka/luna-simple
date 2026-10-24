@@ -542,3 +542,53 @@ def test_worktree_bookkeeping_waits_for_another_processs_lock(tmp_path):
         fcntl.flock(held, fcntl.LOCK_UN)
     proc.join(60)
     assert waited and proc.exitcode == 0 and marker.exists()
+
+
+# -- deferred minors B2 --
+
+
+@pytest.mark.parametrize(
+    ("body", "key"),
+    [
+        ('tools = "read_file"', "tools"),
+        ("tools = [1, 2]", "tools"),
+        ("max_steps = 'many'", "max_steps"),
+        ("max_steps = true", "max_steps"),
+        ("max_cost = 'cheap'", "max_cost"),
+        ("model = 5", "model"),
+        ("description = 5", "description"),
+        ("prompt = ['a']", "prompt"),
+        ("unsafe = 'yes'", "unsafe"),
+        ("isolation = 3", "isolation"),
+    ],
+)
+def test_malformed_subagent_values_name_the_file_and_key(tmp_path, body, key):
+    bad = tmp_path / "bad.toml"
+    bad.write_text(f"[subagent.x]\n{body}\n")
+    with pytest.raises(SubagentConfigError) as info:
+        load_subagents([bad])
+    assert "bad.toml" in str(info.value) and key in str(info.value)
+
+
+def test_subagent_entry_that_is_not_a_table_is_a_config_error(tmp_path):
+    bad = tmp_path / "bad.toml"
+    bad.write_text("[subagent]\nx = 1\n")
+    with pytest.raises(SubagentConfigError, match="bad.toml"):
+        load_subagents([bad])
+
+
+def test_binary_subagent_changes_apply_with_the_hinted_command(tmp_path):
+    init_repo(tmp_path)
+    path, branch, base = create_worktree(tmp_path, "bin")
+    (path / "blob.bin").write_bytes(bytes(range(256)) * 4)
+    stat, diff = finish_worktree(tmp_path, path, branch, base, "m")
+    assert "GIT binary patch" in diff
+    from luna_core.subagents import SubagentResult
+
+    hint = SubagentResult("x", True, "t", branch=branch, base=base, diffstat=stat).render()
+    assert "git diff --binary" in hint and "git apply --3way --binary" in hint
+    raw = subprocess.run(
+        ["git", "diff", "--binary", base, branch], cwd=tmp_path, capture_output=True, check=True
+    ).stdout
+    subprocess.run(["git", "apply", "--3way", "--binary"], cwd=tmp_path, input=raw, check=True)
+    assert (tmp_path / "blob.bin").read_bytes() == bytes(range(256)) * 4
