@@ -10,7 +10,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from luna.core.store import conversations
+from luna.core.store import conversations, descendants
 from luna.server.trust import trust_error
 
 _MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
@@ -104,22 +104,32 @@ async def create_session(request: Request) -> JSONResponse:
     return JSONResponse({"id": request.app.state.log.create(workdir)})
 
 
-async def delete_session(request: Request) -> JSONResponse:
-    """Delete a session (refused while it runs or has background tasks).
+def _busy(registry, session_id: str) -> bool:
+    """Return whether ``session_id`` runs, is being deleted or has live background tasks."""
+    if registry.running(session_id) or session_id in registry.deleting:
+        return True
+    runtime = registry.peek(session_id)
+    return runtime is not None and (runtime.lock.locked() or runtime.has_live_tasks)
 
-    While it is deleted no runtime can be created for it, so no turn can
+
+async def delete_session(request: Request) -> JSONResponse:
+    """Delete a session and its subagent/background children.
+
+    Refused while the session or any such child runs or has background
+    tasks (the delete cascades, so a live child would lose its log). While
+    they are deleted no runtime can be created for them, so no turn can
     start in a session whose log is about to go.
     """
     session_id = request.path_params["session_id"]
     registry = request.app.state.runtimes
-    runtime = registry.peek(session_id)
-    busy = registry.running(session_id) or session_id in registry.deleting
-    if busy or (runtime is not None and (runtime.lock.locked() or runtime.has_live_tasks)):
+    ids = [session_id, *descendants(request.app.state.log, session_id)]
+    if any(_busy(registry, sid) for sid in ids):
         return JSONResponse({"error": "session_busy"}, status_code=409)
-    registry.deleting.add(session_id)
+    registry.deleting.update(ids)
     try:
-        await registry.drop(session_id)
+        for sid in ids:
+            await registry.drop(sid)
         deleted = request.app.state.log.delete(session_id)
     finally:
-        registry.deleting.discard(session_id)
+        registry.deleting.difference_update(ids)
     return JSONResponse({"deleted": deleted})

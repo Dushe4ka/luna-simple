@@ -140,3 +140,23 @@ async def test_delete_takes_subagent_children_and_keeps_forks(tmp_path):
     assert resp.json() == {"deleted": True}
     assert log.info(sub) is None
     assert log.info(fork) is not None and log.info(fork).parent_id is None
+
+
+async def test_delete_is_refused_while_a_child_run_is_live(tmp_path):
+    from luna_core.providers.fake import FakeProvider
+
+    from tests.server_helpers import turn
+
+    (tmp_path / "a.py").write_text("x\n")
+    app = make_app(default=[FakeProvider.call("delete", {"file_path": "a.py"}, "d1")])
+    log = app.state.log
+    parent = seed(log, tmp_path, "work", session_id="p1")
+    log.create(
+        str(tmp_path.resolve()), session_id="c1", parent_id=parent, meta={"kind": "subagent"}
+    )
+    async with client(app) as c:
+        _, events = await turn(c, "c1", tmp_path, "delete it")
+        assert events[-1]["event"] == "approval_needed"
+        resp = await c.delete(f"/sessions/{parent}")
+    assert resp.status_code == 409 and resp.json() == {"error": "session_busy"}
+    assert log.info(parent) is not None and log.info("c1") is not None
