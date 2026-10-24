@@ -109,6 +109,9 @@ replays what is buffered (plus pending out-of-turn approvals) and ends — it
 does not follow `task(background=true)` work that outlives the run.
 `DELETE /sessions/{id}` is refused (`409`) while the session runs or has
 background tasks, and no request can load the session while it is deleted.
+It also deletes the session's subagent/background child sessions (one
+transaction); forks are kept as conversations of their own, with their
+parent link cleared.
 
 ### `GET /health`
 

@@ -327,3 +327,101 @@ async def test_pending_approvals_prefix_child_ids_and_siblings_do_not_collide(lo
     assert fb.done() and not fa.done()
     parent.decide(f"{a.id}:{grand.id}:c1", Decision.reject("no"))
     assert fg.result().type == "reject" and not fa.done()
+
+
+# -- B1.1: delete cascade, append on a missing session, atomic fork/set_meta ---
+
+
+def test_delete_cascades_to_subagent_and_background_children_but_keeps_forks(log, tmp_path):
+    wd = str(tmp_path)
+    root = log.create(wd)
+    sub = log.create(wd, parent_id=root, meta={"kind": "subagent"})
+    grand = log.create(wd, parent_id=sub, meta={"kind": "subagent"})
+    bg = log.create(wd, parent_id=root, meta={"kind": "background"})
+    fork = log.create(wd, parent_id=root, fork_seq=1, meta={"kind": "fork"})
+    fork_child = log.create(wd, parent_id=fork, meta={"kind": "subagent"})
+    for sid in (root, sub, grand, bg, fork, fork_child):
+        log.append(sid, "note", {"x": 1})
+
+    assert log.delete(root) is True
+
+    for sid in (root, sub, grand, bg):
+        assert log.info(sid) is None and log.records(sid) == []
+    kept = log.info(fork)
+    assert kept is not None and kept.parent_id is None
+    assert kept.fork_seq == 1 and kept.meta == {"kind": "fork"}
+    assert len(log.records(fork)) == 1
+    assert log.info(fork_child).parent_id == fork
+    assert log.delete(root) is False
+
+
+def test_delete_is_one_transaction(log, tmp_path):
+    root = log.create(str(tmp_path))
+    child = log.create(str(tmp_path), parent_id=root, meta={"kind": "subagent"})
+    log.append(root, "note", {})
+    log.append(child, "note", {})
+    log._conn.execute(
+        "CREATE TRIGGER boom BEFORE DELETE ON sessions WHEN OLD.id = "
+        f"'{child}' BEGIN SELECT RAISE(ABORT, 'boom'); END"
+    )
+    with pytest.raises(Exception, match="boom"):
+        log.delete(root)
+    assert log.info(root) is not None and log.info(child) is not None
+    assert len(log.records(root)) == 1 and len(log.records(child)) == 1
+
+
+def test_append_to_a_deleted_session_raises_and_leaves_no_rows(log, tmp_path):
+    s = Session.create(log, str(tmp_path), undo=False)
+    log.delete(s.id)
+    with pytest.raises(LunaCoreError, match="no session"):
+        s.append("user", {"message": message_to_dict(Message.user("hi"))})
+    with pytest.raises(LunaCoreError, match="no session"):
+        log.append("missing", "note", {})
+    count = log._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    assert count == 0
+
+
+def test_fork_is_atomic(log, tmp_path):
+    s = Session.create(log, str(tmp_path), undo=False)
+    turn(s, "t1", "a", "b")
+    log._conn.execute(
+        "CREATE TRIGGER boom BEFORE INSERT ON events WHEN NEW.session_id != "
+        f"'{s.id}' AND NEW.seq = 3 BEGIN SELECT RAISE(ABORT, 'boom'); END"
+    )
+    with pytest.raises(Exception, match="boom"):
+        s.fork()
+    assert [i.id for i in log.list()] == [s.id]
+    count = log._conn.execute(
+        "SELECT COUNT(*) FROM events WHERE session_id != ?", (s.id,)
+    ).fetchone()[0]
+    assert count == 0
+
+
+def test_set_meta_from_two_threads_keeps_every_key(tmp_path):
+    import threading
+
+    path = tmp_path / "sessions.db"
+    first = EventLog(path)
+    second = EventLog(path)
+    sid = first.create(str(tmp_path))
+    rounds = 200
+
+    def writer(log_, prefix):
+        for i in range(rounds):
+            log_.set_meta(sid, **{f"{prefix}{i}": i})
+
+    threads = [
+        threading.Thread(target=writer, args=(first, "a")),
+        threading.Thread(target=writer, args=(first, "b")),
+        threading.Thread(target=writer, args=(second, "c")),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    meta = first.info(sid).meta
+    try:
+        assert len(meta) == 3 * rounds
+    finally:
+        first.close()
+        second.close()

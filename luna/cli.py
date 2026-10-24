@@ -448,9 +448,7 @@ def _delete_conversation(log, session_id: str) -> str:
             if exc.status is not None:
                 raise
     if not done:
-        log.delete(session_id)
-    for child in children:
-        log.delete(child)
+        log.delete(session_id)  # cascades to the subagent/background children
     return "deleted"
 
 

@@ -127,3 +127,16 @@ async def test_a_fork_is_listed(tmp_path):
     async with client(app) as c:
         rows = (await c.get("/sessions", params={"workdir": str(tmp_path)})).json()["sessions"]
     assert {r["id"] for r in rows} == {parent, fork.id}
+
+
+async def test_delete_takes_subagent_children_and_keeps_forks(tmp_path):
+    app = make_app()
+    log = app.state.log
+    parent = seed(log, tmp_path, "work", session_id="t1")
+    sub = log.create(str(tmp_path), parent_id=parent, meta={"kind": "subagent"})
+    fork = log.create(str(tmp_path), parent_id=parent, meta={"kind": "fork"})
+    async with client(app) as c:
+        resp = await c.delete(f"/sessions/{parent}")
+    assert resp.json() == {"deleted": True}
+    assert log.info(sub) is None
+    assert log.info(fork) is not None and log.info(fork).parent_id is None
