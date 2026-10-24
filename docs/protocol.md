@@ -427,7 +427,8 @@ message, possibly truncated), `duration` (number, seconds).
 
 The turn is paused waiting for a decision on one or more pending tool
 calls. Fields: `value` (dict) with an `action_requests` list, each item
-`{"call_id", "name", "args", "description", "suggested_rule"}`.
+`{"call_id", "name", "args", "description", "suggested_rule"}`, plus an
+optional `suggested_rules` list.
 `call_id` is an **opaque string** — treat it as a bag of bytes to echo
 back on `POST /sessions/{id}/approve`, never parse or construct it.
 In particular, when the call comes from a subagent the parent session
@@ -436,12 +437,23 @@ adopted, the id the client sees is `"<child_session_id>:<call_id>"`
 route the decision to the right child. A client never needs to know this
 — it only needs to pass the string back unchanged. `suggested_rule` is a
 ready-made permission rule (e.g. `"execute:ls *"`) a client can offer to
-persist via `"always"` on the decision.
+persist via `"always"` on the decision. For a compound shell command one
+rule is not enough (`cd src && ls` needs `execute:cd *` and `execute:ls *`):
+then the item also carries `suggested_rules`, every rule the call needs
+that is not allowed yet (absent when there is nothing beyond
+`suggested_rule`). A client should show them all, and keeps sending just
+`"always": <suggested_rule>` — the server treats that exact value as
+"always allow this call" and saves every rule in `suggested_rules`; any
+other `always` string is saved on its own. Older clients that ignore the
+new field therefore get the full behaviour unchanged.
 
 ```json
 {"event": "approval_needed", "value": {"action_requests": [
   {"call_id": "c2", "name": "execute", "args": {"command": "ls"}, "description": "ls",
-   "suggested_rule": "execute:ls *"}
+   "suggested_rule": "execute:ls *"},
+  {"call_id": "c3", "name": "execute", "args": {"command": "cd src && ls"},
+   "description": "cd src && ls", "suggested_rule": "execute:cd *",
+   "suggested_rules": ["execute:cd *", "execute:ls *"]}
 ]}}
 ```
 

@@ -79,6 +79,10 @@ class ApprovalRequest:
     args: dict
     description: str = ""
     suggested_rule: str = ""
+    #: Every rule "always allow" should save (``suggested_rule`` is the
+    #: first); a compound command needs one per program. Empty when the
+    #: request has only ``suggested_rule``.
+    suggested_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,11 @@ def to_wire(event: object) -> dict:
                         "args": r.args,
                         "description": r.description,
                         "suggested_rule": r.suggested_rule,
+                        **(
+                            {"suggested_rules": list(r.suggested_rules)}
+                            if r.suggested_rules
+                            else {}
+                        ),
                     }
                 ]
             },

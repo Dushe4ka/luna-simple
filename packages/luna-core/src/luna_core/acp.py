@@ -153,7 +153,9 @@ class AcpBridge:
             {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
             {
                 "optionId": "allow_always",
-                "name": f"Always allow ({request.suggested_rule})",
+                "name": "Always allow ({})".format(
+                    ", ".join(request.suggested_rules or (request.suggested_rule,))
+                ),
                 "kind": "allow_always",
             },
             {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},

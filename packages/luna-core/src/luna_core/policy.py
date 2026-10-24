@@ -67,6 +67,9 @@ class Rules:
                 pattern = _relpath(pattern)
             if fnmatch(subject, pattern):
                 return True
+            # ``execute:ls *`` also covers a bare ``ls``
+            if tool == "execute" and pattern.endswith(" *") and fnmatch(subject, pattern[:-2]):
+                return True
         return False
 
     def match(self, tool: str, args: dict) -> str | None:
@@ -225,6 +228,32 @@ def _toml_str(value: str) -> str:
         else:
             out.append(ch)
     return '"' + "".join(out) + '"'
+
+
+def _program_rule(command: str) -> str:
+    words = command.split()
+    return f"execute:{words[0]} *" if words else "execute:*"
+
+
+def suggest_rules(tool: str, args: dict, rules: Rules | None = None) -> tuple[str, ...]:
+    """Build every rule that would allow this call next time.
+
+    For ``execute`` that is one ``execute:<program> *`` rule per simple
+    command of the line (see :mod:`luna_core.shellsplit`), skipping commands
+    ``rules`` already allow. Falls back to :func:`suggest_rule` alone.
+    """
+    if tool != "execute":
+        return (suggest_rule(tool, args),)
+    command = str(args.get("command", ""))
+    out: list[str] = []
+    for reading in (split_command(command), split_command(command, ansi_c=False)):
+        for simple in reading.commands if reading else ():
+            if rules is not None and rules._hit(rules.allow, "execute", simple):
+                continue
+            rule = _program_rule(simple)
+            if rule not in out:
+                out.append(rule)
+    return tuple(out) or (suggest_rule(tool, args),)
 
 
 def suggest_rule(tool: str, args: dict) -> str:
@@ -405,7 +434,12 @@ class Policy:
             return Verdict("allow")
         if match == "ask" or name in self.approval_tools:
             request = ApprovalRequest(
-                "", name, dict(args), args_preview(args, 80), suggest_rule(name, args)
+                "",
+                name,
+                dict(args),
+                args_preview(args, 80),
+                suggest_rule(name, args),
+                suggest_rules(name, args, self.rules),
             )
             return Verdict("ask", request=request)
         return Verdict("allow")

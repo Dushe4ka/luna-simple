@@ -175,7 +175,7 @@ print(any(isinstance(e, NeedsApproval) for e in events), Path(root, "a.txt").rea
 | `ThinkingDelta` | кусок рассуждений модели | `text` (подпись рассуждений `signature` в поток хода не попадает) |
 | `ToolStarted` | инструмент начал выполняться (после подтверждения и хуков `pre_tool`) | `call_id`, `name`, `args` (итоговые), `preview` |
 | `ToolFinished` | инструмент завершён или отклонён политикой/хуком/пользователем | `call_id`, `name`, `ok`, `detail`, `duration` |
-| `NeedsApproval` | вызов требует решения человека; ход ждёт `session.decide` | `request: ApprovalRequest` (`call_id`, `name`, `args`, `description`, `suggested_rule`) |
+| `NeedsApproval` | вызов требует решения человека; ход ждёт `session.decide` | `request: ApprovalRequest` (`call_id`, `name`, `args`, `description`, `suggested_rule`, `suggested_rules`) |
 | `TodosUpdated` | агент обновил план через `write_todos` | `todos: list[dict]` |
 | `Notice` | короткая строка статуса: заметки хуков, смена модели по ролям, `max_steps`, обрезка по `max_tokens`, ошибки сохранения правила и т. п. | `level` (`dim`/`info`/`ok`/`warn`/`error`), `text` |
 | `UsageUpdate` | закончился очередной запрос к модели | `usage: Usage` |

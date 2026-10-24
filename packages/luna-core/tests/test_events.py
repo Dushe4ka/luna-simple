@@ -106,3 +106,19 @@ def test_notice_level_is_validated():
 def test_unknown_event_is_rejected():
     with pytest.raises(TypeError):
         to_wire(object())
+
+
+def test_approval_wire_lists_every_suggested_rule():
+    from luna_core.events import ApprovalRequest, NeedsApproval, to_wire
+
+    r = ApprovalRequest(
+        "c",
+        "execute",
+        {"command": "cd x && ls"},
+        "",
+        "execute:cd *",
+        ("execute:cd *", "execute:ls *"),
+    )
+    item = to_wire(NeedsApproval(r))["value"]["action_requests"][0]
+    assert item["suggested_rule"] == "execute:cd *"
+    assert item["suggested_rules"] == ["execute:cd *", "execute:ls *"]

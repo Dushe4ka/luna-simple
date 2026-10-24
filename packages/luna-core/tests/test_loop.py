@@ -681,3 +681,23 @@ async def test_always_allow_that_cannot_be_saved_still_runs_the_approved_call(en
     warns = [e for e in events if isinstance(e, Notice) and e.level == "warn"]
     assert any("permissions.toml would break" in w.text for w in warns)
     assert isinstance(events[-1], TurnDone)
+
+
+async def test_always_on_a_compound_command_saves_every_rule(env):
+    tmp, session = env
+    (tmp / "src").mkdir()
+    script = [
+        FakeProvider.call("execute", {"command": "cd src && ls"}, "c1"),
+        FakeProvider.call("execute", {"command": "cd src && ls"}, "c2"),
+        FakeProvider.text("done"),
+    ]
+    agent = agent_for(tmp, script)
+    asked = []
+
+    def decide(request):
+        asked.append(request.call_id)
+        return Decision.approve(always=request.suggested_rule)  # what clients echo back
+
+    await collect(agent, session, decide=decide)
+    assert asked == ["c1"]  # the second identical call ran without a prompt
+    assert {"execute:cd *", "execute:ls *"} <= set(agent.policy.rules.allow)

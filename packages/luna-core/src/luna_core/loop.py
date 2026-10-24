@@ -593,8 +593,15 @@ class Agent:
                 return
             session.append("approval", {"call_id": call.id, "decision": decision.to_dict()})
             if decision.always:
+                # echoing ``suggested_rule`` back means "always allow this call":
+                # save every rule it takes (one per program of a compound command)
+                if decision.always == request.suggested_rule and request.suggested_rules:
+                    to_save = list(request.suggested_rules)
+                else:
+                    to_save = [decision.always]
                 try:
-                    self.policy.remember_always(decision.always)
+                    for rule in to_save:
+                        self.policy.remember_always(rule)
                 except Exception as exc:  # noqa: BLE001 - the approval itself still stands
                     yield Notice(
                         "warn",

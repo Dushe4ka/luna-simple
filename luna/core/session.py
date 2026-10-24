@@ -76,6 +76,8 @@ def _request_dict(request) -> dict:
         "action": request.name,
         "args": request.args,
         "description": request.description,
+        "suggested_rule": request.suggested_rule,
+        "suggested_rules": list(request.suggested_rules),
     }
 
 

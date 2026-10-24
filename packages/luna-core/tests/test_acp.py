@@ -253,3 +253,17 @@ async def test_acp_child_approval_reaches_the_subagent(tmp_path):
     await asyncio.wait_for(agent._ask(parent.id, parent, request), timeout=5)
     assert fut.done() and fut.result().type == "approve"
     assert parent.pending_approvals == []
+
+
+def test_permission_always_label_names_every_rule():
+    b = AcpBridge()
+    req = ApprovalRequest(
+        "c3",
+        "execute",
+        {"command": "cd x && ls"},
+        "",
+        "execute:cd *",
+        ("execute:cd *", "execute:ls *"),
+    )
+    _, options = b.permission(req)
+    assert options[1]["name"] == "Always allow (execute:cd *, execute:ls *)"
