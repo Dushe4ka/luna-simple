@@ -498,7 +498,8 @@ await agent.sandbox.close()  # удаляет контейнер
 
 Секреты окружения. Команды `execute` не получают переменные-секреты: по умолчанию
 отбрасываются имена по шаблонам `luna_core.sandbox.SECRET_ENV_PATTERNS` —
-`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `GIGACHAT_*` и `LUNA_SERVER_TOKEN` (иначе модель
+`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_SECRET_*`, `*_PASSWORD`, `*_CREDENTIALS`,
+`GIGACHAT_*` и `LUNA_SERVER_TOKEN` (иначе модель
 могла бы выполнить `env`, и ключ попал бы в вывод инструмента, журнал событий и к
 провайдеру). Это касается и ключей, заданных в вашей оболочке: провайдер читает их в
 своём процессе раньше. Нужную переменную можно пропустить явно:
@@ -510,6 +511,10 @@ await agent.sandbox.close()  # удаляет контейнер
 [execute]
 pass_env = ["GITHUB_TOKEN"]
 ```
+
+Те же правила действуют для командных хуков (`CommandHook(..., env_passthrough=...)`,
+`load_command_hooks(..., env_passthrough=...)`), а в приложении — и для команд
+`verify_command`, форматтера и диагностики.
 
 ## 6. Подтверждения и правила
 
@@ -1186,7 +1191,9 @@ asyncio.run(main())
 Модуль `luna_core.mcp` не входит в `__all__`, импортируйте его явно. Формат файла
 обычный: `{"mcpServers": {"имя": {"command": ..., "args": [...]}}}` для stdio,
 `{"type": "http", "url": ...}` для streamable HTTP, `"type": "sse"` для SSE;
-`${ENV}` раскрывается, токены OAuth лежат в `~/.config/luna/mcp-tokens`. Stdio-серверы
+`${ENV}` раскрывается из окружения процесса (в приложении Luna сохранённые через
+`luna setup` ключи туда не экспортируются — задайте переменную в оболочке или впишите
+значение в `env` сервера), токены OAuth лежат в `~/.config/luna/mcp-tokens`. Stdio-серверы
 не наследуют ваше окружение, только `env` из конфига.
 
 ```python
@@ -1258,7 +1265,7 @@ asyncio.run(run_acp(make_agent, EventLog("acp.db")))
 JSON Schema выдаёт `luna_core.protocol.json_schema()`.
 
 ```python
-# [нужен запущенный сервер: luna serve --port 8765 --token SECRET]
+# [нужен запущенный сервер: LUNA_SERVER_TOKEN=SECRET luna serve --port 8765]
 import asyncio
 
 from luna_core.client import LunaClient
@@ -1421,7 +1428,7 @@ asyncio.run(main())
 | `examples/custom_tool.py` | свой инструмент `word_count` рядом со встроенными | `python examples/custom_tool.py --fake --workdir .` |
 | `examples/custom_provider.py` | свой провайдер (эхо) без сети; `--fake` принимается, но ни на что не влияет | `python examples/custom_provider.py --workdir .` |
 | `examples/approvals_web.py` | подтверждения по HTTP: Starlette-приложение со стримом хода и эндпоинтом решений (нужны `starlette`, `uvicorn`) | `python examples/approvals_web.py --self-test --workdir .` |
-| `examples/remote_client.py` | `LunaClient`: сессия, сообщение, подтверждение, потоковый ответ | `python examples/remote_client.py --fake --workdir .` (поднимает сервер в процессе) или `--url ... --token ...` к настоящему серверу |
+| `examples/remote_client.py` | `LunaClient`: сессия, сообщение, подтверждение, потоковый ответ | `python examples/remote_client.py --fake --workdir .` (поднимает сервер в процессе) или `LUNA_SERVER_TOKEN=... python examples/remote_client.py --url ...` к настоящему серверу |
 | `examples/acp_agent.py` | агент по ACP для редактора (extra `acp`) | `python examples/acp_agent.py --self-test --workdir .` играет роль редактора |
 
 С настоящей моделью уберите `--fake` и задайте ключ, например

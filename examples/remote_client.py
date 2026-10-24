@@ -1,7 +1,8 @@
 """Talk to a Luna server with ``LunaClient`` (REST + SSE, protocol v1).
 
-Against a running server (start one with ``luna serve --port 8765 --token SECRET``):
-    python examples/remote_client.py --url http://127.0.0.1:8765 --token SECRET --workdir .
+Against a running server (start one with ``LUNA_SERVER_TOKEN=SECRET luna serve --port 8765``;
+the token goes through the environment, not argv, where ``ps`` would show it):
+    LUNA_SERVER_TOKEN=SECRET python examples/remote_client.py --url http://127.0.0.1:8765
 
 Offline: ``--fake`` runs the server app in-process with a scripted model.
 """
@@ -39,7 +40,11 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fake", action="store_true", help="offline: in-process server")
     parser.add_argument("--url", default="http://127.0.0.1:8765")
-    parser.add_argument("--token", default="")
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("LUNA_SERVER_TOKEN", ""),
+        help="bearer token (default: $LUNA_SERVER_TOKEN)",
+    )
     parser.add_argument("--workdir", default=".")
     parser.add_argument("prompt", nargs="?", default="Say hello.")
     args = parser.parse_args()
@@ -82,6 +87,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except LunaCoreError as exc:
         sys.exit(
-            f"error: {exc}\nstart a server with: luna serve --port 8765 --token SECRET "
-            "(then pass --url and --token), or use --fake"
+            f"error: {exc}\nstart a server with: LUNA_SERVER_TOKEN=SECRET luna serve --port 8765 "
+            "(then pass --url with the same LUNA_SERVER_TOKEN), or use --fake"
         )

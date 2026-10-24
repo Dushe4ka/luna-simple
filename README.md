@@ -183,9 +183,10 @@ luna acp                         # ACP по stdio для редакторов (Z
 ключей.
 
 Ключи передаются провайдеру напрямую и не попадают в окружение команд
-`execute`: из него по умолчанию убираются переменные `*_API_KEY`, `*_TOKEN`,
-`*_SECRET`, `GIGACHAT_*` и `LUNA_SERVER_TOKEN` — в том числе заданные в вашей
-оболочке. Нужную переменную можно пропустить явно:
+`execute`, хуков `[[hooks]]`, `verify_command`, форматтера и диагностики: из
+него по умолчанию убираются переменные `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
+`*_SECRET_*`, `*_PASSWORD`, `*_CREDENTIALS`, `GIGACHAT_*` и `LUNA_SERVER_TOKEN` —
+в том числе заданные в вашей оболочке. Нужную переменную можно пропустить явно:
 
 ```toml
 [execute]
@@ -292,8 +293,12 @@ luna agents list              # встроенные: researcher, reviewer
 
 - **MCP-серверы** лежат в `~/.config/luna/mcp.json` (или `./.luna/mcp.json`)
   в стандартном формате `{"mcpServers": {...}}` — записи можно копировать прямо
-  из Claude Desktop / Claude Code. `${ENV}` подставляется. Нужен
-  `pip install "luna-simple[mcp]"`.
+  из Claude Desktop / Claude Code. `${ENV}` подставляется — только из
+  настоящего окружения процесса: ключи из `credentials.toml` (`luna setup`,
+  `luna config set-key`) в окружение больше не экспортируются, поэтому
+  `${OPENAI_API_KEY}` из сохранённого ключа не раскроется. Передайте ключ
+  MCP-серверу через `export` в оболочке перед запуском Luna или прямо в
+  `"env": {...}` записи сервера. Нужен `pip install "luna-simple[mcp]"`.
 - **Скилы** — это Anthropic Agent Skills (`<имя>/SKILL.md`), ставятся в
   `~/.config/luna/skills/`. Нужен `git`.
 - **Субагенты** описываются в `~/.config/luna/subagents.toml`; агент делегирует

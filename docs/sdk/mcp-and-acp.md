@@ -11,7 +11,7 @@ from pathlib import Path
 from luna_core import Agent, builtin_tools
 from luna_core.mcp import MCPManager, load_config
 
-servers = load_config([Path(".luna/mcp.json")])        # {"mcpServers": {...}}, ${ENV} подставляются
+servers = load_config([Path(".luna/mcp.json")])        # {"mcpServers": {...}}, ${ENV} из os.environ
 manager = MCPManager(servers, on_warn=print)
 mcp_tools = await manager.start()                      # подключается параллельно, возвращает Tools
 try:

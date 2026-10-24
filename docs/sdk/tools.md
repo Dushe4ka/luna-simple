@@ -82,7 +82,8 @@ agent = Agent(provider, model, sandbox=DockerSandbox(".", image="python:3.12-sli
 
 Секреты окружения. Команды `execute` не получают переменные-секреты: по умолчанию
 отбрасываются имена по шаблонам `luna_core.sandbox.SECRET_ENV_PATTERNS` —
-`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `GIGACHAT_*` и `LUNA_SERVER_TOKEN` (иначе модель
+`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_SECRET_*`, `*_PASSWORD`, `*_CREDENTIALS`,
+`GIGACHAT_*` и `LUNA_SERVER_TOKEN` (иначе модель
 могла бы выполнить `env`, и ключ попал бы в вывод инструмента, журнал событий и к
 провайдеру). Это касается и ключей, заданных в вашей оболочке: провайдер читает их в
 своём процессе раньше. Нужную переменную можно пропустить явно:
@@ -94,6 +95,10 @@ agent = Agent(provider, model, sandbox=DockerSandbox(".", image="python:3.12-sli
 [execute]
 pass_env = ["GITHUB_TOKEN"]
 ```
+
+Те же правила действуют для командных хуков (`CommandHook(..., env_passthrough=...)`,
+`load_command_hooks(..., env_passthrough=...)`), а в приложении — и для команд
+`verify_command`, форматтера и диагностики.
 
 ## Подводные камни
 
