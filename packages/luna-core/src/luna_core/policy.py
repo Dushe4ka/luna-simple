@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
+from luna_core.shellsplit import split_command
 from luna_core.tools.base import Tool, args_preview
 from luna_core.workspace import OutsideWorkspace, Workspace
 
@@ -71,9 +72,31 @@ class Rules:
     def match(self, tool: str, args: dict) -> str | None:
         """``"deny"``, ``"ask"``, ``"allow"`` or ``None`` (deny wins)."""
         subject = _subject(tool, args)
+        if tool == "execute":
+            return self._match_execute(subject)
         for kind in ("deny", "ask", "allow"):
             if self._hit(getattr(self, kind), tool, subject):
                 return kind
+        return None
+
+    def _match_execute(self, command: str) -> str | None:
+        """Match a shell line segment by segment (see :mod:`luna_core.shellsplit`).
+
+        deny / ask: the whole line or any segment matching is enough. allow:
+        every simple command must match; a line that cannot be parsed is
+        never allowed by a rule.
+        """
+        parts = split_command(command)
+        subjects = [command, *(parts.subjects if parts else ())]
+        for kind in ("deny", "ask"):
+            rules = getattr(self, kind)
+            if any(self._hit(rules, "execute", s) for s in subjects):
+                return kind
+        if parts is None:
+            return None
+        commands = parts.commands or [command]
+        if all(self._hit(self.allow, "execute", c) for c in commands):
+            return "allow"
         return None
 
     @classmethod
@@ -202,8 +225,13 @@ def _toml_str(value: str) -> str:
 def suggest_rule(tool: str, args: dict) -> str:
     """Build a rule that would allow this call next time."""
     if tool == "execute":
-        first = str(args.get("command", "")).split()
-        return f"execute:{first[0]} *" if first else "execute:*"
+        command = str(args.get("command", ""))
+        parts = split_command(command)
+        program = parts.first_program if parts else None
+        if program is None:
+            words = command.split()
+            program = words[0] if words else None
+        return f"execute:{program} *" if program else "execute:*"
     return f"{tool}:{_subject(tool, args)}"
 
 
