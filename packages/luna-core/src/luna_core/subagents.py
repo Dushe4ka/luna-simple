@@ -18,6 +18,7 @@ from pathlib import Path
 from luna_core.context import build_system_prompt
 from luna_core.errors import LunaCoreError
 from luna_core.events import Cancelled, NeedsApproval, Notice, ToolStarted, TurnError
+from luna_core.filelock import file_lock
 from luna_core.loop import Agent
 from luna_core.session import Session
 from luna_core.undo import _snapshot_tree
@@ -34,8 +35,31 @@ _IDENTITY = {
     "GIT_COMMITTER_EMAIL": "luna@localhost",
 }
 _DIFF_LIMIT = 20_000
-# git refuses concurrent worktree bookkeeping; parallel subagents take turns here.
+# git refuses concurrent worktree bookkeeping; parallel subagents take turns here,
+# and other processes on the same repository (REPL + server) through an OS lock
+# file in the git common directory (see ``_worktree_lock``).
 _GIT_LOCK = threading.Lock()
+
+
+def _worktree_lock_path(root: Path) -> Path:
+    """Lock file for worktree bookkeeping: ``<git common dir>/luna-worktrees.lock``.
+
+    It lives outside the working tree so it never shows up in snapshots,
+    ``git status`` or the ``.luna/worktrees`` holder that pruning sweeps.
+    """
+    try:
+        proc = _git(root, "rev-parse", "--git-common-dir")
+        common = proc.stdout.strip() if proc.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        common = ""
+    return (root / (common or ".git")).resolve() / "luna-worktrees.lock"
+
+
+@contextlib.contextmanager
+def _worktree_lock(root: Path):
+    """Serialise worktree create/prune/finish across threads and processes."""
+    with _GIT_LOCK, file_lock(_worktree_lock_path(root)):
+        yield
 
 
 class SubagentConfigError(LunaCoreError):
@@ -166,7 +190,7 @@ def create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
     The base snapshot includes untracked, non-ignored files (``.luna/undo`` and
     ``.luna/worktrees`` excluded). ``root`` must be the git top level.
     """
-    with _GIT_LOCK:
+    with _worktree_lock(root):
         return _create_worktree(root, sub_id)
 
 
@@ -235,7 +259,7 @@ def finish_worktree(
     Raises :class:`WorktreeCommitError` (worktree and branch left in place) when
     the changes cannot be committed.
     """
-    with _GIT_LOCK:
+    with _worktree_lock(root):
         return _finish_worktree(root, path, branch, base, message)
 
 

@@ -15,19 +15,26 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from luna_core.filelock import InterProcessRLock
+
 # Luna state that is never part of a snapshot (subagent worktrees live under .luna too).
 _EXCLUDES = (":(exclude).luna/undo", ":(exclude).luna/worktrees")
 
 
-# One lock per journal directory: parallel tool calls (threads) and several
-# ``UndoJournal`` objects for the same session must not lose each other's updates.
-_LOCKS: dict[str, threading.RLock] = {}
+# One lock per journal directory: parallel tool calls (threads), several
+# ``UndoJournal`` objects for the same session, and other processes (the REPL
+# and the server on one repository) must not lose each other's updates. The
+# OS lock file lives in the journal directory (excluded from snapshots).
+_LOCKS: dict[str, InterProcessRLock] = {}
 _LOCKS_GUARD = threading.Lock()
 
 
-def _lock_for(directory: Path) -> threading.RLock:
+def _lock_for(directory: Path) -> InterProcessRLock:
     with _LOCKS_GUARD:
-        return _LOCKS.setdefault(str(directory), threading.RLock())
+        lock = _LOCKS.get(str(directory))
+        if lock is None:
+            lock = _LOCKS[str(directory)] = InterProcessRLock(directory / "journal.lock")
+        return lock
 
 
 @dataclass(frozen=True)

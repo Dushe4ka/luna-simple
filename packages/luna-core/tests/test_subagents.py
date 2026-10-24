@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import sys
 import time
 
 import pytest
@@ -502,3 +503,42 @@ async def test_subagent_result_names_the_kept_worktree_on_commit_failure(
     kept = list((tmp_path / ".luna" / "worktrees").iterdir())
     assert len(kept) == 1 and (kept[0] / "notes.md").read_text() == "one\n"
     assert str(kept[0]) in result.text and "hook said no" in result.text
+
+
+def test_two_processes_create_and_finish_worktrees_in_one_repo(tmp_path):
+    import multiprocessing
+
+    from lock_workers import worktree_cycler
+
+    init_repo(tmp_path)
+    ctx = multiprocessing.get_context("spawn")
+    procs = [ctx.Process(target=worktree_cycler, args=(str(tmp_path), name, 6)) for name in "ab"]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(180)
+    assert [p.exitcode for p in procs] == [0, 0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the test holds the lock with fcntl")
+def test_worktree_bookkeeping_waits_for_another_processs_lock(tmp_path):
+    import fcntl
+    import multiprocessing
+
+    from lock_workers import create_one_worktree
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    lock_path = repo / ".git" / "luna-worktrees.lock"
+    marker = tmp_path / "done"
+    with open(lock_path, "a+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        proc = multiprocessing.get_context("spawn").Process(
+            target=create_one_worktree, args=(str(repo), str(marker))
+        )
+        proc.start()
+        time.sleep(1.5)
+        waited = not marker.exists()
+        fcntl.flock(held, fcntl.LOCK_UN)
+    proc.join(60)
+    assert waited and proc.exitcode == 0 and marker.exists()
