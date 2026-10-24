@@ -125,3 +125,22 @@ async def test_render_turn_pauses_and_resumes_progress_around_an_approval(tmp_pa
     await render_turn(bundle.agent, session, "hi", console=_console(), input_fn=lambda _: "")
     await bundle.aclose()
     assert events == ["created", "pause", "resume", "start", "finish", "close"]
+
+
+def test_print_recap_marks_a_cancelled_last_turn(tmp_path):
+    import io
+
+    from luna_core.messages import Message, Text, message_to_dict
+    from luna_core.session import EventLog, Session
+    from rich.console import Console
+
+    from luna.core.session import print_recap
+
+    session = Session.create(EventLog(tmp_path / "log.db"), str(tmp_path), undo=False)
+    session.append("turn_started", {"turn_id": "t1"})
+    session.append("user", {"message": message_to_dict(Message.user("сделай"))})
+    session.append("assistant", {"message": message_to_dict(Message.assistant([Text("начинаю")]))})
+    session.append("cancelled", {"turn_id": "t1"})
+    out = io.StringIO()
+    print_recap(session, Console(file=out, width=100))
+    assert "прервано" in out.getvalue()

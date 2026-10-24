@@ -35,6 +35,8 @@ _FINAL = ("turn_done", "error", "cancelled")
 _MESSAGE_TYPES = ("user", "assistant", "tool_results")
 #: Log record the server writes when a run finished with no client attached.
 RUN_DONE = "run_done"
+#: History notice for a turn that ended with Cancelled (same text as the live one).
+CANCELLED_TEXT = "прервано"
 
 
 def _sse(obj: dict) -> dict:
@@ -312,7 +314,22 @@ def history_entries(records) -> list[dict]:
             turn = rec.payload["turn_id"]
         if turn in hidden:
             continue
+        if rec.type == "approval":
+            decision = rec.payload.get("decision") or {}
+            if decision.get("type") == "edit" and decision.get("args") is not None:
+                call = calls.setdefault(rec.payload["call_id"], {})
+                call["args"] = decision["args"]  # what actually ran, not what was proposed
+            continue
+        if rec.type == "cancelled":
+            entries.append({"role": "notice", "level": "dim", "text": CANCELLED_TEXT})
+            continue
         if rec.type == RUN_DONE:
+            if entries and entries[-1] == {
+                "role": "notice",
+                "level": "dim",
+                "text": CANCELLED_TEXT,
+            }:
+                entries.pop()  # the run summary says the same, with the label
             entries.append(
                 {"role": "notice", "level": rec.payload["level"], "text": rec.payload["text"]}
             )

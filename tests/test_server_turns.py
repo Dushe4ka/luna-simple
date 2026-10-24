@@ -203,3 +203,34 @@ async def test_images_in_the_body_reach_the_model(tmp_path):
         bundle = await (await app.state.runtimes.get("img", str(tmp_path))).bundle()
     sent = bundle.agent.provider.requests[0].messages[-1]
     assert any(getattr(block, "media_type", None) == "image/png" for block in sent.content)
+
+
+def test_history_marks_a_cancelled_turn(tmp_path):
+    from luna.server.turns import history_entries
+
+    session = _session(tmp_path)
+    session.append("turn_started", {"turn_id": "t1"})
+    _add(session, Message.user("сделай"))
+    _add(session, Message.assistant([Text("начинаю")]))
+    session.append("cancelled", {"turn_id": "t1"})
+    assert history_entries(session.records())[-1] == {
+        "role": "notice",
+        "level": "dim",
+        "text": "прервано",
+    }
+
+
+def test_history_shows_the_edited_command_of_an_approved_edit(tmp_path):
+    from luna.server.turns import history_entries
+
+    session = _session(tmp_path)
+    _add(session, Message.assistant([ToolCall("c1", "execute", {"command": "rm -rf /"})]))
+    session.append(
+        "approval", {"call_id": "c1", "decision": {"type": "edit", "args": {"command": "ls"}}}
+    )
+    _add(
+        session,
+        Message.tool_results([ToolResult("c1", (Text("ok"),), name="execute")]),
+    )
+    tool = [e for e in history_entries(session.records()) if e["role"] == "tool"][0]
+    assert tool["args_preview"] == "ls"

@@ -290,6 +290,10 @@ async def run_once(
     return result.text
 
 
+#: Log records that close a turn (the last one says how the session was left).
+_TURN_ENDS = ("turn_done", "cancelled", "turn_error")
+
+
 def print_recap(session: Session, console: Console, keep: int = 6) -> None:
     """Print the tail of a resumed session's conversation (best effort)."""
     messages = [m for m in session.messages() if m.text.strip()]
@@ -299,6 +303,9 @@ def print_recap(session: Session, console: Console, keep: int = 6) -> None:
     for message in messages[-keep:]:
         console.print(f"[dim]{message.role}:[/] ", end="")
         console.print(message.text[:200], markup=False, highlight=False)
+    last = next((r.type for r in reversed(session.records()) if r.type in _TURN_ENDS), "")
+    if last == "cancelled":
+        console.print("[dim]прервано[/]")
 
 
 async def _rebuild_bundle(ctx: CommandContext, console: Console) -> None:
