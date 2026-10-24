@@ -24,6 +24,7 @@ from luna_core.providers.base import (
     ModelRequest,
     RetryPolicy,
     error_from_response,
+    guard_stream,
     post_sse,
     with_retries,
 )
@@ -172,7 +173,9 @@ class GigaChat:
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
         """Stream one completion (retrying transient failures before output)."""
-        async for event in with_retries(lambda: self._once(request), self.retry):
+        async for event in with_retries(
+            lambda: guard_stream(self.name, self._once(request)), self.retry
+        ):
             yield event
 
     async def _once(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:

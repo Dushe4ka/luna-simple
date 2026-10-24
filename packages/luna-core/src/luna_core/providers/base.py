@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
@@ -160,6 +161,66 @@ async def post_sse(
         raise ProviderError(f"network error: {exc}", "network") from exc
 
 
+# What parsing an unexpected stream shape raises (``json.JSONDecodeError`` is a
+# ``ValueError``); :func:`guard_stream` turns these into :class:`ProviderError`.
+MALFORMED_ERRORS = (KeyError, TypeError, IndexError, ValueError, AttributeError)
+
+
+def malformed(detail: str) -> ProviderError:
+    """Build the error for a stream event whose shape the adapter cannot use.
+
+    ``kind="server"``: the provider (or a proxy in between) sent it, and a
+    retry before any output may well get a sound stream.
+    """
+    return ProviderError(f"malformed stream event ({detail})", "server")
+
+
+def _event_problem(event: ModelEvent, opened: set[int]) -> str | None:
+    """Describe why ``event`` has the wrong field types, or ``None`` when it is sound."""
+    if isinstance(event, TextDelta) and not isinstance(event.text, str):
+        return f"text is {type(event.text).__name__}, not str"
+    if isinstance(event, ThinkingDelta) and (
+        not isinstance(event.text, str)
+        or not (event.signature is None or isinstance(event.signature, str))
+    ):
+        return "thinking text/signature is not a string"
+    if isinstance(event, ToolCallStart):
+        if not isinstance(event.index, int) or not isinstance(event.extra, dict):
+            return "tool call index/extra has the wrong type"
+        if not isinstance(event.id, str) or not isinstance(event.name, str):
+            return "tool call id/name is not a string"
+        opened.add(event.index)
+    elif isinstance(event, ToolCallDelta):
+        if not isinstance(event.args_json, str):
+            return "tool call arguments are not a string"
+        if event.index not in opened:
+            return f"arguments for tool call {event.index!r}, which never started"
+    return None
+
+
+async def guard_stream(
+    provider_name: str, events: AsyncIterator[ModelEvent]
+) -> AsyncIterator[ModelEvent]:
+    """Pass ``events`` through, turning malformed stream shapes into :class:`ProviderError`.
+
+    Adapters parse provider JSON with plain indexing; an unexpected shape
+    (missing key, wrong type, non-JSON data) raises one of
+    :data:`MALFORMED_ERRORS` inside ``events``, and a wrong-typed field
+    would only blow up later. Both become ``ProviderError`` here, as does a
+    tool-call delta for an index that was never started.
+    """
+    opened: set[int] = set()
+    async with contextlib.aclosing(events) as stream:
+        try:
+            async for event in stream:
+                problem = _event_problem(event, opened)
+                if problem is not None:
+                    raise malformed(problem)
+                yield event
+        except MALFORMED_ERRORS as exc:
+            raise malformed(f"{type(exc).__name__}: {exc}") from exc
+
+
 class StreamAccumulator:
     """Assembles model events into the assistant :class:`Message`, in order."""
 
@@ -189,7 +250,10 @@ class StreamAccumulator:
             self._calls[event.index] = call
             self._segments.append(call)
         elif isinstance(event, ToolCallDelta):
-            self._calls[event.index][3].append(event.args_json)
+            call = self._calls.get(event.index)
+            if call is None:
+                raise malformed(f"arguments for tool call {event.index!r}, which never started")
+            call[3].append(event.args_json)
         elif isinstance(event, UsageReport):
             self.usage = self.usage + event.usage
         elif isinstance(event, StopEvent):

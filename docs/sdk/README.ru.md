@@ -1315,7 +1315,11 @@ LunaCoreError
   `rate_limit`, `context_length`, `bad_request`, `server`, `network`, `unknown`;
   `retryable` истинно для `rate_limit`, `server`, `network`. Из `agent.run` он **не
   вылетает**: превращается в `TurnError(message, kind)`. Бросайте его из своего
-  провайдера.
+  провайдера. Встроенные адаптеры превращают битый поток (не-JSON в `data:`,
+  неожиданная форма события, аргументы вызова инструмента для индекса, который не
+  открывался) в `ProviderError(kind="server")` с текстом «malformed stream event …»,
+  а не в `KeyError`/`TypeError`; для своего провайдера то же даёт обёртка
+  `luna_core.providers.base.guard_stream(name, events)`.
 - `ToolError` бросает код инструмента, чтобы вернуть модели ошибку; наружу тоже
   не вылетает (станет `ToolFinished(ok=False)`).
 
