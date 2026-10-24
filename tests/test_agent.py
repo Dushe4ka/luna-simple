@@ -384,10 +384,31 @@ async def test_a_colon_in_a_model_id_is_still_a_model_id(tmp_path):
 async def test_ignored_extra_warning_is_shown_once_per_process(tmp_path, monkeypatch):
     import luna.core.agent as agent_mod
 
-    monkeypatch.setattr(agent_mod, "_WARNED_EXTRA", False, raising=False)
+    monkeypatch.setattr(agent_mod, "_WARNED_EXTRA", set())
     cfg = LunaConfig(workdir=str(tmp_path), model="big", ignored_extra=True)
     seen: list[str] = []
     for _ in range(3):
         bundle = await build_agent(cfg, provider=FakeProvider([]), on_warn=seen.append)
         await bundle.aclose()
     assert sum("[agent] extra" in w for w in seen) == 1
+
+
+async def test_ignored_extra_warning_is_per_workdir(tmp_path, monkeypatch):
+    import luna.core.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_WARNED_EXTRA", set())
+    seen: list[str] = []
+    for name in ("a", "b", "a", "b"):
+        (tmp_path / name).mkdir(exist_ok=True)
+        cfg = LunaConfig(workdir=str(tmp_path / name), model="big", ignored_extra=True)
+        bundle = await build_agent(cfg, provider=FakeProvider([]), on_warn=seen.append)
+        await bundle.aclose()
+    assert sum("[agent] extra" in w for w in seen) == 2
+
+
+@pytest.mark.parametrize("target", ["mixtral:8x7b", "llama:7b", "qwen:7b-chat"])
+async def test_ollama_style_model_ids_are_not_flagged_as_provider_typos(tmp_path, target):
+    cfg = LunaConfig(workdir=str(tmp_path), model="big", roles={"fast": target})
+    bundle = await build_agent(cfg, provider=FakeProvider([]))
+    assert bundle.agent.roles.fast == target
+    await bundle.aclose()

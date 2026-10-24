@@ -66,7 +66,9 @@ def skill_dirs(workdir: str | Path) -> list[tuple[str, Path]]:
     return [("user", config_dir() / "skills"), ("project", Path(workdir) / ".luna" / "skills")]
 
 
-_WARNED_EXTRA = False
+_WARNED_EXTRA: set[str] = set()  # workdirs already warned about the removed [agent] extra
+# Ollama-style ``family:tag`` ids whose family name resembles a provider (llama ~ ollama).
+_MODEL_FAMILIES = frozenset({"llama", "mixtral", "mistral", "qwen", "gemma", "phi", "codellama"})
 
 
 def _roles(config: LunaConfig, registry: dict[str, ProviderSpec]) -> ModelRoles:
@@ -88,7 +90,7 @@ def _roles(config: LunaConfig, registry: dict[str, ProviderSpec]) -> ModelRoles:
         if sep and name in registry:
             values[role] = build_provider(name, rest or None, registry=registry)
         else:
-            close = difflib.get_close_matches(name, registry, n=1, cutoff=0.85) if sep else []
+            close = difflib.get_close_matches(name, registry, n=1, cutoff=0.9) if sep and name not in _MODEL_FAMILIES else []
             if close:
                 raise LunaConfigError(
                     f"model role {role!r}: {name!r} is not a known provider; did you mean "
@@ -132,9 +134,10 @@ async def build_agent(
         provider, model = build_provider(config.provider, config.model, registry=registry)
     else:
         model = config.model or "fake-model"
-    global _WARNED_EXTRA
-    if config.ignored_extra and not _WARNED_EXTRA:
-        _WARNED_EXTRA = True  # rebuilds (/reload, auto-reload) must not repeat it
+    if config.ignored_extra and str(workdir) not in _WARNED_EXTRA:
+        # Once per project: rebuilds (/reload) must not repeat it, a shared server
+        # still tells every project.
+        _WARNED_EXTRA.add(str(workdir))
         on_warn(
             "[agent] extra is no longer used (it held LangChain model kwargs); "
             "use temperature, max_tokens and reasoning"
