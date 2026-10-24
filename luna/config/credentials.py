@@ -109,12 +109,3 @@ def mask_key(api_key: str) -> str:
     """Return a display-safe fingerprint like ``****ab12``."""
     tail = api_key.strip()[-4:]
     return f"****{tail}" if tail else "****"
-
-
-def apply_stored_key(provider: str, env_var: str | None) -> None:
-    """Populate ``os.environ[env_var]`` from the credentials file when unset."""
-    if not env_var or os.environ.get(env_var):
-        return
-    key = get_api_key(provider)
-    if key:
-        os.environ[env_var] = key

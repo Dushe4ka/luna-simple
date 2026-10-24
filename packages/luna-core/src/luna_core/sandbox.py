@@ -6,9 +6,43 @@ import asyncio
 import contextlib
 import os
 import signal
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Protocol
+
+#: Environment variable names never handed to ``execute`` commands by default.
+#: Commands run by the model can print their environment (``env``), and that
+#: output reaches the transcript, the event log and the model provider — so
+#: API keys, tokens and secrets are dropped. Patterns are ``fnmatch`` globs,
+#: matched case-sensitively against the upper-cased name. Allow a specific
+#: variable through with ``env_passthrough`` on the sandbox.
+SECRET_ENV_PATTERNS: tuple[str, ...] = (
+    "*_API_KEY",
+    "*_TOKEN",
+    "*_SECRET",
+    "GIGACHAT_*",
+    "LUNA_SERVER_TOKEN",
+)
+
+
+def is_secret_env(name: str, patterns: Iterable[str] = SECRET_ENV_PATTERNS) -> bool:
+    """Return True when ``name`` matches one of the secret ``patterns``."""
+    upper = name.upper()
+    return any(fnmatchcase(upper, p) for p in patterns)
+
+
+def scrub_env(
+    env: Mapping[str, str],
+    *,
+    passthrough: Iterable[str] = (),
+    patterns: Iterable[str] = SECRET_ENV_PATTERNS,
+) -> dict[str, str]:
+    """Copy of ``env`` without secret variables, except the names in ``passthrough``."""
+    keep = set(passthrough)
+    patterns = tuple(patterns)
+    return {k: v for k, v in env.items() if k in keep or not is_secret_env(k, patterns)}
 
 
 @dataclass(frozen=True)
@@ -113,10 +147,15 @@ def _kill_group(proc: asyncio.subprocess.Process) -> None:
 
 
 class LocalSandbox:
-    """Runs commands on the host in their own process group (killed on timeout/cancel)."""
+    """Runs commands on the host in their own process group (killed on timeout/cancel).
 
-    def __init__(self, max_output: int = 200_000) -> None:
+    The command inherits the host environment minus secret variables
+    (:data:`SECRET_ENV_PATTERNS`); names in ``env_passthrough`` are kept.
+    """
+
+    def __init__(self, max_output: int = 200_000, *, env_passthrough: Iterable[str] = ()) -> None:
         self.max_output = max_output
+        self.env_passthrough = tuple(env_passthrough)
 
     async def run(
         self,
@@ -128,7 +167,7 @@ class LocalSandbox:
         cancel: asyncio.Event | None = None,
     ) -> RunResult:
         """Run ``command`` with ``sh`` in ``cwd``."""
-        full_env = {**os.environ, **(env or {})}
+        full_env = scrub_env({**os.environ, **(env or {})}, passthrough=self.env_passthrough)
         return await _run_process(
             command,
             shell=True,
@@ -144,7 +183,13 @@ class LocalSandbox:
 
 
 class DockerSandbox:
-    """One container per session; the project is mounted at ``/workspace``."""
+    """One container per session; the project is mounted at ``/workspace``.
+
+    The container never sees the host environment. Secret variables
+    (:data:`SECRET_ENV_PATTERNS`) are dropped from an explicit ``env``; host
+    variables named in ``env_passthrough`` are forwarded by name
+    (``docker exec -e NAME``), so their values never appear in ``argv``.
+    """
 
     def __init__(
         self,
@@ -155,6 +200,7 @@ class DockerSandbox:
         docker: str = "docker",
         extra_args: tuple[str, ...] = (),
         max_output: int = 200_000,
+        env_passthrough: Iterable[str] = (),
     ) -> None:
         if network not in ("none", "bridge"):
             raise ValueError("network must be 'none' or 'bridge'")
@@ -164,6 +210,7 @@ class DockerSandbox:
         self.docker = docker
         self.extra_args = tuple(extra_args)
         self.max_output = max_output
+        self.env_passthrough = tuple(env_passthrough)
         self.container_id: str | None = None
         self._lock = asyncio.Lock()
 
@@ -211,7 +258,14 @@ class DockerSandbox:
         except ValueError:
             rel = "."
         workdir = "/workspace" if rel == "." else f"/workspace/{rel}"
-        env_args = [arg for k, v in (env or {}).items() for arg in ("-e", f"{k}={v}")]
+        explicit = scrub_env(env or {}, passthrough=self.env_passthrough)
+        env_args = [arg for k, v in explicit.items() for arg in ("-e", f"{k}={v}")]
+        env_args += [
+            arg
+            for name in self.env_passthrough
+            if name not in explicit and name in os.environ
+            for arg in ("-e", name)
+        ]
         argv = [
             self.docker,
             "exec",

@@ -80,6 +80,21 @@ agent = Agent(provider, model, sandbox=DockerSandbox(".", image="python:3.12-sli
 `await agent.sandbox.close()`, чтобы контейнер был удалён. Своя песочница реализует
 `async run(command, *, cwd, timeout, env, cancel)` и `async close()`.
 
+Секреты окружения. Команды `execute` не получают переменные-секреты: по умолчанию
+отбрасываются имена по шаблонам `luna_core.sandbox.SECRET_ENV_PATTERNS` —
+`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `GIGACHAT_*` и `LUNA_SERVER_TOKEN` (иначе модель
+могла бы выполнить `env`, и ключ попал бы в вывод инструмента, журнал событий и к
+провайдеру). Это касается и ключей, заданных в вашей оболочке: провайдер читает их в
+своём процессе раньше. Нужную переменную можно пропустить явно:
+`LocalSandbox(env_passthrough=("GITHUB_TOKEN",))`; `DockerSandbox(..., env_passthrough=...)`
+пробрасывает такие переменные хоста в контейнер по имени (`docker exec -e NAME`, значение
+не попадает в argv). В приложении Luna то же задаётся в конфиге:
+
+```toml
+[execute]
+pass_env = ["GITHUB_TOKEN"]
+```
+
 ## Подводные камни
 
 - Большие результаты записываются в `.luna/tool-output/<id>.txt` и заменяются выдержкой.

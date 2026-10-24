@@ -163,10 +163,13 @@ async def build_agent(
         all_hooks.extend(load_command_hooks(config.hooks, workdir))
         if config.sandbox == "docker":
             sandbox = DockerSandbox(
-                workdir, image=config.sandbox_image, network=config.sandbox_network
+                workdir,
+                image=config.sandbox_image,
+                network=config.sandbox_network,
+                env_passthrough=config.execute_pass_env,
             )
         else:
-            sandbox = LocalSandbox()
+            sandbox = LocalSandbox(env_passthrough=config.execute_pass_env)
         summarize_provider, summarize_model = roles.get("summarize", provider, model)
 
         def system(session) -> str:

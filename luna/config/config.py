@@ -79,6 +79,7 @@ class LunaConfig:
     sandbox: str = "local"
     sandbox_image: str = "python:3.12-slim"
     sandbox_network: str = "none"
+    execute_pass_env: tuple[str, ...] = ()
     hooks: list[dict] = field(default_factory=list)
     ignored_extra: bool = False
     custom_providers: dict[str, ProviderSpec] = field(default_factory=dict)
@@ -136,6 +137,9 @@ def _apply_toml(data: dict, into: dict) -> None:
     ):
         if src in sandbox:
             into[dst] = str(sandbox[src])
+    execute = data.get("execute", {})
+    if "pass_env" in execute:
+        into["execute_pass_env"] = execute["pass_env"]
     if isinstance(data.get("hooks"), list):
         into["hooks"] = [dict(h) for h in data["hooks"] if isinstance(h, dict)]
 
@@ -247,6 +251,13 @@ def load_config(
         isinstance(max_cost, bool) or not isinstance(max_cost, (int, float)) or max_cost < 0
     ):
         raise LunaConfigError(f"[agent] max_cost must be a number >= 0, got {max_cost!r}.")
+    pass_env = merged.get("execute_pass_env", ())
+    if not isinstance(pass_env, (list, tuple)) or not all(
+        isinstance(n, str) and n for n in pass_env
+    ):
+        raise LunaConfigError(
+            f"[execute] pass_env must be a list of variable names, got {pass_env!r}."
+        )
     hooks = list(merged.get("hooks", []))
     for index, entry in enumerate(hooks, 1):
         _validate_hook(index, entry)
@@ -273,6 +284,7 @@ def load_config(
         sandbox=sandbox,
         sandbox_image=merged.get("sandbox_image", "python:3.12-slim"),
         sandbox_network=sandbox_network,
+        execute_pass_env=tuple(pass_env),
         hooks=hooks,
         ignored_extra=bool(merged.get("ignored_extra", False)),
         custom_providers=custom_providers,
