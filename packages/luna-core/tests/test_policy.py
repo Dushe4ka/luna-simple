@@ -607,3 +607,37 @@ def test_safe_rules_still_save(tmp_path):
     for rule in ("execute:pytest *", "execute:./run.sh *", "write_file:src/*", "execute:git log *"):
         append_rule(tmp_path / "p.toml", rule)
     assert append_rule(tmp_path / "p.toml", "execute:rm *", kind="deny")
+
+
+# --- fix round 3: the rough deny net must not silently give up -----------------
+
+
+_CAP_LINES = [
+    ">/dev/null " * n + ">'a b' touch PWNED" + tail
+    for n in (3, 70)
+    for tail in ("", " <<'E'$\"\"", "\n'")
+]
+
+
+@pytest.mark.parametrize("command", _CAP_LINES)
+def test_many_redirections_still_hit_deny_under_yolo(tmp_path, command):
+    p = Policy(Rules(deny=["execute:touch *"]), workspace=Workspace(tmp_path), yolo=True)
+    assert p.check(execute, {"command": command}).action == "deny"
+
+
+def test_rough_overflow_fails_closed(tmp_path, monkeypatch):
+    import luna_core.shellsplit as shellsplit
+
+    monkeypatch.setattr(shellsplit, "_MAX_ROUGH_CUTS", 2)
+    line = "echo >a >b >'c d' x <<'E'$\"\""  # unparseable, and the cut budget runs out
+    assert shellsplit.rough_split(line)[1] is False
+    deny = Policy(Rules(deny=["execute:rm *"]), workspace=Workspace(tmp_path), yolo=True)
+    assert deny.check(execute, {"command": line}).action == "deny"
+    plain = Policy(Rules(), workspace=Workspace(tmp_path), yolo=True)
+    assert plain.check(execute, {"command": line}).action == "ask"  # yolo cannot skip it
+
+
+def test_long_unparseable_line_fails_closed(tmp_path):
+    line = "echo " + "x " * 3000 + "'"
+    assert Rules(deny=["execute:rm *"]).match("execute", {"command": line}) == "deny"
+    assert Rules().match("execute", {"command": line}) == "ask"

@@ -57,7 +57,14 @@ _ROUGH_SPLITS = (
 )
 # A redirection operator anywhere in a rough piece.
 _REDIRECT_OP = re.compile(r"\d*(?:<<-|<<<|<<|>>|>\||<>|>&|<&|&>>|&>|[<>])")
-_MAX_ROUGH_CUTS = 64
+# Leading redirections with a plain target (``>/dev/null 2>&1 cmd``): dropped
+# before the cuts are tried, so a run of them cannot exhaust the cut budget.
+_SIMPLE_LEADING_REDIRECTS = re.compile(
+    r"^(?:\d*(?:>>|>\||>&|<&|&>>|&>|<>|>|<)[^\s'\"\\$`<>|&;(){}]+\s+)+"
+)
+_MAX_ROUGH_CUTS = 512
+#: An unparseable line longer than this is not trusted to the rough net alone.
+_MAX_UNPARSEABLE = 4096
 _MAX_DEPTH = 8
 
 
@@ -104,7 +111,12 @@ def split_command(command: str, *, ansi_c: bool = True) -> CommandParts | None:
 
 
 def rough_subjects(command: str) -> list[str]:
-    """Quote-blind pieces of ``command`` for deny/ask matching.
+    """Quote-blind pieces of ``command`` for deny/ask matching (see :func:`rough_split`)."""
+    return rough_split(command)[0]
+
+
+def rough_split(command: str) -> tuple[list[str], bool]:
+    """Quote-blind pieces of ``command`` for deny/ask matching, and whether they are complete.
 
     Splits on every ``;``, ``&``, ``|``, newline and backtick (and, separately,
     also on ``( )``, ``$(`` and ``{ }``) regardless of quoting, here-docs or
@@ -112,37 +124,49 @@ def rough_subjects(command: str) -> list[str]:
     quote characters. It over-approximates on purpose: a deny rule may then
     also hit quoted text or a here-doc body, but no command the shell would
     run can hide inside a quoting trick or a line the splitter cannot parse.
+
+    The second value is ``False`` when the net gave up (the cut budget ran
+    out, or the line is long and cannot be parsed): callers must then fail
+    closed instead of trusting the pieces.
     """
+    complete = True
+    if len(command) > _MAX_UNPARSEABLE and split_command(command) is None:
+        complete = False
     out: list[str] = []
     # also with backslash-newline continuations joined, as the shell reads them
     texts = {command, command.replace("\\\n", "")}
     pieces = [p for text in texts for split in _ROUGH_SPLITS for p in split.split(text)]
     for piece in pieces:
-        for cut in _redirect_cuts(piece.strip()):
+        cuts, whole = _redirect_cuts(piece.strip())
+        complete = complete and whole
+        for cut in cuts:
             bare = cut.translate({ord(c): None for c in "'\"\\"}).strip()
             words = _normalise(bare.split())
             for variant in (cut, bare, *_variants(words)):
                 if variant and variant not in out:
                     out.append(variant)
-    return out
+    return out, complete
 
 
-def _redirect_cuts(piece: str) -> list[str]:
+def _redirect_cuts(piece: str) -> tuple[list[str], bool]:
     """Return ``piece`` plus forms with a redirection and a guessed target cut out.
 
     Quote-blind, the target's extent is unknown (``>'a b' rm``, an escaped
     space in a here-doc delimiter), so every whitespace after the operator
-    is tried.
+    is tried. The flag is ``False`` when the cut budget ran out.
     """
     cuts = [piece] if piece else []
+    piece = _SIMPLE_LEADING_REDIRECTS.sub("", piece)
+    if piece and piece not in cuts:
+        cuts.append(piece)
     for op in _REDIRECT_OP.finditer(piece):
         for gap in re.finditer(r"\s+", piece[op.end() :]):
             if len(cuts) >= _MAX_ROUGH_CUTS:
-                return cuts
+                return cuts, False
             cut = (piece[: op.start()] + piece[op.end() + gap.end() :]).strip()
             if cut and cut not in cuts:
                 cuts.append(cut)
-    return cuts
+    return cuts, True
 
 
 def _variants(words: list[str]) -> list[str]:

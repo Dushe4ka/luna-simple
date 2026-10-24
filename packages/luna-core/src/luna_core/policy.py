@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
-from luna_core.shellsplit import rough_subjects, split_command
+from luna_core.shellsplit import rough_split, split_command
 from luna_core.tools.base import Tool, args_preview
 from luna_core.workspace import OutsideWorkspace, Workspace
 
@@ -89,11 +89,18 @@ class Rules:
         rough piece matching is enough. allow: every simple command must
         match under both the bash (``$'...'`` as ANSI-C quoting) and the POSIX
         ``sh`` reading; a line that cannot be parsed is never allowed by a rule.
+        When the rough net gives up (see :func:`luna_core.shellsplit.rough_split`)
+        the line is denied if any deny rule covers ``execute``, else asked about.
         """
         readings = [split_command(command)]
         if "$'" in command:
             readings.append(split_command(command, ansi_c=False))
-        subjects = [command, *rough_subjects(command)]
+        rough, complete = rough_split(command)
+        if not complete:  # the safety net gave up: fail closed (yolo cannot skip "ask")
+            if any(_tool_matches(r.partition(":")[0], "execute") for r in self.deny):
+                return "deny"
+            return "ask"
+        subjects = [command, *rough]
         for parts in readings:
             subjects += parts.subjects if parts else ()
         for kind in ("deny", "ask"):
