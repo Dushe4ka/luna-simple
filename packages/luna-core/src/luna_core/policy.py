@@ -165,6 +165,8 @@ def append_rule(path: Path, rule: str, kind: str = "allow") -> Path:
     ``config.toml`` with a ``[model]`` section), only the ``[permissions]``
     section is replaced — every other line is kept byte-for-byte.
     """
+    if kind == "allow":
+        check_rule_safe(rule)
     path = Path(path)
     raw = ""
     data: dict = {}
@@ -230,9 +232,53 @@ def _toml_str(value: str) -> str:
     return '"' + "".join(out) + '"'
 
 
-def _program_rule(command: str) -> str:
+# A program name an "always allow" rule may name: no glob, quote, ``$``, ``=`` ...
+_PLAIN_PROGRAM = re.compile(r"^[A-Za-z0-9_./+-]+$")
+#: Programs that run other commands (shells, ``eval``, privilege and
+#: process wrappers, ``xargs`` / ``find -exec``): ``execute:<one of these> *``
+#: would allow anything, so "always allow" never suggests or saves it.
+RUNNER_PROGRAMS = frozenset(
+    {
+        "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
+        "eval", "exec", "source", ".", "env", "command", "builtin",
+        "sudo", "doas", "su", "xargs", "find", "nohup", "nice", "timeout",
+        "time", "stdbuf", "watch", "busybox", "parallel",
+    }
+)  # fmt: skip
+
+
+class UnsafeRule(ValueError):
+    """A rule "always allow" refuses to save (it would allow arbitrary commands)."""
+
+
+def check_rule_safe(rule: str) -> None:
+    """Raise :class:`UnsafeRule` unless ``rule`` is safe to save as an allow rule.
+
+    An allow rule that applies to ``execute`` must name a plain program
+    (``execute:pytest *``, ``execute:./run.sh *``), never a glob (``execute:*``,
+    ``execute:? *``), a variable or a command runner such as ``bash``.
+    """
+    tool, _, pattern = rule.partition(":")
+    if not _tool_matches(tool, "execute"):
+        return
+    words = pattern.split()
+    program = words[0] if words else ""
+    if not _PLAIN_PROGRAM.match(program):
+        raise UnsafeRule(f"refusing to save {rule!r}: {program!r} is not a plain program name")
+    if program.rsplit("/", 1)[-1] in RUNNER_PROGRAMS:
+        raise UnsafeRule(f"refusing to save {rule!r}: {program!r} can run any command")
+
+
+def _program_rule(command: str) -> str | None:
     words = command.split()
-    return f"execute:{words[0]} *" if words else "execute:*"
+    if not words:
+        return None
+    rule = f"execute:{words[0]} *"
+    try:
+        check_rule_safe(rule)
+    except UnsafeRule:
+        return None
+    return rule
 
 
 def suggest_rules(tool: str, args: dict, rules: Rules | None = None) -> tuple[str, ...]:
@@ -240,20 +286,27 @@ def suggest_rules(tool: str, args: dict, rules: Rules | None = None) -> tuple[st
 
     For ``execute`` that is one ``execute:<program> *`` rule per simple
     command of the line (see :mod:`luna_core.shellsplit`), skipping commands
-    ``rules`` already allow. Falls back to :func:`suggest_rule` alone.
+    ``rules`` already allow. Empty when some command has no safe rule (a
+    glob or quoted program name, a variable, a command runner — see
+    :func:`check_rule_safe`) or the line cannot be parsed: then "always"
+    may save only ``suggested_rule``, and only if that one is safe.
     """
     if tool != "execute":
         return (suggest_rule(tool, args),)
     command = str(args.get("command", ""))
     out: list[str] = []
     for reading in (split_command(command), split_command(command, ansi_c=False)):
-        for simple in reading.commands if reading else ():
+        if reading is None:
+            return ()
+        for simple in reading.commands:
             if rules is not None and rules._hit(rules.allow, "execute", simple):
                 continue
             rule = _program_rule(simple)
+            if rule is None:
+                return ()
             if rule not in out:
                 out.append(rule)
-    return tuple(out) or (suggest_rule(tool, args),)
+    return tuple(out)
 
 
 def suggest_rule(tool: str, args: dict) -> str:
@@ -460,7 +513,12 @@ class Policy:
             self.anchors.remember(rel)
 
     def remember_always(self, rule: str) -> None:
-        """Allow ``rule`` for the rest of the session (and persist it if configured)."""
+        """Allow ``rule`` for the rest of the session (and persist it if configured).
+
+        Raises :class:`UnsafeRule` — before changing anything — for a rule
+        that would allow arbitrary commands (see :func:`check_rule_safe`).
+        """
+        check_rule_safe(rule)
         if rule not in self.rules.allow:
             self.rules.allow.append(rule)
         if self.persist_rule:

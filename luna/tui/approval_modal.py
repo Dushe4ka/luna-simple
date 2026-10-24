@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from luna_core.policy import suggest_rule
+from luna_core.policy import UnsafeRule, check_rule_safe, suggest_rule
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
@@ -33,12 +33,27 @@ class ApprovalModal(ModalScreen[dict]):
     def _args(self) -> dict:
         return self._action_request.get("args") or {}
 
+    def _always_rules(self) -> list[str]:
+        """Rules "Разрешить всегда" will save (the agent saves all of them)."""
+        rule = self._action_request.get("suggested_rule") or suggest_rule(self._tool, self._args)
+        return list(self._action_request.get("suggested_rules") or [rule])
+
+    def _always_hint(self) -> str:
+        rules = self._always_rules()
+        try:
+            for rule in rules:
+                check_rule_safe(rule)
+        except UnsafeRule:
+            return "«Разрешить всегда»: правило не будет сохранено (небезопасно)"
+        return "Будет сохранено: " + ", ".join(rules)
+
     def compose(self):
         """Render the pending action's description and the decision buttons."""
         with Vertical():
             yield Static(describe_action(self._action_request))
             yield Button("Разрешить", id="approve-button", variant="success")
             yield Button("Разрешить всегда", id="always-button")
+            yield Static(self._always_hint(), id="always-hint", classes="picker-hint", markup=False)
             if self._tool == "execute":
                 yield Button("Изменить", id="edit-button")
             yield Button("Отклонить", id="reject-button", variant="error")

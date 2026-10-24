@@ -30,7 +30,7 @@ from luna_core.events import (
 )
 from luna_core.hooks import Hooks
 from luna_core.messages import Image, Message, Text, ToolCall, ToolResult, message_to_dict
-from luna_core.policy import MUTATING_FILE_TOOLS, Decision, Policy
+from luna_core.policy import MUTATING_FILE_TOOLS, Decision, Policy, UnsafeRule
 from luna_core.providers.base import ModelRequest, Provider, StreamAccumulator
 from luna_core.roles import ModelRoles
 from luna_core.sandbox import LocalSandbox, Sandbox
@@ -599,15 +599,17 @@ class Agent:
                     to_save = list(request.suggested_rules)
                 else:
                     to_save = [decision.always]
-                try:
-                    for rule in to_save:
+                for rule in to_save:
+                    try:
                         self.policy.remember_always(rule)
-                except Exception as exc:  # noqa: BLE001 - the approval itself still stands
-                    yield Notice(
-                        "warn",
-                        f"could not save the rule {decision.always!r} ({exc}); "
-                        "it applies for this session only",
-                    )
+                    except UnsafeRule as exc:
+                        yield Notice("warn", f"rule not saved: {exc}")
+                    except Exception as exc:  # noqa: BLE001 - the approval itself still stands
+                        yield Notice(
+                            "warn",
+                            f"could not save the rule {rule!r} ({exc}); "
+                            "it applies for this session only",
+                        )
             if decision.type == "reject":
                 suffix = f": {decision.message}" if decision.message else ""
                 yield _Outcome(("refuse", f"rejected by the user{suffix}"))

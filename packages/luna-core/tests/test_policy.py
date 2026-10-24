@@ -549,3 +549,61 @@ def test_fuzz_found_deny_bypasses(command):
 )
 def test_redirection_targets_with_spaces_do_not_hide_the_program(command):
     assert Rules(deny=["execute:touch *"]).match("execute", {"command": command}) == "deny"
+
+
+# --- fix round 3: "always" must never persist a catch-all rule -----------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'ls && "*" x',
+        "ls\n*",
+        "ls `*`",
+        'eval "*"',
+        "ls && ? x",
+        "ls && [a-z]* x",
+        "ls && $X y",
+        "ls | xargs rm",
+        "ls && find . -delete",
+    ],
+)
+def test_no_multi_rule_always_when_a_command_has_no_safe_rule(tmp_path, command):
+    p = Policy(Rules(), workspace=Workspace(tmp_path))
+    request = p.check(execute, {"command": command}).request
+    assert request.suggested_rules == ()
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "execute:* *",
+        "execute:*",
+        "*:*",
+        "execute:? *",
+        "execute:[a-z]* *",
+        "execute:$X *",
+        "execute:bash *",
+        "execute:sudo *",
+        "execute:eval *",
+        "execute:xargs *",
+        'execute:"*" *',
+    ],
+)
+def test_unsafe_execute_allow_rules_are_never_saved(tmp_path, rule):
+    from luna_core.policy import UnsafeRule
+
+    saved = []
+    p = Policy(Rules(), workspace=Workspace(tmp_path), persist_rule=saved.append)
+    with pytest.raises(UnsafeRule):
+        p.remember_always(rule)
+    assert p.rules.allow == [] and saved == []
+    with pytest.raises(UnsafeRule):
+        append_rule(tmp_path / "permissions.toml", rule)
+    assert not (tmp_path / "permissions.toml").exists()
+
+
+def test_safe_rules_still_save(tmp_path):
+    for rule in ("execute:pytest *", "execute:./run.sh *", "write_file:src/*", "execute:git log *"):
+        append_rule(tmp_path / "p.toml", rule)
+    assert append_rule(tmp_path / "p.toml", "execute:rm *", kind="deny")

@@ -445,7 +445,13 @@ that is not allowed yet (absent when there is nothing beyond
 `"always": <suggested_rule>` — the server treats that exact value as
 "always allow this call" and saves every rule in `suggested_rules`; any
 other `always` string is saved on its own. Older clients that ignore the
-new field therefore get the full behaviour unchanged.
+new field therefore get the full behaviour unchanged. `suggested_rules` is
+also absent when some command of the line has no safe rule (a glob or
+quoted program name, a variable, a command runner such as `bash`, `sudo`
+or `xargs`). The server never saves an `execute` allow rule that names
+anything but a plain program (`execute:* *`, `execute:bash *`, ...),
+whatever `always` says; the call still runs once and the turn gets a
+`notice` saying the rule was not saved.
 
 ```json
 {"event": "approval_needed", "value": {"action_requests": [

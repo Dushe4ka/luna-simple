@@ -701,3 +701,19 @@ async def test_always_on_a_compound_command_saves_every_rule(env):
     await collect(agent, session, decide=decide)
     assert asked == ["c1"]  # the second identical call ran without a prompt
     assert {"execute:cd *", "execute:ls *"} <= set(agent.policy.rules.allow)
+
+
+async def test_always_on_a_crafted_line_saves_no_catch_all_rule(env):
+    from luna_core.events import Notice
+
+    tmp, session = env
+    script = [
+        FakeProvider.call("execute", {"command": '"*" x'}, "c1"),
+        FakeProvider.text("done"),
+    ]
+    agent = agent_for(tmp, script)
+    events = await collect(
+        agent, session, decide=lambda r: Decision.approve(always=r.suggested_rule)
+    )
+    assert agent.policy.rules.allow == []
+    assert any(isinstance(e, Notice) and "not saved" in e.text for e in events)
