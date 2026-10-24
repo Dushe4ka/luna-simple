@@ -286,3 +286,50 @@ async def test_agent_manager_event_index_is_monotonic_across_runs(tmp_path, log)
     second = manager.events(session.id)
     assert second[0]["index"] > last
     assert [e["event"] for e in manager.events(session.id, after=last)][-1] == "turn_done"
+
+
+def _boom(*_args):
+    raise RuntimeError("listener exploded")
+
+
+async def test_swallowed_callback_errors_are_logged(tmp_path, log, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="luna_core")
+    session = Session.create(log, str(tmp_path), undo=False)
+    session.subscribe(_boom)
+    tasks = BackgroundTasks()
+
+    async def work():
+        return "ok"
+
+    await tasks.wait(tasks.start("t", work, session=session))
+    assert any("listener exploded" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+
+    agent = Agent(FakeProvider([FakeProvider.text("hi")]), "m", workspace=Workspace(tmp_path))
+    run_session = Session.create(log, str(tmp_path), undo=False)
+    manager = AgentManager(on_done=_boom)
+    manager.start(agent, run_session, "go")
+    manager.subscribe(run_session.id, _boom)
+    await manager.wait(run_session.id)
+    messages = [r.getMessage() for r in caplog.records if r.name.startswith("luna_core")]
+    assert any("on_done" in m and "listener exploded" in m for m in messages)
+
+
+def test_start_without_a_running_loop_leaves_no_phantom_entries(tmp_path, log):
+    session = Session.create(log, str(tmp_path), undo=False)
+    tasks = BackgroundTasks()  # built and used outside any running loop
+
+    async def work():
+        return "x"
+
+    with pytest.raises(LunaCoreError, match="running event loop"):
+        tasks.start("t", work, session=session)
+    assert tasks.list() == [] and tasks._tasks == {}
+
+    manager = AgentManager()
+    agent = Agent(FakeProvider([]), "m", workspace=Workspace(tmp_path))
+    with pytest.raises(LunaCoreError, match="running event loop"):
+        manager.start(agent, session, "go")
+    assert manager.list() == [] and manager._events == {}

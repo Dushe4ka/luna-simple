@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import html
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -18,6 +19,8 @@ from luna_core.messages import Message, Text, ToolResult, message_from_dict
 from luna_core.policy import Decision
 from luna_core.undo import UndoJournal, UndoResult
 from luna_core.usage import Usage
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 _MESSAGE_TYPES = ("user", "assistant", "tool_results")
@@ -124,10 +127,11 @@ class EventLog:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self._conn
+                self._conn.execute("COMMIT")
             except BaseException:
-                self._conn.execute("ROLLBACK")
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
                 raise
-            self._conn.execute("COMMIT")
 
     @staticmethod
     def _require(conn: sqlite3.Connection, session_id: str) -> None:
@@ -481,8 +485,8 @@ class Session:
         for fn in list(self._listeners):
             try:
                 fn(event)
-            except Exception:  # noqa: BLE001 - a broken listener must not break the agent
-                pass
+            except Exception as exc:  # noqa: BLE001 - a broken listener must not break the agent
+                logger.warning("session listener failed: %r", exc, exc_info=True)
 
     def todos(self) -> list[dict]:
         """Return the latest plan written with ``write_todos``."""
