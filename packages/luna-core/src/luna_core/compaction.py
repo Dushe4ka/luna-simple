@@ -25,6 +25,8 @@ _BACKOFF_ENTRIES = 4
 #: After a ``pre_compact`` hook blocked an automatic attempt, wait for this many new
 #: entries before asking the hook (and showing its notice) again.
 _BLOCKED_BACKOFF_ENTRIES = 30
+#: Close to the window the blocked-hook backoff is ignored: overflowing is worse than a notice.
+_FORCE_RATIO = 0.95
 #: The summariser input is trimmed to this fraction of the summary model's window.
 _TRIM_RATIO = 0.7
 _OMITTED_MARKER = "[earlier part omitted]\n\n"
@@ -121,14 +123,18 @@ class Compactor:
         (and its notice not repeated) for ``_BLOCKED_BACKOFF_ENTRIES`` entries.
         """
         window = window if window is not None else agent.model_info.context_window
-        if estimate_tokens(agent.request(session)) < self.threshold * window:
+        estimated = estimate_tokens(agent.request(session))
+        if estimated < self.threshold * window:
             return
+        size = len(session.entries())
         backoff_at = session.state.get("compaction_backoff")
-        if backoff_at is not None and len(session.entries()) - backoff_at < _BACKOFF_ENTRIES:
+        # A negative difference (history shrank, e.g. /undo) means the marker is stale.
+        if backoff_at is not None and 0 <= size - backoff_at < _BACKOFF_ENTRIES:
             return
         blocked_at = session.state.get("compaction_blocked")
         if blocked_at is not None:
-            if len(session.entries()) - blocked_at < _BLOCKED_BACKOFF_ENTRIES:
+            near_limit = estimated >= _FORCE_RATIO * window
+            if 0 <= size - blocked_at < _BLOCKED_BACKOFF_ENTRIES and not near_limit:
                 return
             del session.state["compaction_blocked"]
         async for event in self._run(agent, session, instructions="", automatic=True):
@@ -205,6 +211,7 @@ class Compactor:
             yield Notice("warn", "compaction failed: the model returned an empty summary")
             return
         session.state.pop("compaction_backoff", None)
+        session.state.pop("compaction_blocked", None)
         session.append(
             "compacted", {"summary": summary, "upto_seq": old[-1].seq, "removed": len(old)}
         )
