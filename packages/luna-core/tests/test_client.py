@@ -136,3 +136,27 @@ async def test_a_non_json_answer_is_a_server_error():
     with pytest.raises(ServerError, match="malformed"):
         await client.health()
     await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("call", "body"),
+    [
+        (lambda c: c.list_sessions("/w"), {"nope": 1}),
+        (lambda c: c.create_session("/w"), {}),
+        (lambda c: c.history("s1", "/w"), {}),
+        (lambda c: c.cancel("s1"), {}),
+        (lambda c: c.commands("/w"), {}),
+    ],
+)
+async def test_an_answer_missing_its_key_is_a_server_error(call, body):
+    def handler(request):
+        return httpx.Response(200, json=body)
+
+    client = LunaClient(
+        "http://luna",
+        "tok",
+        client=httpx.AsyncClient(base_url="http://luna", transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ServerError, match="malformed"):
+        await call(client)
+    await client.aclose()

@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 
 import pytest
 from luna_core.undo import UndoJournal, gc
@@ -376,3 +377,30 @@ def test_two_processes_share_one_journal_without_losing_updates(tmp_path):
     assert codes == [0, 0]
     files = j._load()["turns"][0]["files"]
     assert len(files) == 2 * count
+
+
+def test_reads_on_an_empty_journal_create_nothing(tmp_path):
+    j = UndoJournal(tmp_path, "s")
+    assert j.undo() is None and j.redo() is None
+    j.discard_top()
+    j.before_write("t1", "a.txt")
+    j.note_command("t1")
+    j.end_turn("t1")
+    assert not (tmp_path / ".luna").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the test holds the lock with fcntl")
+def test_gc_skips_a_journal_whose_lock_is_held(tmp_path):
+    import fcntl
+    import os
+
+    j = UndoJournal(tmp_path, "old")
+    j.begin_turn("t1")
+    os.utime(j.dir / "journal.json", (0, 0))
+    with open(j.dir / "journal.lock", "a+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        gc(tmp_path, keep_days=1, keep_max=0)
+        assert j.dir.is_dir()
+        fcntl.flock(held, fcntl.LOCK_UN)
+    gc(tmp_path, keep_days=1, keep_max=0)
+    assert not j.dir.exists()

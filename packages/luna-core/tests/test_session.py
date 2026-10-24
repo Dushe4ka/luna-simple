@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import subprocess
 
 import pytest
@@ -425,3 +426,29 @@ def test_set_meta_from_two_threads_keeps_every_key(tmp_path):
     finally:
         first.close()
         second.close()
+
+
+def test_a_failed_commit_rolls_back_and_leaves_no_open_transaction(log, tmp_path):
+    sid = log.create(str(tmp_path))
+    real = log._conn
+
+    class FailingCommit:
+        failed = False
+
+        def execute(self, sql, *args):
+            if sql == "COMMIT" and not self.failed:
+                self.failed = True
+                raise sqlite3.OperationalError("disk I/O error")
+            return real.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    log._conn = FailingCommit()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            log.append(sid, "note", {})
+        assert not real.in_transaction
+        assert log.append(sid, "note", {}) == 1
+    finally:
+        log._conn = real

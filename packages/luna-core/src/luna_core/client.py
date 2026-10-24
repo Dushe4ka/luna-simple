@@ -36,6 +36,14 @@ def _decode(text: str, what: str, status: int | None) -> dict:
     return data
 
 
+def _field(data: dict, key: str):
+    """Return ``data[key]``, or raise :class:`ServerError` when the answer lacks it."""
+    try:
+        return data[key]
+    except KeyError:
+        raise ServerError(f"malformed answer from the Luna server: no {key!r}") from None
+
+
 def _error(resp: httpx.Response) -> ServerError:
     try:
         message = resp.json().get("error") or resp.text
@@ -88,11 +96,11 @@ class LunaClient:
 
     async def list_sessions(self, workdir: str) -> list[dict]:
         """Sessions of a project, newest first."""
-        return (await self._json("GET", "/sessions", params={"workdir": workdir}))["sessions"]
+        return _field(await self._json("GET", "/sessions", params={"workdir": workdir}), "sessions")
 
     async def create_session(self, workdir: str) -> str:
         """Create a session; returns its id."""
-        return (await self._json("POST", "/sessions", json={"workdir": workdir}))["id"]
+        return _field(await self._json("POST", "/sessions", json={"workdir": workdir}), "id")
 
     async def delete_session(self, session_id: str) -> None:
         """Delete a session."""
@@ -101,7 +109,7 @@ class LunaClient:
     async def history(self, session_id: str, workdir: str) -> list[dict]:
         """Transcript entries, oldest first."""
         path = f"/sessions/{session_id}/messages"
-        return (await self._json("GET", path, params={"workdir": workdir}))["messages"]
+        return _field(await self._json("GET", path, params={"workdir": workdir}), "messages")
 
     async def state(self, session_id: str, workdir: str) -> dict:
         """Status-bar state of a session."""
@@ -132,11 +140,11 @@ class LunaClient:
 
     async def cancel(self, session_id: str) -> bool:
         """Cancel the running turn."""
-        return bool((await self._json("POST", f"/sessions/{session_id}/cancel"))["cancelled"])
+        return bool(_field(await self._json("POST", f"/sessions/{session_id}/cancel"), "cancelled"))
 
     async def commands(self, workdir: str) -> list[dict]:
         """Available slash commands."""
-        return (await self._json("GET", "/commands", params={"workdir": workdir}))["commands"]
+        return _field(await self._json("GET", "/commands", params={"workdir": workdir}), "commands")
 
     async def run_command(self, session_id: str, line: str, workdir: str) -> dict:
         """Run a slash command."""
