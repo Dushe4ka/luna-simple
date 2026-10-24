@@ -44,7 +44,20 @@ _PREFIXES: dict[str, frozenset[str]] = {
 }
 # Positional words a prefix takes before the command (``timeout 5 cmd``).
 _PREFIX_POSITIONAL = {"timeout": 1}
-_ROUGH_SPLIT = re.compile(r"\$\(|[;&|\n()`]")
+# A redirection operator at the start of a word: ``>f``, ``2>&1``, ``<<'E'`` ...
+_REDIRECT = re.compile(r"^\d*(?:<<-|<<<|<<|>>|>\||<>|>&|<&|&>>|&>|[<>])(.*)$", re.S)
+# A here-doc delimiter word the splitter decodes the way the shell does.
+_DELIMITER = re.compile(r"""^(?:[A-Za-z0-9_.+-]+|'[^']*'|"[^"$`\\]*")+$""")
+# Two quote-blind splits: with and without braces as boundaries (a brace can
+# be a group, ``{ rm x; }``, or part of a word such as a here-doc delimiter).
+_ROUGH_SPLITS = (
+    re.compile(r"[;&|\n`]"),
+    re.compile(r"\$\(|[;&|\n()`]"),
+    re.compile(r"\$\(|[;&|\n(){}`]"),
+)
+# A redirection operator anywhere in a rough piece.
+_REDIRECT_OP = re.compile(r"\d*(?:<<-|<<<|<<|>>|>\||<>|>&|<&|&>>|&>|[<>])")
+_MAX_ROUGH_CUTS = 64
 _MAX_DEPTH = 8
 
 
@@ -93,23 +106,43 @@ def split_command(command: str, *, ansi_c: bool = True) -> CommandParts | None:
 def rough_subjects(command: str) -> list[str]:
     """Quote-blind pieces of ``command`` for deny/ask matching.
 
-    Splits on every ``; & | ( )``, newline, backtick and ``$(`` regardless of
-    quoting, here-docs or comments, and strips quote characters. It over-
-    approximates on purpose: a deny rule may then also hit a quoted string,
-    but no command the shell would run can hide inside a quoting trick or a
-    line the splitter cannot parse.
+    Splits on every ``;``, ``&``, ``|``, newline and backtick (and, separately,
+    also on ``( )``, ``$(`` and ``{ }``) regardless of quoting, here-docs or
+    comments, tries every cut of a redirection with its target, and strips
+    quote characters. It over-approximates on purpose: a deny rule may then
+    also hit quoted text or a here-doc body, but no command the shell would
+    run can hide inside a quoting trick or a line the splitter cannot parse.
     """
     out: list[str] = []
-    for piece in _ROUGH_SPLIT.split(command):
-        piece = piece.strip()
-        if not piece:
-            continue
-        bare = piece.translate({ord(c): None for c in "'\"\\"}).strip()
-        words = _normalise(bare.split())
-        for variant in (piece, bare, *_variants(words)):
-            if variant and variant not in out:
-                out.append(variant)
+    # also with backslash-newline continuations joined, as the shell reads them
+    texts = {command, command.replace("\\\n", "")}
+    pieces = [p for text in texts for split in _ROUGH_SPLITS for p in split.split(text)]
+    for piece in pieces:
+        for cut in _redirect_cuts(piece.strip()):
+            bare = cut.translate({ord(c): None for c in "'\"\\"}).strip()
+            words = _normalise(bare.split())
+            for variant in (cut, bare, *_variants(words)):
+                if variant and variant not in out:
+                    out.append(variant)
     return out
+
+
+def _redirect_cuts(piece: str) -> list[str]:
+    """Return ``piece`` plus forms with a redirection and a guessed target cut out.
+
+    Quote-blind, the target's extent is unknown (``>'a b' rm``, an escaped
+    space in a here-doc delimiter), so every whitespace after the operator
+    is tried.
+    """
+    cuts = [piece] if piece else []
+    for op in _REDIRECT_OP.finditer(piece):
+        for gap in re.finditer(r"\s+", piece[op.end() :]):
+            if len(cuts) >= _MAX_ROUGH_CUTS:
+                return cuts
+            cut = (piece[: op.start()] + piece[op.end() + gap.end() :]).strip()
+            if cut and cut not in cuts:
+                cuts.append(cut)
+    return cuts
 
 
 def _variants(words: list[str]) -> list[str]:
@@ -163,6 +196,11 @@ def _normalise(words: list[str]) -> list[str]:
             changed = True
         if words and words[-1] == "}":
             words.pop()
+            changed = True
+        while words and (redirect := _REDIRECT.match(words[0])):
+            words.pop(0)  # a leading redirection and its target
+            if not redirect.group(1) and words:
+                words.pop(0)
             changed = True
         if words and words[0] in _PREFIXES:
             prefix = words.pop(0)
@@ -225,8 +263,10 @@ def _here_doc(text: str, i: int) -> tuple[int, tuple[str, bool, bool]]:
     while j < len(text) and not text[j].isspace() and text[j] not in ";&|<>()":
         j += 1
     word = text[start:j]
-    quoted = any(c in word for c in "'\"\\")
-    delim = word.translate({ord(c): None for c in "'\"\\"})
+    if not _DELIMITER.match(word):  # ``E$""``, ``E\``, ...: fail closed
+        raise _Unparseable(f"here-doc delimiter {word!r} is not plain")
+    quoted = any(c in word for c in "'\"")
+    delim = word.translate({ord(c): None for c in "'\""})
     if not delim:
         raise _Unparseable("here-doc without a delimiter")
     return j, (delim, strip, quoted)
@@ -243,7 +283,9 @@ def _here_doc_bodies(
     expanded: list[str] = []
     for delim, strip, quoted in pending:
         lines: list[str] = []
-        while i < len(text):
+        while True:
+            if i >= len(text):  # the shell would read a different line as the end
+                raise _Unparseable(f"here-doc {delim!r} is never terminated")
             end = text.find("\n", i)
             end = len(text) if end < 0 else end
             line = text[i:end]
@@ -322,6 +364,12 @@ def _scan(text: str, ansi_c: bool = True) -> tuple[list[str], list[str]]:
             current.append(text[i : end + 1])
             i = end + 1
             continue
+        if text.startswith("${", i):
+            end = _closing_brace(text, i + 2, ansi_c)
+            substitutions += _substitutions_in(text[i + 2 : end], ansi_c)
+            current.append(text[i : end + 1])
+            i = end + 1
+            continue
         if quote == '"':
             current.append(ch)
             if ch == '"':
@@ -373,8 +421,44 @@ def _scan(text: str, ansi_c: bool = True) -> tuple[list[str], list[str]]:
         i += 1
     if quote is not None:
         raise _Unparseable("unbalanced quotes")
+    if pending:
+        raise _Unparseable("here-doc without a body")
     cut()
     return segments, substitutions
+
+
+def _closing_brace(text: str, start: int, ansi_c: bool) -> int:
+    """Return the index of the ``}`` closing a ``${`` that ends just before ``start``."""
+    depth, i, quote = 1, start, None
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif ch == "\\":
+            i += 2
+            continue
+        elif text.startswith("$(", i):
+            i = _closing_paren(text, i + 2, ansi_c) + 1
+            continue
+        elif ch == "`":
+            i = _closing_backtick(text, i + 1) + 1
+            continue
+        elif text.startswith("${", i):
+            depth += 1
+            i += 2
+            continue
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise _Unparseable("unbalanced ${...}")
 
 
 def _closing_backtick(text: str, start: int) -> int:

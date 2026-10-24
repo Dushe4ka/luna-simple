@@ -426,3 +426,126 @@ def test_fuzz_parser_alone_sees_every_command_sh_runs(tmp_path):
 
     missed = [c for c in _corpus(2) if not sees_touch(c) and _sh_creates_pwned(c, tmp_path)]
     assert missed == []
+
+
+# --- fix round 2 --------------------------------------------------------------
+
+_ALLOW_CAT = Rules(allow=["execute:echo *", "execute:cat *"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'E'$\"\"\nE\ntouch PWNED",
+        "echo <<'E'$\"\"\nE\n#\ntouch PWNED",
+        'cat <<E""\nE\ntouch PWNED',
+        'cat <<"E"x\nEx\ntouch PWNED',
+        "cat <<E\\\nE\ntouch PWNED",
+        "echo  }${<<-E<<'E' }\ntouch PWNED\t",
+        "cat <<E\nnever terminated\ntouch PWNED",
+    ],
+)
+def test_odd_here_doc_delimiters_are_never_auto_allowed(command):
+    assert _ALLOW_CAT.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ">/dev/null rm -rf x",
+        "2>&1 rm x",
+        "</dev/null rm x",
+        ">f rm x",
+        "> f rm x",
+        "<<'E' rm x",
+        "echo ;<<'E' rm x",
+        "sudo >/dev/null rm x",
+        "rm",
+    ],
+)
+def test_leading_redirections_do_not_hide_the_program(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+_EVERYDAY = Rules(
+    allow=[
+        f"execute:{p} *"
+        for p in ("git pytest echo ls uv grep cat python npm cd head wc sed find tail".split())
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git commit -m "fix; thing"',
+        "pytest -k 'a or b'",
+        "echo $'a\\tb'",
+        'git log --format="%h | %s" -5',
+        "uv run pytest -q 2>&1 | tail -2",
+        "ls -la && git status",
+        "grep -rn 'foo|bar' .",
+        "cd src && ls",
+        'git commit -m "$(cat msg.txt)"',
+        "cat <<'EOF' > f.txt\nhello; rm x\nEOF",
+        'echo "it\'s"',
+        "pytest tests/ -x",
+        "find . -name '*.py' | head",
+        "sed -n '1,5p' f",
+        "python -c 'print(1); print(2)'",
+        "npm run build -- --mode=prod",
+        "git commit -m 'a (b) c'",
+        "echo ${HOME}",
+        "ls *.py",
+        "git diff HEAD~1 -- 'a b.py'",
+        r"echo a\;b",
+        "ls # list",
+        "ls",
+    ],
+)
+def test_everyday_commands_stay_auto_allowed(command):
+    assert _EVERYDAY.match("execute", {"command": command}) == "allow"
+
+
+def test_suggested_rules_cover_every_command_not_yet_allowed(tmp_path):
+    p = Policy(Rules(allow=["execute:git *"]), workspace=Workspace(tmp_path))
+    request = p.check(execute, {"command": "cd src && ls && git status"}).request
+    assert request.suggested_rule == "execute:cd *"
+    assert request.suggested_rules == ("execute:cd *", "execute:ls *")
+    for rule in request.suggested_rules:
+        p.remember_always(rule)
+    assert p.check(execute, {"command": "cd src && ls && git status"}).action == "allow"
+
+
+def test_suggested_rules_for_a_simple_call():
+    from luna_core.policy import suggest_rules
+
+    assert suggest_rules("write_file", {"file_path": "a.txt"}) == ("write_file:a.txt",)
+    assert suggest_rules("execute", {"command": "cd x && ls"}) == ("execute:cd *", "execute:ls *")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo &<<'E'${\\\n}<<-E touch PWNED&\n \\\"",
+        'echo \\\n\n<<-E}#\\"a touch PWNED\nif then ',
+        "echo \n<<'E'\\\n\\= touch PWNED }",
+        "echo \nE\n=;<<-E<<E\\\n* touch PWNED",
+        "echo \\;|<<-E<<'E'\\\n= touch PWNED",
+    ],
+)
+def test_fuzz_found_deny_bypasses(command):
+    assert Rules(deny=["execute:touch *"]).match("execute", {"command": command}) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo |<<'E'\\ }\"a touch PWNED",
+        "echo \n<<-E$()\\\nE touch PWNED",
+        "echo &<<-E'<<'E' ${$' touch PWNED",
+        ">'a b' touch PWNED",
+    ],
+)
+def test_redirection_targets_with_spaces_do_not_hide_the_program(command):
+    assert Rules(deny=["execute:touch *"]).match("execute", {"command": command}) == "deny"
