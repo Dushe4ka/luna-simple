@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -17,6 +19,8 @@ from luna_core.messages import Message, Text, ToolResult, message_from_dict
 from luna_core.policy import Decision
 from luna_core.undo import UndoJournal, UndoResult
 from luna_core.usage import Usage
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 _MESSAGE_TYPES = ("user", "assistant", "tool_results")
@@ -111,36 +115,91 @@ class EventLog:
             )
         return sid
 
-    def append(self, session_id: str, type_: str, payload: dict) -> int:
-        """Append one event; returns its sequence number."""
-        now = time.time()
+    @contextlib.contextmanager
+    def _write(self):
+        """Hold the process lock and one ``BEGIN IMMEDIATE`` transaction.
+
+        ``IMMEDIATE`` takes SQLite's write lock up front, so a
+        read-modify-write inside is atomic across threads *and* across
+        other connections (another ``EventLog`` or process) on the file.
+        """
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                row = self._conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?", (session_id,)
-                ).fetchone()
-                seq = int(row[0]) + 1
-                self._conn.execute(
-                    "INSERT INTO events(session_id, seq, ts, type, payload, v) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (
-                        session_id,
-                        seq,
-                        now,
-                        type_,
-                        json.dumps(payload, ensure_ascii=False),
-                        SCHEMA_VERSION,
-                    ),
-                )
-                self._conn.execute(
-                    "UPDATE sessions SET updated = ? WHERE id = ?", (now, session_id)
-                )
+                yield self._conn
                 self._conn.execute("COMMIT")
             except BaseException:
-                self._conn.execute("ROLLBACK")
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
                 raise
+
+    @staticmethod
+    def _require(conn: sqlite3.Connection, session_id: str) -> None:
+        if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
+            raise LunaCoreError(f"no session {session_id!r} (it was deleted or never existed)")
+
+    @staticmethod
+    def _insert(
+        conn: sqlite3.Connection, session_id: str, type_: str, payload: dict, now: float
+    ) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        seq = int(row[0]) + 1
+        conn.execute(
+            "INSERT INTO events(session_id, seq, ts, type, payload, v) VALUES (?,?,?,?,?,?)",
+            (
+                session_id,
+                seq,
+                now,
+                type_,
+                json.dumps(payload, ensure_ascii=False),
+                SCHEMA_VERSION,
+            ),
+        )
         return seq
+
+    def append(self, session_id: str, type_: str, payload: dict) -> int:
+        """Append one event; returns its sequence number.
+
+        Raises :class:`LunaCoreError` when the session does not exist
+        (deleted or never created); nothing is written then.
+        """
+        now = time.time()
+        with self._write() as conn:
+            self._require(conn, session_id)
+            seq = self._insert(conn, session_id, type_, payload, now)
+            conn.execute("UPDATE sessions SET updated = ? WHERE id = ?", (now, session_id))
+        return seq
+
+    def _fork(self, session_id: str, at_seq: int | None, *, workdir: str, title: str) -> str:
+        """Copy ``session_id``'s events up to ``at_seq`` into a new fork, atomically."""
+        child_id = uuid.uuid4().hex[:16]
+        now = time.time()
+        with self._write() as conn:
+            self._require(conn, session_id)
+            rows = conn.execute(
+                "SELECT type, payload FROM events "
+                "WHERE session_id = ? AND (? IS NULL OR seq <= ?) ORDER BY seq",
+                (session_id, at_seq, at_seq),
+            ).fetchall()
+            conn.execute(
+                "INSERT INTO sessions(id, workdir, title, created, updated, parent_id, "
+                "fork_seq, meta) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    child_id,
+                    workdir,
+                    title,
+                    now,
+                    now,
+                    session_id,
+                    at_seq,
+                    json.dumps({"kind": "fork"}),
+                ),
+            )
+            for type_, payload in rows:
+                self._insert(conn, child_id, type_, json.loads(payload), now)
+        return child_id
 
     def records(self, session_id: str, after: int = 0) -> list[Record]:
         """Events of a session after ``after``, in order."""
@@ -196,22 +255,46 @@ class EventLog:
             self._conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
 
     def set_meta(self, session_id: str, **values: object) -> None:
-        """Merge ``values`` into the session's metadata."""
-        info = self.info(session_id)
-        if info is None:
-            return
-        meta = {**info.meta, **values}
-        with self._lock:
-            self._conn.execute(
+        """Merge ``values`` into the session's metadata (atomic read-modify-write)."""
+        with self._write() as conn:
+            row = conn.execute("SELECT meta FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return
+            meta = {**json.loads(row[0] or "{}"), **values}
+            conn.execute(
                 "UPDATE sessions SET meta = ? WHERE id = ?", (json.dumps(meta), session_id)
             )
 
     def delete(self, session_id: str) -> bool:
-        """Delete a session and its events."""
-        with self._lock:
-            cur = self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            self._conn.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
-        return cur.rowcount > 0
+        """Delete a session, its events and its subagent/background runs, atomically.
+
+        Children are deleted recursively, except forks (``meta.kind ==
+        "fork"``): a fork is a conversation of its own, so it is kept and
+        only loses its link to the deleted parent (``parent_id`` becomes
+        ``None``; ``fork_seq`` and ``meta`` stay). Returns whether
+        ``session_id`` existed.
+        """
+        with self._write() as conn:
+            if (
+                conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                is None
+            ):
+                return False
+            doomed = [session_id]
+            i = 0
+            while i < len(doomed):
+                for child, meta in conn.execute(
+                    "SELECT id, meta FROM sessions WHERE parent_id = ?", (doomed[i],)
+                ).fetchall():
+                    if json.loads(meta or "{}").get("kind") == "fork":
+                        conn.execute("UPDATE sessions SET parent_id = NULL WHERE id = ?", (child,))
+                    elif child not in doomed:
+                        doomed.append(child)
+                i += 1
+            for sid in reversed(doomed):
+                conn.execute("DELETE FROM events WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+        return True
 
     def prune(self, older_than_days: float, workdir: str | None = None) -> int:
         """Delete sessions not updated for ``older_than_days``; returns how many."""
@@ -293,7 +376,8 @@ class Session:
     def append(self, type_: str, payload: dict) -> int:
         """Append an event to this session."""
         seq = self.log.append(self.id, type_, payload)
-        if type_ == "user" and not self.log.info(self.id).title:
+        info = self.log.info(self.id) if type_ == "user" else None
+        if info is not None and not info.title:
             text = message_from_dict(payload["message"]).text.strip().splitlines()
             if text:
                 self.log.set_title(self.id, text[0][:80])
@@ -401,8 +485,8 @@ class Session:
         for fn in list(self._listeners):
             try:
                 fn(event)
-            except Exception:  # noqa: BLE001 - a broken listener must not break the agent
-                pass
+            except Exception as exc:  # noqa: BLE001 - a broken listener must not break the agent
+                logger.warning("session listener failed: %r", exc, exc_info=True)
 
     def todos(self) -> list[dict]:
         """Return the latest plan written with ``write_todos``."""
@@ -547,16 +631,7 @@ class Session:
 
     def fork(self, at_seq: int | None = None) -> Session:
         """Build a new session with this one's history up to ``at_seq``."""
-        records = [r for r in self.records() if at_seq is None or r.seq <= at_seq]
-        child_id = self.log.create(
-            self.workdir,
-            title=self.title,
-            parent_id=self.id,
-            fork_seq=at_seq,
-            meta={"kind": "fork"},
-        )
-        for rec in records:
-            self.log.append(child_id, rec.type, rec.payload)
+        child_id = self.log._fork(self.id, at_seq, workdir=self.workdir, title=self.title)
         return Session(self.log, child_id, workdir=self.workdir, undo=self.undo_journal is not None)
 
     def export(self, fmt: str = "md") -> str:

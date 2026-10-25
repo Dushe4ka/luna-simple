@@ -205,3 +205,82 @@ async def test_oversized_transcript_is_trimmed(tmp_path, session):
     sent_text = summarizer.requests[0].messages[0].text
     assert sent_text.startswith("[earlier part omitted]")
     assert len(sent_text) <= 560
+
+
+async def _auto(compactor, agent, session):
+    return [e async for e in compactor.maybe_compact(agent, session, window=1500)]
+
+
+async def test_always_blocking_pre_compact_hook_backs_off(tmp_path, session):
+    calls = []
+
+    async def block(payload):
+        calls.append(payload)
+        return HookResult(block=True, message="not now")
+
+    hooks = Hooks()
+    hooks.add("pre_compact", block)
+    agent = make_agent(tmp_path, [], hooks=hooks)
+    compactor = Compactor(provider=FakeProvider([]))
+    first = await _auto(compactor, agent, session)
+    assert len(first) == 1 and "not now" in first[0].text
+    # The following steps/turns neither run the hook nor repeat the notice.
+    for _ in range(5):
+        session.append("user", {"message": message_to_dict(Message.user("more"))})
+        assert await _auto(compactor, agent, session) == []
+    assert len(calls) == 1
+    # A manual /compact is never suppressed.
+    manual = [e async for e in compactor.compact(agent, session)]
+    assert manual and "not now" in manual[0].text and len(calls) == 2
+    # After enough growth the hook is consulted again (one notice).
+    for _ in range(30):
+        session.append("user", {"message": message_to_dict(Message.user("more"))})
+    again = await _auto(compactor, agent, session)
+    assert len(again) == 1 and len(calls) == 3
+
+
+async def test_blocked_marker_is_cleared_by_a_successful_compaction(tmp_path, session):
+    state = {"block": True}
+
+    async def gate(payload):
+        return HookResult(block=state["block"], message="not now")
+
+    hooks = Hooks()
+    hooks.add("pre_compact", gate)
+    agent = make_agent(tmp_path, [], hooks=hooks)
+    compactor = Compactor(provider=FakeProvider([FakeProvider.text("SUMMARY")]))
+    for _ in range(40):
+        session.append("user", {"message": message_to_dict(Message.user("more"))})
+    assert len(await _auto(compactor, agent, session)) == 1  # blocked, marker set
+    assert "compaction_blocked" in session.state
+    state["block"] = False
+    manual = [e async for e in compactor.compact(agent, session)]
+    assert any(isinstance(e, Compacted) for e in manual)
+    assert "compaction_blocked" not in session.state
+
+
+async def test_blocked_marker_with_shrunk_history_counts_as_expired(tmp_path, session):
+    agent = make_agent(tmp_path, [])
+    compactor = Compactor(provider=FakeProvider([FakeProvider.text("S")]))
+    session.state["compaction_blocked"] = len(session.entries()) + 80  # history shrank (undo)
+    events = await _auto(compactor, agent, session)
+    assert any(isinstance(e, Compacted) for e in events)
+
+
+async def test_blocked_backoff_is_overridden_near_the_window(tmp_path, session):
+    calls = []
+
+    async def block(payload):
+        calls.append(1)
+        return HookResult(block=True, message="no")
+
+    hooks = Hooks()
+    hooks.add("pre_compact", block)
+    agent = make_agent(tmp_path, [], hooks=hooks)
+    compactor = Compactor(provider=FakeProvider([]))
+    # ~1200 tokens estimated: over the 0.8 threshold of 1000, below 0.95 of 1300.
+    assert len(await _auto(compactor, agent, session)) == 1
+    assert await _auto(compactor, agent, session) == []
+    # Window so small that the context is at/over 95%: the hook is asked again.
+    tight = [e async for e in compactor.maybe_compact(agent, session, window=1100)]
+    assert len(calls) == 2 and tight

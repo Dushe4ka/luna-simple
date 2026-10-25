@@ -107,8 +107,11 @@ re-check trust; for a session that is not loaded they answer `404`,
 `{"cancelled": false}` and an empty stream. `/events` for an idle session
 replays what is buffered (plus pending out-of-turn approvals) and ends — it
 does not follow `task(background=true)` work that outlives the run.
-`DELETE /sessions/{id}` is refused (`409`) while the session runs or has
-background tasks, and no request can load the session while it is deleted.
+`DELETE /sessions/{id}` is refused (`409`) while the session — or any of its
+subagent/background child sessions — runs or has background tasks, and no request can load the session while it is deleted.
+It also deletes the session's subagent/background child sessions (one
+transaction); forks are kept as conversations of their own, with their
+parent link cleared.
 
 ### `GET /health`
 
@@ -166,13 +169,14 @@ session_busy` (cancel it first).
 
 The rendered transcript, oldest first — not the raw event log. A `"tool"`
 entry summarises one finished tool call (`args_preview` is the same
-truncated, human-readable string a `tool_started` event carries; `detail`
-is the first line of the result). A `"notice"` entry is a run's completion
-notice, logged when the run finished with no client attached (a background
-run, or a turn whose client disconnected), so a client reopening the session
-sees it after the finished transcript. The whole conversation is shown —
-compaction only shortens the model's context — except undone turns. An id
-the server has never seen is created (empty) in that `workdir`.
+truncated, human-readable string a `tool_started` event carries — for a call
+approved with edited arguments, the edited ones; `detail` is the first line
+of the result). A `"notice"` entry is either `"прервано"` (level `dim`, where
+a turn ended with `cancelled`) or a run's completion notice, logged when the
+run finished with no client attached (a background run, or a turn whose client
+disconnected), so a client reopening the session sees it after the finished
+transcript. The whole conversation is shown — compaction only shortens the
+model's context — except undone turns. An id the server has never seen is created (empty) in that `workdir`.
 
 ```json
 → GET /sessions/s1/messages?workdir=/repo
@@ -301,7 +305,8 @@ session that already runs is `409 session_busy`.
 ```json
 → POST /sessions/s1/background {"workdir": "/repo", "content": "run the full test suite"}
 ← 200 {"session_id": "s1", "label": "run the full test suite", "status": "running",
-        "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": ""}
+        "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": "",
+        "origin": "background"}
 ```
 
 ### `GET /agents`
@@ -310,14 +315,17 @@ Every background session run and every background subagent task, across
 the whole server — for a dashboard of "what's running". `runs` are detached
 sessions (`luna_core.background.RunInfo`: `session_id`, `label`, `status`
 — `queued`/`running`/`waiting`/`done`/`failed`/`cancelled` —, `started`,
-`finished`, `error`, `cost`, `text`); `tasks` are `task(background=true)`
+`finished`, `error`, `cost`, `text`, `origin` — `"background"` for a run started
+with `POST /background`, `"message"` for an ordinary streamed turn, which is
+listed here too); `tasks` are `task(background=true)`
 subagent calls (`luna_core.background.TaskInfo`: `handle`, `label`,
 `session_id`, `status`, `started`, `finished`, `ok`, `summary`).
 
 ```json
 → GET /agents
 ← 200 {"runs": [{"session_id": "s1", "label": "run the full test suite", "status": "running",
-                  "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": ""}],
+                  "started": 1760000000.0, "finished": null, "error": "", "cost": 0.0, "text": "",
+                  "origin": "background"}],
         "tasks": []}
 ```
 
@@ -427,7 +435,8 @@ message, possibly truncated), `duration` (number, seconds).
 
 The turn is paused waiting for a decision on one or more pending tool
 calls. Fields: `value` (dict) with an `action_requests` list, each item
-`{"call_id", "name", "args", "description", "suggested_rule"}`.
+`{"call_id", "name", "args", "description", "suggested_rule"}`, plus an
+optional `suggested_rules` list.
 `call_id` is an **opaque string** — treat it as a bag of bytes to echo
 back on `POST /sessions/{id}/approve`, never parse or construct it.
 In particular, when the call comes from a subagent the parent session
@@ -436,12 +445,29 @@ adopted, the id the client sees is `"<child_session_id>:<call_id>"`
 route the decision to the right child. A client never needs to know this
 — it only needs to pass the string back unchanged. `suggested_rule` is a
 ready-made permission rule (e.g. `"execute:ls *"`) a client can offer to
-persist via `"always"` on the decision.
+persist via `"always"` on the decision. For a compound shell command one
+rule is not enough (`cd src && ls` needs `execute:cd *` and `execute:ls *`):
+then the item also carries `suggested_rules`, every rule the call needs
+that is not allowed yet (absent when there is nothing beyond
+`suggested_rule`). A client should show them all, and keeps sending just
+`"always": <suggested_rule>` — the server treats that exact value as
+"always allow this call" and saves every rule in `suggested_rules`; any
+other `always` string is saved on its own. Older clients that ignore the
+new field therefore get the full behaviour unchanged. `suggested_rules` is
+also absent when some command of the line has no safe rule (a glob or
+quoted program name, a variable, a command runner such as `bash`, `sudo`
+or `xargs`). The server never saves an `execute` allow rule that names
+anything but a plain program (`execute:* *`, `execute:bash *`, ...),
+whatever `always` says; the call still runs once and the turn gets a
+`notice` saying the rule was not saved.
 
 ```json
 {"event": "approval_needed", "value": {"action_requests": [
   {"call_id": "c2", "name": "execute", "args": {"command": "ls"}, "description": "ls",
-   "suggested_rule": "execute:ls *"}
+   "suggested_rule": "execute:ls *"},
+  {"call_id": "c3", "name": "execute", "args": {"command": "cd src && ls"},
+   "description": "cd src && ls", "suggested_rule": "execute:cd *",
+   "suggested_rules": ["execute:cd *", "execute:ls *"]}
 ]}}
 ```
 

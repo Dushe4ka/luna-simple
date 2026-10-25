@@ -35,9 +35,7 @@ def test_missing_key_message(monkeypatch):
 
 
 def test_stored_key_is_used(monkeypatch):
-    # setenv first so monkeypatch restores "unset" after apply_stored_key writes os.environ
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
-    monkeypatch.delenv("DEEPSEEK_API_KEY")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr(
         "luna.config.credentials.get_api_key",
         lambda provider: "stored" if provider == "deepseek" else None,

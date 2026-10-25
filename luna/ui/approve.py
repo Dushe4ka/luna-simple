@@ -102,8 +102,11 @@ def prompt_decision(
     if choice in ("a", "always"):
         action = action_request.get("action") or action_request.get("name")
         args = action_request.get("args", {}) or {}
-        rule = suggest_rule(action, args)
-        edited = input_fn(f"rule [{rule}] > ").strip()
+        rule = action_request.get("suggested_rule") or suggest_rule(action, args)
+        # a compound command needs one rule per program; echoing ``rule`` back
+        # unchanged makes the agent save all of them
+        shown = " + ".join(action_request.get("suggested_rules") or [rule])
+        edited = input_fn(f"rule [{shown}] > ").strip()
         return {"type": "approve", "always": edited or rule}
 
     if choice in ("e", "edit"):

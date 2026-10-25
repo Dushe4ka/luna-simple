@@ -74,6 +74,11 @@ class LunaApp(App):
         self._runs: dict[str, str] = {}
         self._tasks: dict[str, str] = {}
         self._task_labels: dict[str, str] = {}
+        self._run_labels: dict[str, str] = {}
+        #: Run origin by session: only ``"background"`` runs are announced / reload history.
+        self._run_origins: dict[str, str] = {}
+        #: The open session's run finished while the pane was busy: reload when idle.
+        self._history_stale = False
         #: Task handles whose completion was already toasted.
         self._announced: set[str] = set()
         #: Poll on the next tick even if nothing looked live (a run was just started).
@@ -135,6 +140,21 @@ class LunaApp(App):
         if live or self._poll_armed or self.query_one(SessionsSidebar).any_running:
             self._poll_armed = False
             await self.poll_agents()
+        elif self._history_stale:
+            await self._reload_stale_history()
+
+    async def _reload_stale_history(self) -> None:
+        """Re-read the open session's history once the pane is idle."""
+        chat = self.query_one(ChatPane)
+        if chat.busy:
+            return
+        self._history_stale = False
+        chat.loading_history = True  # a submit during the reload would be wiped by it
+        try:
+            await chat.load_history()
+        finally:
+            chat.loading_history = False
+        await chat.refresh_state()
 
     async def poll_agents(self) -> None:
         """Announce background runs and tasks that finished since the last poll."""
@@ -142,27 +162,57 @@ class LunaApp(App):
             agents = await self.client.agents()
         except ServerError:
             return
+        chat = self.query_one(ChatPane)
         changed = False
+        reload_history = self._history_stale
+        seen = set()
         for run in agents.get("runs", []):
-            before = self._runs.get(run["session_id"])
-            self._runs[run["session_id"]] = run["status"]
+            sid = run["session_id"]
+            seen.add(sid)
+            before = self._runs.get(sid)
+            self._runs[sid] = run["status"]
+            self._run_labels[sid] = run["label"]
+            self._run_origins[sid] = run.get("origin", "background")
             changed = changed or before != run["status"]
-            if before in self._LIVE and run["status"] in self._VERBS:
+            # an ordinary streamed turn is already on screen: nothing to announce or reload
+            announce = self._run_origins[sid] == "background"
+            if announce and before in self._LIVE and run["status"] in self._VERBS:
+                reload_history = reload_history or sid == chat.thread_id
                 self.notify(
                     f"Фоновая сессия «{run['label']}» {self._VERBS[run['status']]}",
                     severity="error" if run["status"] == "failed" else "information",
                     markup=False,
                 )
+        # A run the server no longer lists is over (it was pruned): say so once and stop polling.
+        for sid in [s for s, status in self._runs.items() if s not in seen]:
+            was_live = self._runs.pop(sid) in self._LIVE
+            if was_live and self._run_origins.get(sid) == "background":
+                changed = True
+                reload_history = reload_history or sid == chat.thread_id
+                self.notify(
+                    f"Фоновая сессия «{self._run_labels.get(sid, sid)}» больше не отслеживается",
+                    markup=False,
+                )
+            self._run_labels.pop(sid, None)
+            self._run_origins.pop(sid, None)
+        seen_tasks = set()
         for task in agents.get("tasks", []):
+            seen_tasks.add(task["handle"])
             handle = task["handle"]
             before = self._tasks.get(handle)
             self._tasks[handle] = task["status"]
             self._task_labels[handle] = task["label"]
             if before in self._LIVE and task["status"] in self._VERBS:
                 self._announce_task(handle, task["status"])
+        for handle in [h for h in self._tasks if h not in seen_tasks]:
+            if self._tasks.pop(handle) in self._LIVE:
+                self._announce_task(handle, "done")
         if changed:
             await self.query_one(SessionsSidebar).refresh_sessions()
-        chat = self.query_one(ChatPane)
+        if reload_history:
+            # only an idle pane is redrawn: a streaming turn is never clobbered
+            self._history_stale = True
+            await self._reload_stale_history()
         asks = any(
             r["session_id"] == chat.thread_id and r["status"] == "waiting"
             for r in agents.get("runs", [])

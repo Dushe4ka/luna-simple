@@ -80,3 +80,11 @@ def test_builtin_schemas_fit_the_token_budget():
         for t in builtin_tools()
     )
     assert size / 4 < 2000  # ~4 chars per token; spec target ≤ 2k tokens for built-ins
+
+
+async def test_execute_rejects_a_non_positive_timeout(tmp_path):
+    ctx = make_ctx(tmp_path)
+    for bad in (0, -5):
+        out = await execute.invoke(ctx, {"command": "echo hi", "timeout": bad})
+        assert out.is_error and "timeout must be a positive" in out.content[0].text
+        assert "hi" not in out.content[0].text

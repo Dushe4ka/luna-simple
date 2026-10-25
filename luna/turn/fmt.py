@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
+
+from luna_core.sandbox import scrub_env
 
 _TIMEOUT = 60
 
@@ -28,7 +32,7 @@ def detect(workdir: str) -> str:
     return ""
 
 
-def run(command: str, workdir: str, paths: list[str]) -> list[str]:
+def run(command: str, workdir: str, paths: list[str], *, pass_env: Iterable[str] = ()) -> list[str]:
     """Run ``command`` over ``paths`` (or the whole project when ``paths`` is empty).
 
     Returns the list of paths the command was pointed at (empty on failure or a
@@ -39,7 +43,13 @@ def run(command: str, workdir: str, paths: list[str]) -> list[str]:
     full = f"{command} {' '.join(shlex.quote(f'./{p}') for p in paths)}" if paths else command
     try:
         result = subprocess.run(
-            full, shell=True, cwd=workdir, capture_output=True, text=True, timeout=_TIMEOUT
+            full,
+            shell=True,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            env=scrub_env(os.environ, passthrough=pass_env),
         )
     except (OSError, subprocess.SubprocessError):
         return []

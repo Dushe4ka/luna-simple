@@ -253,3 +253,37 @@ async def test_acp_child_approval_reaches_the_subagent(tmp_path):
     await asyncio.wait_for(agent._ask(parent.id, parent, request), timeout=5)
     assert fut.done() and fut.result().type == "approve"
     assert parent.pending_approvals == []
+
+
+def test_permission_always_label_names_every_rule():
+    b = AcpBridge()
+    req = ApprovalRequest(
+        "c3",
+        "execute",
+        {"command": "cd x && ls"},
+        "",
+        "execute:cd *",
+        ("execute:cd *", "execute:ls *"),
+    )
+    _, options = b.permission(req)
+    assert options[1]["name"] == "Always allow (execute:cd *, execute:ls *)"
+
+
+async def test_prompt_for_an_unknown_session_is_an_acp_error(tmp_path):
+    acp = pytest.importorskip("acp")
+    log = EventLog(tmp_path / "acp.db")
+    agent = LunaAcpAgent(lambda cwd: _make_fake_luna_agent(cwd), log)
+    agent.on_connect(_FakeClient())
+    with pytest.raises(acp.RequestError) as info:
+        await agent.prompt(prompt=[{"type": "text", "text": "hi"}], session_id="nope")
+    assert info.value.code == -32602 and info.value.data["sessionId"] == "nope"
+
+
+async def test_load_session_for_an_unknown_session_is_an_acp_error(tmp_path):
+    acp = pytest.importorskip("acp")
+    log = EventLog(tmp_path / "acp.db")
+    agent = LunaAcpAgent(lambda cwd: _make_fake_luna_agent(cwd), log)
+    agent.on_connect(_FakeClient())
+    with pytest.raises(acp.RequestError) as info:
+        await agent.load_session(cwd=str(tmp_path), session_id="nope")
+    assert info.value.code == -32602 and info.value.data["sessionId"] == "nope"

@@ -175,7 +175,7 @@ print(any(isinstance(e, NeedsApproval) for e in events), Path(root, "a.txt").rea
 | `ThinkingDelta` | кусок рассуждений модели | `text` (подпись рассуждений `signature` в поток хода не попадает) |
 | `ToolStarted` | инструмент начал выполняться (после подтверждения и хуков `pre_tool`) | `call_id`, `name`, `args` (итоговые), `preview` |
 | `ToolFinished` | инструмент завершён или отклонён политикой/хуком/пользователем | `call_id`, `name`, `ok`, `detail`, `duration` |
-| `NeedsApproval` | вызов требует решения человека; ход ждёт `session.decide` | `request: ApprovalRequest` (`call_id`, `name`, `args`, `description`, `suggested_rule`) |
+| `NeedsApproval` | вызов требует решения человека; ход ждёт `session.decide` | `request: ApprovalRequest` (`call_id`, `name`, `args`, `description`, `suggested_rule`, `suggested_rules`) |
 | `TodosUpdated` | агент обновил план через `write_todos` | `todos: list[dict]` |
 | `Notice` | короткая строка статуса: заметки хуков, смена модели по ролям, `max_steps`, обрезка по `max_tokens`, ошибки сохранения правила и т. п. | `level` (`dim`/`info`/`ok`/`warn`/`error`), `text` |
 | `UsageUpdate` | закончился очередной запрос к модели | `usage: Usage` |
@@ -495,6 +495,26 @@ await agent.sandbox.close()  # удаляет контейнер
 `DockerSandbox` поднимает один контейнер на сессию лениво (при первой команде),
 проект монтируется в `/workspace`. Свою песочницу реализуют методами
 `async run(command, *, cwd, timeout, env, cancel) -> RunResult` и `async close()`.
+
+Секреты окружения. Команды `execute` не получают переменные-секреты: по умолчанию
+отбрасываются имена по шаблонам `luna_core.sandbox.SECRET_ENV_PATTERNS` —
+`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_SECRET_*`, `*_PASSWORD`, `*_CREDENTIALS`,
+`GIGACHAT_*` и `LUNA_SERVER_TOKEN` (иначе модель
+могла бы выполнить `env`, и ключ попал бы в вывод инструмента, журнал событий и к
+провайдеру). Это касается и ключей, заданных в вашей оболочке: провайдер читает их в
+своём процессе раньше. Нужную переменную можно пропустить явно:
+`LocalSandbox(env_passthrough=("GITHUB_TOKEN",))`; `DockerSandbox(..., env_passthrough=...)`
+пробрасывает такие переменные хоста в контейнер по имени (`docker exec -e NAME`, значение
+не попадает в argv). В приложении Luna то же задаётся в конфиге:
+
+```toml
+[execute]
+pass_env = ["GITHUB_TOKEN"]
+```
+
+Те же правила действуют для командных хуков (`CommandHook(..., env_passthrough=...)`,
+`load_command_hooks(..., env_passthrough=...)`), а в приложении — и для команд
+`verify_command`, форматтера и диагностики.
 
 ## 6. Подтверждения и правила
 
@@ -1037,7 +1057,7 @@ asyncio.run(main())
 Пишущий субагент по умолчанию (`isolation="auto"`) работает в отдельном git
 worktree на ветке `luna/sub/*`, так что параллельные правки не конфликтуют.
 Родитель получает резюме, имя ветки и diff stat; правки применяются командой
-`git diff <base> <branch> | git apply`. Нужен git, а корень проекта должен быть
+`git diff --binary <base> <branch> | git apply --3way --binary` (`--3way` заодно добавляет применённые изменения в индекс). Нужен git, а корень проекта должен быть
 верхним уровнем репозитория, иначе `auto` откатывается на общее рабочее
 пространство (записи в один путь сериализуются), а явный `isolation="worktree"`
 ошибка. Субагент, ничего не изменивший, ветку не оставляет. Родительский файл при
@@ -1171,7 +1191,9 @@ asyncio.run(main())
 Модуль `luna_core.mcp` не входит в `__all__`, импортируйте его явно. Формат файла
 обычный: `{"mcpServers": {"имя": {"command": ..., "args": [...]}}}` для stdio,
 `{"type": "http", "url": ...}` для streamable HTTP, `"type": "sse"` для SSE;
-`${ENV}` раскрывается, токены OAuth лежат в `~/.config/luna/mcp-tokens`. Stdio-серверы
+`${ENV}` раскрывается из окружения процесса (в приложении Luna сохранённые через
+`luna setup` ключи туда не экспортируются — задайте переменную в оболочке или впишите
+значение в `env` сервера), токены OAuth лежат в `~/.config/luna/mcp-tokens`. Stdio-серверы
 не наследуют ваше окружение, только `env` из конфига.
 
 ```python
@@ -1230,7 +1252,9 @@ asyncio.run(run_acp(make_agent, EventLog("acp.db")))
 `session.cancel_turn()`; текст и рассуждения идут как message chunks, вызовы
 инструментов как `tool_call`/`tool_call_update`, todos как `plan`, расход как
 `usage_update`, подтверждения как `session/request_permission` (разрешить один
-раз, всегда, отклонить). Ловушки: stdout это канал протокола, ничего не печатайте
+раз, всегда, отклонить). `prompt` для сессии, которую агент не создавал и не
+открывал (и `load_session` для несуществующей), отвечает ACP-ошибкой
+`invalid_params` (-32602, `data.sessionId`), а не `internal_error`. Ловушки: stdout это канал протокола, ничего не печатайте
 в него (логируйте в stderr), и он должен быть каналом, а не файлом. Проверить
 без редактора можно `python examples/acp_agent.py --self-test`.
 
@@ -1243,7 +1267,7 @@ asyncio.run(run_acp(make_agent, EventLog("acp.db")))
 JSON Schema выдаёт `luna_core.protocol.json_schema()`.
 
 ```python
-# [нужен запущенный сервер: luna serve --port 8765 --token SECRET]
+# [нужен запущенный сервер: LUNA_SERVER_TOKEN=SECRET luna serve --port 8765]
 import asyncio
 
 from luna_core.client import LunaClient
@@ -1271,7 +1295,9 @@ asyncio.run(main())
 `history`, `state`, `send` (SSE-поток словарей), `decide`, `cancel`, `commands`,
 `run_command`, `background`, `agents`, `attach(session_id, after=-1)` (подключение
 к фоновому запуску с повтором пропущенного), `aclose`. Ошибки HTTP и недоступность
-сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`).
+сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`); ответ или
+строка `data:` в SSE, которые не являются JSON-объектом, тоже дают `ServerError`
+(«malformed …»), а не `JSONDecodeError`.
 Неотвеченное подтверждение держит поток, как и локально. Рабочий пример:
 `python examples/remote_client.py --fake`.
 
@@ -1293,7 +1319,11 @@ LunaCoreError
   `rate_limit`, `context_length`, `bad_request`, `server`, `network`, `unknown`;
   `retryable` истинно для `rate_limit`, `server`, `network`. Из `agent.run` он **не
   вылетает**: превращается в `TurnError(message, kind)`. Бросайте его из своего
-  провайдера.
+  провайдера. Встроенные адаптеры превращают битый поток (не-JSON в `data:`,
+  неожиданная форма события, аргументы вызова инструмента для индекса, который не
+  открывался) в `ProviderError(kind="server")` с текстом «malformed stream event …»,
+  а не в `KeyError`/`TypeError`; для своего провайдера то же даёт обёртка
+  `luna_core.providers.base.guard_stream(name, events)`.
 - `ToolError` бросает код инструмента, чтобы вернуть модели ошибку; наружу тоже
   не вылетает (станет `ToolFinished(ok=False)`).
 
@@ -1406,7 +1436,7 @@ asyncio.run(main())
 | `examples/custom_tool.py` | свой инструмент `word_count` рядом со встроенными | `python examples/custom_tool.py --fake --workdir .` |
 | `examples/custom_provider.py` | свой провайдер (эхо) без сети; `--fake` принимается, но ни на что не влияет | `python examples/custom_provider.py --workdir .` |
 | `examples/approvals_web.py` | подтверждения по HTTP: Starlette-приложение со стримом хода и эндпоинтом решений (нужны `starlette`, `uvicorn`) | `python examples/approvals_web.py --self-test --workdir .` |
-| `examples/remote_client.py` | `LunaClient`: сессия, сообщение, подтверждение, потоковый ответ | `python examples/remote_client.py --fake --workdir .` (поднимает сервер в процессе) или `--url ... --token ...` к настоящему серверу |
+| `examples/remote_client.py` | `LunaClient`: сессия, сообщение, подтверждение, потоковый ответ | `python examples/remote_client.py --fake --workdir .` (поднимает сервер в процессе) или `LUNA_SERVER_TOKEN=... python examples/remote_client.py --url ...` к настоящему серверу |
 | `examples/acp_agent.py` | агент по ACP для редактора (extra `acp`) | `python examples/acp_agent.py --self-test --workdir .` играет роль редактора |
 
 С настоящей моделью уберите `--fake` и задайте ключ, например

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from luna_core.mcp import MCPManager
 from luna_core.memory import remember
 from luna_core.policy import DEFAULT_APPROVAL, Policy, Rules, RulesFileError, append_rule
 from luna_core.providers.base import Provider
-from luna_core.roles import ModelRoles
+from luna_core.roles import ROLES, ModelRoles
 from luna_core.sandbox import DockerSandbox, LocalSandbox
 from luna_core.subagents import SubagentRunner, task_tool
 from luna_core.tools import builtin_tools
@@ -65,17 +66,40 @@ def skill_dirs(workdir: str | Path) -> list[tuple[str, Path]]:
     return [("user", config_dir() / "skills"), ("project", Path(workdir) / ".luna" / "skills")]
 
 
+_WARNED_EXTRA: set[str] = set()  # workdirs already warned about the removed [agent] extra
+# Ollama-style ``family:tag`` ids whose family name resembles a provider (llama ~ ollama).
+_MODEL_FAMILIES = frozenset({"llama", "mixtral", "mistral", "qwen", "gemma", "phi", "codellama"})
+
+
 def _roles(config: LunaConfig, registry: dict[str, ProviderSpec]) -> ModelRoles:
-    """Model roles from config: ``"model"`` (same provider) or ``"provider:model"``."""
+    """Model roles from config: ``"model"`` (same provider) or ``"provider:model"``.
+
+    An unknown role key, or a provider prefix that is a near-miss of a known provider
+    (``opnai:gpt-5``), is a :class:`LunaConfigError` rather than a silent model id.
+    """
     targets = dict(config.roles)
     if config.fast_model:  # ``fast_model`` is the alias of ``roles["fast"]``
         targets["fast"] = config.fast_model
     values: dict = {}
     for role, target in targets.items():
+        if role not in ROLES:
+            raise LunaConfigError(
+                f"unknown model role {role!r} in the config; valid roles: {', '.join(ROLES)}"
+            )
         name, sep, rest = target.partition(":")
         if sep and name in registry:
             values[role] = build_provider(name, rest or None, registry=registry)
         else:
+            close = (
+                difflib.get_close_matches(name, registry, n=1, cutoff=0.9)
+                if sep and name not in _MODEL_FAMILIES
+                else []
+            )
+            if close:
+                raise LunaConfigError(
+                    f"model role {role!r}: {name!r} is not a known provider; did you mean "
+                    f"{close[0]!r}? (write {close[0]}:{rest} or drop the prefix)"
+                )
             values[role] = target
     return ModelRoles(**values)
 
@@ -114,7 +138,10 @@ async def build_agent(
         provider, model = build_provider(config.provider, config.model, registry=registry)
     else:
         model = config.model or "fake-model"
-    if config.ignored_extra:
+    if config.ignored_extra and str(workdir) not in _WARNED_EXTRA:
+        # Once per project: rebuilds (/reload) must not repeat it, a shared server
+        # still tells every project.
+        _WARNED_EXTRA.add(str(workdir))
         on_warn(
             "[agent] extra is no longer used (it held LangChain model kwargs); "
             "use temperature, max_tokens and reasoning"
@@ -148,7 +175,11 @@ async def build_agent(
             "installed — goto_definition/find_references/hover/symbol_range are unavailable"
         )
     servers = mcp_mod.load_mcp_config(str(workdir))
-    manager = MCPManager(servers, on_warn=on_warn) if servers else None
+    manager = (
+        MCPManager(servers, on_warn=on_warn, redactions=mcp_mod.mcp_redactions(str(workdir)))
+        if servers
+        else None
+    )
     try:
         runner = SubagentRunner(
             load_subagents(str(workdir), on_warn=on_warn), max_parallel=config.max_parallel
@@ -160,13 +191,18 @@ async def build_agent(
         all_hooks = Hooks()
         if hooks is not None:
             all_hooks.extend(hooks)
-        all_hooks.extend(load_command_hooks(config.hooks, workdir))
+        all_hooks.extend(
+            load_command_hooks(config.hooks, workdir, env_passthrough=config.execute_pass_env)
+        )
         if config.sandbox == "docker":
             sandbox = DockerSandbox(
-                workdir, image=config.sandbox_image, network=config.sandbox_network
+                workdir,
+                image=config.sandbox_image,
+                network=config.sandbox_network,
+                env_passthrough=config.execute_pass_env,
             )
         else:
-            sandbox = LocalSandbox()
+            sandbox = LocalSandbox(env_passthrough=config.execute_pass_env)
         summarize_provider, summarize_model = roles.get("summarize", provider, model)
 
         def system(session) -> str:

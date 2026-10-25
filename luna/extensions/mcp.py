@@ -34,6 +34,15 @@ def load_mcp_config(workdir: str = ".", *, env: Mapping[str, str] | None = None)
         raise LunaConfigError(str(exc)) from exc
 
 
+def mcp_redactions(workdir: str = ".", *, env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return the expanded ``${VAR}`` values of the MCP config, to redact them from warnings."""
+    environ = os.environ if env is None else env
+    try:
+        return core_mcp.env_redactions(mcp_files(workdir, env=env), environ)
+    except core_mcp.MCPConfigError:
+        return {}
+
+
 def _target_file(project: bool, workdir: str, env: Mapping[str, str] | None) -> Path:
     return mcp_files(workdir, env=env)[1 if project else 0]
 

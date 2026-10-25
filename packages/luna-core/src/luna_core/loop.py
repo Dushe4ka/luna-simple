@@ -30,11 +30,12 @@ from luna_core.events import (
 )
 from luna_core.hooks import Hooks
 from luna_core.messages import Image, Message, Text, ToolCall, ToolResult, message_to_dict
-from luna_core.policy import MUTATING_FILE_TOOLS, Decision, Policy
+from luna_core.policy import MUTATING_FILE_TOOLS, Decision, Policy, UnsafeRule
 from luna_core.providers.base import ModelRequest, Provider, StreamAccumulator
 from luna_core.roles import ModelRoles
 from luna_core.sandbox import LocalSandbox, Sandbox
 from luna_core.session import Session
+from luna_core.shellsplit import split_command
 from luna_core.tools import builtin_tools
 from luna_core.tools.base import Tool, ToolContext, ToolOutput, args_preview
 from luna_core.usage import Usage, cost
@@ -66,29 +67,46 @@ class _Outcome:
 
 
 class PathLocks:
-    """Named asyncio locks; mutating tools hold one per path."""
+    """Named asyncio locks; mutating tools hold one per path.
+
+    An entry exists only while somebody holds or awaits its key, so the table
+    does not grow with every path ever touched.
+    """
 
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
+        self._users: dict[str, int] = {}
 
     def locked(self, key: str) -> bool:
         """Return True while ``key`` is held."""
         lock = self._locks.get(key)
         return bool(lock and lock.locked())
 
+    def _release_user(self, key: str) -> None:
+        self._users[key] -= 1
+        if self._users[key] <= 0:
+            del self._users[key]
+            del self._locks[key]
+
     @contextlib.asynccontextmanager
     async def hold(self, keys: list[str]):
         """Hold every key (sorted, so two holders never deadlock)."""
-        acquired: list[asyncio.Lock] = []
+        acquired: list[str] = []
         try:
             for key in sorted(set(keys)):
                 lock = self._locks.setdefault(key, asyncio.Lock())
-                await lock.acquire()
-                acquired.append(lock)
+                self._users[key] = self._users.get(key, 0) + 1
+                try:
+                    await lock.acquire()
+                except BaseException:
+                    self._release_user(key)
+                    raise
+                acquired.append(key)
             yield
         finally:
-            for lock in reversed(acquired):
-                lock.release()
+            for key in reversed(acquired):
+                self._locks[key].release()
+                self._release_user(key)
 
 
 def readable_error(exc: ProviderError, provider_name: str) -> str:
@@ -593,13 +611,30 @@ class Agent:
                 return
             session.append("approval", {"call_id": call.id, "decision": decision.to_dict()})
             if decision.always:
-                try:
-                    self.policy.remember_always(decision.always)
-                except Exception as exc:  # noqa: BLE001 - the approval itself still stands
+                # echoing ``suggested_rule`` back means "always allow this call":
+                # save every rule it takes (one per program of a compound command)
+                if decision.always == request.suggested_rule and request.suggested_rules:
+                    to_save = list(request.suggested_rules)
+                else:
+                    to_save = [decision.always]
+                for rule in to_save:
+                    try:
+                        self.policy.remember_always(rule)
+                    except UnsafeRule as exc:
+                        yield Notice("warn", f"rule not saved: {exc}")
+                    except Exception as exc:  # noqa: BLE001 - the approval itself still stands
+                        yield Notice(
+                            "warn",
+                            f"could not save the rule {rule!r} ({exc}); "
+                            "it applies for this session only",
+                        )
+            if decision.always and call.name == "execute":
+                parts = split_command(str(args.get("command", "")))
+                if parts is not None and parts.elevated:
                     yield Notice(
-                        "warn",
-                        f"could not save the rule {decision.always!r} ({exc}); "
-                        "it applies for this session only",
+                        "info",
+                        "команды с sudo/env-префиксом или такими переменными "
+                        "всегда спрашиваются, даже с правилом «всегда»",
                     )
             if decision.type == "reject":
                 suffix = f": {decision.message}" if decision.message else ""

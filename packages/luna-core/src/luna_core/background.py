@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -23,7 +24,17 @@ from luna_core.events import (
 )
 from luna_core.session import Session
 
+logger = logging.getLogger(__name__)
+
 KEEP_FINISHED = 200  # finished tasks / runs kept for status and replay
+
+
+def _require_loop(what: str) -> None:
+    """Raise a clear error (before anything is registered) when no event loop is running."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        raise LunaCoreError(f"cannot {what}: there is no running event loop") from None
 
 
 @dataclass
@@ -53,6 +64,7 @@ class BackgroundTasks:
         self, label: str, factory: Callable[[], Awaitable[object]], *, session: Session
     ) -> str:
         """Start ``factory()`` in the background; returns its handle."""
+        _require_loop("start a background task")
         handle = f"bg-{uuid.uuid4().hex[:6]}"
         info = TaskInfo(handle, label, session.id, "queued", time.time())
         self._infos[handle] = info
@@ -88,8 +100,10 @@ class BackgroundTasks:
             info.status, info.ok, info.summary = "cancelled", False, "cancelled"
         info.finished = time.time()
         payload = {"handle": handle, "ok": bool(info.ok), "summary": info.summary}
-        with contextlib.suppress(Exception):  # a closed log must not lose the delivery
+        try:
             session.append("background_done", payload)
+        except Exception as exc:  # noqa: BLE001 - a closed log must not lose the delivery
+            logger.warning("could not log background task %s: %r", handle, exc, exc_info=True)
         session.queue(f"[background task {handle} · {info.label} · {info.status}]\n{info.summary}")
         session.notify(BackgroundDone(handle, bool(info.ok), info.summary[:2000]))
         self._tasks.pop(handle, None)
@@ -148,6 +162,9 @@ class RunInfo:
     error: str = ""
     cost: float = 0.0
     text: str = ""
+    #: ``"message"`` for a turn a client streamed (``POST /messages``), ``"background"``
+    #: for a run started detached (``POST /background``).
+    origin: str = "message"
 
 
 class AgentManager:
@@ -170,12 +187,24 @@ class AgentManager:
         self._listeners: dict[str, list[Callable[[dict], None]]] = {}
         self._done: OrderedDict[str, None] = OrderedDict()  # finished session ids, oldest first
 
-    def start(self, agent, session: Session, text: str, *, images=(), label: str = "") -> RunInfo:
+    def start(
+        self,
+        agent,
+        session: Session,
+        text: str,
+        *,
+        images=(),
+        label: str = "",
+        origin: str = "message",
+    ) -> RunInfo:
         """Run one turn of ``session`` detached from any client."""
+        _require_loop("start a session run")
         current = self._tasks.get(session.id)
         if (current and not current.done()) or session.busy:
             raise LunaCoreError(f"session {session.id} is already running")
-        info = RunInfo(session.id, label or session.title or text[:60], "queued", time.time())
+        info = RunInfo(
+            session.id, label or session.title or text[:60], "queued", time.time(), origin=origin
+        )
         self._runs[session.id] = info
         self._sessions[session.id] = session
         self._events[session.id] = deque(maxlen=self._limit)
@@ -196,8 +225,10 @@ class AgentManager:
         for fn in list(self._listeners.get(session_id, [])):
             try:
                 fn(wire)
-            except Exception:  # noqa: BLE001 - a broken client must not stop the run
-                pass
+            except Exception as exc:  # noqa: BLE001 - a broken client must not stop the run
+                logger.warning(
+                    "run listener for session %s failed: %r", session_id, exc, exc_info=True
+                )
 
     async def _run(self, agent, session: Session, text: str, images: list, info: RunInfo) -> None:
         try:
@@ -244,8 +275,10 @@ class AgentManager:
         if self._on_done:
             try:
                 self._on_done(info)
-            except Exception:  # noqa: BLE001 - a broken callback must not lose the notice
-                pass
+            except Exception as exc:  # noqa: BLE001 - a broken callback must not lose the notice
+                logger.warning(
+                    "on_done callback for session %s failed: %r", session.id, exc, exc_info=True
+                )
         summary = info.text[-2000:] or info.error
         session.notify(BackgroundDone(session.id, info.status == "done", summary))
         if self._runs.get(session.id) is info:

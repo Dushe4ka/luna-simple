@@ -85,7 +85,7 @@ async def test_run_verification_one_retry_then_ok(tmp_path):
 
 async def test_run_verification_noop_when_disabled(tmp_path, monkeypatch):
     calls: list = []
-    monkeypatch.setattr(engine, "run_verify", lambda *a: calls.append(a) or (True, ""))
+    monkeypatch.setattr(engine, "run_verify", lambda *a, **_: calls.append(a) or (True, ""))
     out, users = await _once(tmp_path, _cfg(tmp_path, ""), [_WRITE, FakeProvider.text("done")])
     assert calls == [] and users == ["go"] and "verify" not in out
 
@@ -95,7 +95,7 @@ async def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
 
     verify_calls: list = []
     monkeypatch.setattr(
-        engine, "run_verify", lambda c, w: verify_calls.append(c) or real_run_verify(c, w)
+        engine, "run_verify", lambda c, w, **k: verify_calls.append(c) or real_run_verify(c, w, **k)
     )
     cfg = _cfg(tmp_path, f'{sys.executable} -c "import sys; sys.exit(1)"')
     out, users = await _once(
@@ -108,7 +108,7 @@ async def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
 
 async def test_verification_gated_on_mutating_tool(tmp_path, monkeypatch):
     verify_calls: list = []
-    monkeypatch.setattr(engine, "run_verify", lambda *a: verify_calls.append(a) or (True, ""))
+    monkeypatch.setattr(engine, "run_verify", lambda *a, **_: verify_calls.append(a) or (True, ""))
     cfg = _cfg(tmp_path, "x")
     await _once(tmp_path, cfg, [_WRITE, FakeProvider.text("done")])
     assert len(verify_calls) == 1  # mutating turn -> verification ran

@@ -153,7 +153,9 @@ class AcpBridge:
             {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
             {
                 "optionId": "allow_always",
-                "name": f"Always allow ({request.suggested_rule})",
+                "name": "Always allow ({})".format(
+                    ", ".join(request.suggested_rules or (request.suggested_rule,))
+                ),
                 "kind": "allow_always",
             },
             {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
@@ -186,6 +188,18 @@ def _dump(model: Any) -> dict:
         model.model_dump(mode="json", by_alias=True, exclude_none=True)
         if hasattr(model, "model_dump")
         else dict(model)
+    )
+
+
+def _unknown_session(session_id: str) -> Exception:
+    """ACP ``invalid_params`` error for a session this agent does not know."""
+    from acp import RequestError
+
+    return RequestError.invalid_params(
+        {
+            "sessionId": session_id,
+            "reason": "unknown session: create it with session/new or open it with session/load",
+        }
     )
 
 
@@ -240,6 +254,8 @@ class LunaAcpAgent:
         """Reopen a session and replay its transcript as updates."""
         from acp import schema
 
+        if self.log.info(session_id) is None:
+            raise _unknown_session(session_id)
         session = Session.open(self.log, session_id)
         # Build the agent for the directory the session's log says it lives in, not
         # whatever ``cwd`` the client happens to pass (e.g. reopening the same
@@ -265,7 +281,10 @@ class LunaAcpAgent:
         """Run one turn and stream it to the editor."""
         from acp import schema
 
-        agent, session = self._sessions[session_id]
+        entry = self._sessions.get(session_id)
+        if entry is None:
+            raise _unknown_session(session_id)
+        agent, session = entry
         text, images = prompt_to_input([_dump(b) for b in prompt])
         window = agent.model_info.context_window
         seen: list[object] = []

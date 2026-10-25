@@ -17,6 +17,10 @@ from luna.server.auth import read_token_file, token_path, write_token_file
 
 _log = logging.getLogger(__name__)
 
+#: Environment variable that hands the token to a spawned ``luna serve``.
+#: Command-line arguments are world-readable (``ps``); the environment is not.
+TOKEN_ENV = "LUNA_SERVER_TOKEN"
+
 
 def log_path(env=None) -> Path:
     """Path to the background-spawned server's stdout/stderr log.
@@ -111,7 +115,9 @@ def ensure_running(
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "a", buffering=1) as log_file:
             subprocess.Popen(
-                [sys.executable, "-m", "luna.server.run", "--port", str(port), "--token", token],
+                [sys.executable, "-m", "luna.server.run", "--port", str(port)],
+                # never in argv: anyone on the machine can read it with ``ps``
+                env={**os.environ, TOKEN_ENV: token},
                 start_new_session=True,
                 # One server serves every project: never tie its cwd to the
                 # launching folder, which may be deleted while it runs.
@@ -184,11 +190,15 @@ def run_serve(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="luna serve")
     parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--token", default=None)
+    parser.add_argument(
+        "--token", default=None, help=f"bearer token (default: ${TOKEN_ENV}, else random)"
+    )
     args = parser.parse_args(argv)
 
     port = args.port or _free_port()
-    token = args.token or secrets.token_hex(16)
+    # Consume the variable so nothing this server runs (execute, hooks) inherits it.
+    env_token = os.environ.pop(TOKEN_ENV, None)
+    token = args.token or env_token or secrets.token_hex(16)
     write_token_file(port=port, token=token, pid=os.getpid(), fingerprint=_code_fingerprint())
 
     app = create_app(

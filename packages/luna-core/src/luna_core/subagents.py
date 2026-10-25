@@ -18,6 +18,7 @@ from pathlib import Path
 from luna_core.context import build_system_prompt
 from luna_core.errors import LunaCoreError
 from luna_core.events import Cancelled, NeedsApproval, Notice, ToolStarted, TurnError
+from luna_core.filelock import file_lock
 from luna_core.loop import Agent
 from luna_core.session import Session
 from luna_core.undo import _snapshot_tree
@@ -34,8 +35,31 @@ _IDENTITY = {
     "GIT_COMMITTER_EMAIL": "luna@localhost",
 }
 _DIFF_LIMIT = 20_000
-# git refuses concurrent worktree bookkeeping; parallel subagents take turns here.
+# git refuses concurrent worktree bookkeeping; parallel subagents take turns here,
+# and other processes on the same repository (REPL + server) through an OS lock
+# file in the git common directory (see ``_worktree_lock``).
 _GIT_LOCK = threading.Lock()
+
+
+def _worktree_lock_path(root: Path) -> Path:
+    """Lock file for worktree bookkeeping: ``<git common dir>/luna-worktrees.lock``.
+
+    It lives outside the working tree so it never shows up in snapshots,
+    ``git status`` or the ``.luna/worktrees`` holder that pruning sweeps.
+    """
+    try:
+        proc = _git(root, "rev-parse", "--git-common-dir")
+        common = proc.stdout.strip() if proc.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        common = ""
+    return (root / (common or ".git")).resolve() / "luna-worktrees.lock"
+
+
+@contextlib.contextmanager
+def _worktree_lock(root: Path):
+    """Serialise worktree create/prune/finish across threads and processes."""
+    with _GIT_LOCK, file_lock(_worktree_lock_path(root)):
+        yield
 
 
 class SubagentConfigError(LunaCoreError):
@@ -87,6 +111,34 @@ BUILTIN_SUBAGENTS: dict[str, SubagentSpec] = {
 }
 
 
+def _check_types(path: Path, name: str, cfg: dict) -> None:
+    """Reject wrong-typed values of known keys, naming the file and the key."""
+    checks: dict[str, tuple[type | tuple[type, ...], str]] = {
+        "description": (str, "a string"),
+        "prompt": (str, "a string"),
+        "model": (str, "a string"),
+        "unsafe": (bool, "a boolean (unsafe = true or unsafe = false)"),
+        "isolation": (str, "a string"),
+        "max_steps": (int, "an integer"),
+        "max_cost": ((int, float), "a number"),
+    }
+    for key, (kind, label) in checks.items():
+        if key not in cfg:
+            continue
+        value = cfg[key]
+        # ``bool`` is an ``int`` in Python; a TOML ``true`` is not a step count.
+        wrong = not isinstance(value, kind) or (kind is not bool and isinstance(value, bool))
+        if wrong:
+            raise SubagentConfigError(
+                f"{path}: [subagent.{name}] {key} must be {label}, got {value!r}"
+            )
+    tools = cfg.get("tools", READ_ONLY)
+    if not isinstance(tools, (list, tuple)) or not all(isinstance(t, str) for t in tools):
+        raise SubagentConfigError(
+            f"{path}: [subagent.{name}] tools must be a list of strings, got {tools!r}"
+        )
+
+
 def load_subagents(
     files: list[Path], *, on_warn: Callable[[str], None] | None = None
 ) -> dict[str, SubagentSpec]:
@@ -100,7 +152,13 @@ def load_subagents(
             continue
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise SubagentConfigError(f"cannot read {path}: {exc}") from exc
-        for name, cfg in (data.get("subagent") or {}).items():
+        table = data.get("subagent") or {}
+        if not isinstance(table, dict):
+            raise SubagentConfigError(f"{path}: 'subagent' must be a table of [subagent.<name>]")
+        for name, cfg in table.items():
+            if not isinstance(cfg, dict):
+                raise SubagentConfigError(f"{path}: [subagent.{name}] must be a table")
+            _check_types(path, name, cfg)
             tools = tuple(cfg.get("tools", READ_ONLY))
             unknown = set(tools) - VALID_TOOLS
             if unknown:
@@ -166,7 +224,7 @@ def create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
     The base snapshot includes untracked, non-ignored files (``.luna/undo`` and
     ``.luna/worktrees`` excluded). ``root`` must be the git top level.
     """
-    with _GIT_LOCK:
+    with _worktree_lock(root):
         return _create_worktree(root, sub_id)
 
 
@@ -235,7 +293,7 @@ def finish_worktree(
     Raises :class:`WorktreeCommitError` (worktree and branch left in place) when
     the changes cannot be committed.
     """
-    with _GIT_LOCK:
+    with _worktree_lock(root):
         return _finish_worktree(root, path, branch, base, message)
 
 
@@ -260,7 +318,7 @@ def _finish_worktree(
         if committed.returncode != 0:
             raise WorktreeCommitError(path, branch, committed.stderr or committed.stdout)
     stat = _git(root, "diff", "--stat", base, branch).stdout.strip()
-    diff = _git(root, "diff", base, branch).stdout
+    diff = _git(root, "diff", "--binary", base, branch).stdout
     _git(root, "worktree", "remove", "--force", str(path))
     tip = _git(root, "rev-parse", "--verify", "-q", branch).stdout.strip()
     if not stat and tip == base:
@@ -293,7 +351,8 @@ class SubagentResult:
                 f"\n\n[changes are committed on branch {self.branch}; diff stat:\n"
                 f"{self.diffstat or 'no changes'}\n"
                 "apply them to the main working tree with: "
-                f"git diff {self.base} {self.branch} | git apply]"
+                f"git diff --binary {self.base} {self.branch} | git apply --3way --binary "
+                "(--3way also stages the applied changes in the index)]"
             )
         return head
 

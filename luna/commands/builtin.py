@@ -354,7 +354,12 @@ def _context(env, arg):
 async def _verify(env, arg):
     if not env.config.verify_command:
         return CommandResult(notices=[Notice("dim", "set agent.verify_command in config first")])
-    ok, tail = await asyncio.to_thread(run_verify, env.config.verify_command, env.workdir)
+    ok, tail = await asyncio.to_thread(
+        run_verify,
+        env.config.verify_command,
+        env.workdir,
+        pass_env=tuple(getattr(env.config, "execute_pass_env", ())),
+    )
     return CommandResult(
         notices=[Notice("ok", "✓ verify ok") if ok else Notice("warn", f"verify failed\n{tail}")]
     )

@@ -164,3 +164,10 @@ async def test_grep_modes(ctx, use_rg, monkeypatch):
     )
     assert "src/a.py:250" in count
     assert (await call(grep, ctx, pattern="(unclosed")).is_error
+
+
+async def test_read_file_offset_past_the_end_says_how_long_the_file_is(ctx):
+    out = await call(read_file, ctx, file_path="src/b.py", offset=50)
+    assert not out.is_error
+    assert out.content[0].text == "(offset 50 is past the end: the file has only 2 lines)"
+    assert out.detail == "src/b.py (2 lines)"

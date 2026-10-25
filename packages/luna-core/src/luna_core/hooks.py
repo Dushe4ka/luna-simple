@@ -7,10 +7,12 @@ import contextlib
 import json
 import os
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
+
+from luna_core.sandbox import scrub_env
 
 POINTS = ("session_start", "pre_tool", "post_tool", "turn_end", "pre_compact")
 
@@ -102,9 +104,22 @@ class Hooks:
 class CommandHook:
     """A user hook: a shell command fed the JSON payload on stdin."""
 
-    def __init__(self, command: str, *, cwd: str | Path, timeout: float = 60.0) -> None:
-        """Run ``command`` (via the shell) in ``cwd``, killing it after ``timeout`` seconds."""
+    def __init__(
+        self,
+        command: str,
+        *,
+        cwd: str | Path,
+        timeout: float = 60.0,
+        env_passthrough: Iterable[str] = (),
+    ) -> None:
+        """Run ``command`` (via the shell) in ``cwd``, killing it after ``timeout`` seconds.
+
+        Like ``execute``, the command gets the environment without secret
+        variables (:data:`luna_core.sandbox.SECRET_ENV_PATTERNS`), except the
+        names in ``env_passthrough``.
+        """
         self.command = command
+        self.env_passthrough = tuple(env_passthrough)
         self.cwd = str(cwd)
         self.timeout = timeout
         self.__name__ = command.split()[0] if command.split() else "command"
@@ -122,6 +137,7 @@ class CommandHook:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
+            env=scrub_env(os.environ, passthrough=self.env_passthrough),
         )
         try:
             out, err = await asyncio.wait_for(
@@ -153,7 +169,9 @@ class CommandHook:
             os.killpg(os.getpgid(pid), signal.SIGKILL)
 
 
-def load_command_hooks(entries: list[dict], cwd: str | Path) -> Hooks:
+def load_command_hooks(
+    entries: list[dict], cwd: str | Path, *, env_passthrough: Iterable[str] = ()
+) -> Hooks:
     """Build :class:`Hooks` from config ``[[hooks]]`` tables (invalid entries are skipped)."""
     hooks = Hooks()
     for entry in entries or []:
@@ -162,10 +180,11 @@ def load_command_hooks(entries: list[dict], cwd: str | Path) -> Hooks:
         if point not in POINTS or not isinstance(command, str) or not command.strip():
             continue
         timeout = float(entry.get("timeout", 60))
+        match = entry.get("match")  # missing or None means "every tool"
         hooks.add(
             point,
-            CommandHook(command, cwd=cwd, timeout=timeout),
-            match=str(entry.get("match", "*")),
+            CommandHook(command, cwd=cwd, timeout=timeout, env_passthrough=env_passthrough),
+            match="*" if match is None else str(match),
             timeout=timeout + 5,
         )
     return hooks

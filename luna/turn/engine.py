@@ -100,6 +100,11 @@ def before_turn(state) -> None:
     state.dirty_before = _dirty(state.workdir) if gitinfo.is_git_repo(state.workdir) else []
 
 
+def _pass_env(cfg) -> tuple[str, ...]:
+    """Return the variables ``[execute] pass_env`` lets through to project commands."""
+    return tuple(getattr(cfg, "execute_pass_env", ()))
+
+
 def format_and_diagnose(cfg, before: list[str] | None) -> tuple[list[Notice], str]:
     """Format, then diagnose, the files this turn changed. Returns (notices, diagnostics).
 
@@ -123,7 +128,7 @@ def format_and_diagnose(cfg, before: list[str] | None) -> tuple[list[Notice], st
         return notices, ""
     fmt_cmd = fmt.detect(cfg.workdir) if cfg.format_command == "auto" else cfg.format_command
     if fmt_cmd:
-        formatted = fmt.run(fmt_cmd, cfg.workdir, changed)
+        formatted = fmt.run(fmt_cmd, cfg.workdir, changed, pass_env=_pass_env(cfg))
         if formatted:
             notices.append(Notice("dim", f"⌁ formatted {len(formatted)} file(s)"))
     diag_cmd = (
@@ -135,7 +140,7 @@ def format_and_diagnose(cfg, before: list[str] | None) -> tuple[list[Notice], st
     if is_repo and before_set is not None and not changed:
         # formatting can normalise a turn's edit back to the committed content
         return notices, ""
-    text = diagnose.run(diag_cmd, cfg.workdir, changed)
+    text = diagnose.run(diag_cmd, cfg.workdir, changed, pass_env=_pass_env(cfg))
     if text:
         notices.append(Notice("dim", text))
     return notices, text
@@ -143,7 +148,7 @@ def format_and_diagnose(cfg, before: list[str] | None) -> tuple[list[Notice], st
 
 def verify_step(cfg) -> tuple[bool, str, list[Notice]]:
     """Run the verify command once: (ok, output tail, notices)."""
-    ok, tail = run_verify(cfg.verify_command, cfg.workdir)
+    ok, tail = run_verify(cfg.verify_command, cfg.workdir, pass_env=_pass_env(cfg))
     if ok:
         return True, "", [Notice("ok", "✓ verify ok")]
     return False, tail, [Notice("warn", f"verify failed\n{tail}")]

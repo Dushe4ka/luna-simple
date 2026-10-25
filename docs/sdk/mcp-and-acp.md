@@ -11,7 +11,7 @@ from pathlib import Path
 from luna_core import Agent, builtin_tools
 from luna_core.mcp import MCPManager, load_config
 
-servers = load_config([Path(".luna/mcp.json")])        # {"mcpServers": {...}}, ${ENV} подставляются
+servers = load_config([Path(".luna/mcp.json")])        # {"mcpServers": {...}}, ${ENV} из os.environ
 manager = MCPManager(servers, on_warn=print)
 mcp_tools = await manager.start()                      # подключается параллельно, возвращает Tools
 try:
@@ -26,6 +26,11 @@ finally:
 хранятся в `~/.config/luna/mcp-tokens` (права 0600). Сервер, к которому не удалось подключиться,
 пропускается с предупреждением; `manager.status()` сообщает по каждому серверу `connected` или
 `failed: ...`. Stdio-серверы не наследуют ваше окружение, только то, что задано в `env` конфигурации.
+
+`MCPManager(close_timeout=5.0)` задаёт, сколько `close()` ждёт мягкого завершения серверов,
+прежде чем отменить их. Чтобы текст ошибок SDK не раскрывал значения, подставленные из `${VAR}`,
+передайте `redactions=env_redactions(files, environ)`: значения в предупреждениях и в
+`status()` заменяются на `${VAR}` (значения короче 4 символов не заменяются).
 
 Подводный камень: если extra не установлен, `MCPManager.start()` не бросает исключение; он
 предупреждает через `on_warn` с подсказкой по установке и не возвращает инструментов.

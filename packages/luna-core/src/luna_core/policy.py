@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
+from luna_core.shellsplit import rough_split, split_command
 from luna_core.tools.base import Tool, args_preview
 from luna_core.workspace import OutsideWorkspace, Workspace
 
@@ -66,14 +67,54 @@ class Rules:
                 pattern = _relpath(pattern)
             if fnmatch(subject, pattern):
                 return True
+            # ``execute:ls *`` also covers a bare ``ls``
+            if tool == "execute" and pattern.endswith(" *") and fnmatch(subject, pattern[:-2]):
+                return True
         return False
 
     def match(self, tool: str, args: dict) -> str | None:
         """``"deny"``, ``"ask"``, ``"allow"`` or ``None`` (deny wins)."""
         subject = _subject(tool, args)
+        if tool == "execute":
+            return self._match_execute(subject)
         for kind in ("deny", "ask", "allow"):
             if self._hit(getattr(self, kind), tool, subject):
                 return kind
+        return None
+
+    def _match_execute(self, command: str) -> str | None:
+        """Match a shell line segment by segment (see :mod:`luna_core.shellsplit`).
+
+        deny / ask: the whole line, any parsed segment or any quote-blind
+        rough piece matching is enough. allow: every simple command must
+        match under both the bash (``$'...'`` as ANSI-C quoting) and the POSIX
+        ``sh`` reading; a line that cannot be parsed is never allowed by a rule.
+        When the rough net gives up (see :func:`luna_core.shellsplit.rough_split`)
+        the line is denied if any deny rule covers ``execute``, else asked about.
+        """
+        readings = [split_command(command)]
+        if "$'" in command:
+            readings.append(split_command(command, ansi_c=False))
+        rough, complete = rough_split(command)
+        if not complete:  # the safety net gave up: fail closed (yolo cannot skip "ask")
+            if any(_tool_matches(r.partition(":")[0], "execute") for r in self.deny):
+                return "deny"
+            return "ask"
+        subjects = [command, *rough]
+        for parts in readings:
+            subjects += parts.subjects if parts else ()
+        for kind in ("deny", "ask"):
+            rules = getattr(self, kind)
+            if any(self._hit(rules, "execute", s) for s in subjects):
+                return kind
+        if any(parts is None for parts in readings):
+            return None
+        if any(parts.elevated for parts in readings):  # sudo/env/LD_PRELOAD=...: ask
+            return None
+        commands = [c for parts in readings for c in parts.commands if not is_shell_syntax(c)]
+        commands = commands or [command]
+        if all(self._hit(self.allow, "execute", c) for c in commands):
+            return "allow"
         return None
 
     @classmethod
@@ -134,6 +175,8 @@ def append_rule(path: Path, rule: str, kind: str = "allow") -> Path:
     ``config.toml`` with a ``[model]`` section), only the ``[permissions]``
     section is replaced — every other line is kept byte-for-byte.
     """
+    if kind == "allow":
+        check_rule_safe(rule)
     path = Path(path)
     raw = ""
     data: dict = {}
@@ -199,12 +242,136 @@ def _toml_str(value: str) -> str:
     return '"' + "".join(out) + '"'
 
 
+# A program name an "always allow" rule may name: no glob, quote, ``$``, ``=`` ...
+_PLAIN_PROGRAM = re.compile(r"^[A-Za-z0-9_./+-]+$")
+#: Programs that run other commands (shells, ``eval``, privilege and
+#: process wrappers, ``xargs`` / ``find -exec``): ``execute:<one of these> *``
+#: would allow anything, so "always allow" never suggests or saves it.
+RUNNER_PROGRAMS = frozenset(
+    {
+        "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
+        "eval", "exec", "source", ".", "env", "command", "builtin",
+        "sudo", "doas", "su", "xargs", "find", "nohup", "nice", "timeout",
+        "time", "stdbuf", "watch", "busybox", "parallel",
+    }
+)  # fmt: skip
+
+
+class UnsafeRule(ValueError):
+    """A rule "always allow" refuses to save (it would allow arbitrary commands)."""
+
+
+def check_rule_safe(rule: str) -> None:
+    """Raise :class:`UnsafeRule` unless ``rule`` is safe to save as an allow rule.
+
+    An allow rule that applies to ``execute`` must name a plain program
+    (``execute:pytest *``, ``execute:./run.sh *``), never a glob (``execute:*``,
+    ``execute:? *``), a variable or a command runner such as ``bash``. A rule
+    for a file tool or group must not be a bare match-everything pattern
+    (``write_file:*``, ``delete:**``, ``write:*/**``).
+    """
+    tool, _, pattern = rule.partition(":")
+    if tool != "execute" and _matches_everything(pattern):
+        raise UnsafeRule(f"refusing to save {rule!r}: it matches every path")
+    if not _tool_matches(tool, "execute"):
+        return
+    words = pattern.split()
+    program = words[0] if words else ""
+    if not _PLAIN_PROGRAM.match(program):
+        raise UnsafeRule(f"refusing to save {rule!r}: {program!r} is not a plain program name")
+    if program.rsplit("/", 1)[-1] in RUNNER_PROGRAMS:
+        raise UnsafeRule(f"refusing to save {rule!r}: {program!r} can run any command")
+
+
+def _matches_everything(pattern: str) -> bool:
+    """Return True for a path pattern of only wildcards, slashes and dots (``**/*``)."""
+    stripped = pattern.strip()
+    return not stripped or ("*" in stripped and set(stripped) <= set("*/."))
+
+
+_GLOB_ESCAPES = {"*": "[*]", "?": "[?]", "[": "[[]"}
+
+
+def _glob_escape(path: str) -> str:
+    """Escape ``fnmatch`` metacharacters so the pattern matches only ``path``."""
+    return "".join(_GLOB_ESCAPES.get(ch, ch) for ch in path)
+
+
+_SYNTAX_TERMINATORS = frozenset({"done", "fi", "esac", "}"})
+_SYNTAX_HEADER = re.compile(
+    r"^(?:for|select)\s+\w+(?:\s+in(?:\s.*)?)?$|^case\s.*\sin\s.*$|^case\s.*\sin$"
+)
+
+
+def is_shell_syntax(simple: str) -> bool:
+    """Return True for a "command" that is only shell syntax: ``done``, ``fi``, ``for x in a b``.
+
+    ``split_command`` lists loop/condition terminators and headers beside real
+    commands; they run nothing by themselves (a redirect or a ``$(...)`` /
+    backtick in a header is not syntax: the latter is listed on its own).
+    """
+    text = simple.strip()
+    if text in _SYNTAX_TERMINATORS:
+        return True
+    if any(token in text for token in ("$(", "`", "<", ">")):
+        return False
+    return bool(_SYNTAX_HEADER.match(text))
+
+
+def _program_rule(command: str) -> str | None:
+    words = command.split()
+    if not words:
+        return None
+    rule = f"execute:{words[0]} *"
+    try:
+        check_rule_safe(rule)
+    except UnsafeRule:
+        return None
+    return rule
+
+
+def suggest_rules(tool: str, args: dict, rules: Rules | None = None) -> tuple[str, ...]:
+    """Build every rule that would allow this call next time.
+
+    For ``execute`` that is one ``execute:<program> *`` rule per simple
+    command of the line (see :mod:`luna_core.shellsplit`), skipping commands
+    ``rules`` already allow. Empty when some command has no safe rule (a
+    glob or quoted program name, a variable, a command runner — see
+    :func:`check_rule_safe`) or the line cannot be parsed: then "always"
+    may save only ``suggested_rule``, and only if that one is safe.
+    """
+    if tool != "execute":
+        return (suggest_rule(tool, args),)
+    command = str(args.get("command", ""))
+    out: list[str] = []
+    for reading in (split_command(command), split_command(command, ansi_c=False)):
+        if reading is None:
+            return ()
+        for simple in reading.commands:
+            if is_shell_syntax(simple):
+                continue
+            if rules is not None and rules._hit(rules.allow, "execute", simple):
+                continue
+            rule = _program_rule(simple)
+            if rule is None:
+                return ()
+            if rule not in out:
+                out.append(rule)
+    return tuple(out)
+
+
 def suggest_rule(tool: str, args: dict) -> str:
     """Build a rule that would allow this call next time."""
     if tool == "execute":
-        first = str(args.get("command", "")).split()
-        return f"execute:{first[0]} *" if first else "execute:*"
-    return f"{tool}:{_subject(tool, args)}"
+        command = str(args.get("command", ""))
+        parts = split_command(command)
+        program = parts.first_program if parts else None
+        if program is None:
+            words = command.split()
+            program = words[0] if words else None
+        return f"execute:{program} *" if program else "execute:*"
+    # a file literally named ``*`` must not turn into ``write_file:*``
+    return f"{tool}:{_glob_escape(_subject(tool, args))}"
 
 
 @dataclass(frozen=True)
@@ -372,7 +539,12 @@ class Policy:
             return Verdict("allow")
         if match == "ask" or name in self.approval_tools:
             request = ApprovalRequest(
-                "", name, dict(args), args_preview(args, 80), suggest_rule(name, args)
+                "",
+                name,
+                dict(args),
+                args_preview(args, 80),
+                suggest_rule(name, args),
+                suggest_rules(name, args, self.rules),
             )
             return Verdict("ask", request=request)
         return Verdict("allow")
@@ -393,7 +565,12 @@ class Policy:
             self.anchors.remember(rel)
 
     def remember_always(self, rule: str) -> None:
-        """Allow ``rule`` for the rest of the session (and persist it if configured)."""
+        """Allow ``rule`` for the rest of the session (and persist it if configured).
+
+        Raises :class:`UnsafeRule` — before changing anything — for a rule
+        that would allow arbitrary commands (see :func:`check_rule_safe`).
+        """
+        check_rule_safe(rule)
         if rule not in self.rules.allow:
             self.rules.allow.append(rule)
         if self.persist_rule:

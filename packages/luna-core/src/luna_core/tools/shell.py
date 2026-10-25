@@ -16,10 +16,15 @@ async def execute(ctx: ToolContext, command: str, timeout: int = DEFAULT_TIMEOUT
     Args:
         ctx: Tool context (hidden from the schema).
         command: Shell command line.
-        timeout: Seconds before the command is killed (max 600).
+        timeout: Seconds before the command is killed (positive, max 600; the default
+            is 120). Zero or negative values are rejected, not replaced by the default.
 
     """
-    seconds = max(1, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
+    if int(timeout) <= 0:
+        return ToolOutput.error(f"timeout must be a positive number of seconds, got {timeout}")
+    seconds = min(int(timeout), MAX_TIMEOUT)
     result = await ctx.sandbox.run(
         command, cwd=ctx.workspace.root, timeout=seconds, cancel=ctx.cancel
     )

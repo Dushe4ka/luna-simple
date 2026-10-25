@@ -124,6 +124,11 @@ luna serve                 # запустить сервер в текущем �
 luna serve --port 8765     # на конкретном порту
 ```
 
+Токен берётся из `--token`, иначе из переменной `LUNA_SERVER_TOKEN`, иначе
+генерируется случайный и записывается в `server.json`. Автозапуск из TUI
+передаёт токен через `LUNA_SERVER_TOKEN`, а не через `--token`: аргументы
+командной строки видны всем пользователям машины в `ps`.
+
 Это ничего не меняет для двух уже существующих режимов:
 
 - Headless-запрос `luna "…" --json` (или `--output-format json`)
@@ -176,6 +181,17 @@ luna acp                         # ACP по stdio для редакторов (Z
 
 Переменные окружения (`ANTHROPIC_API_KEY` и т.д.) всегда важнее сохранённых
 ключей.
+
+Ключи передаются провайдеру напрямую и не попадают в окружение команд
+`execute`, хуков `[[hooks]]`, `verify_command`, форматтера и диагностики: из
+него по умолчанию убираются переменные `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
+`*_SECRET_*`, `*_PASSWORD`, `*_CREDENTIALS`, `GIGACHAT_*` и `LUNA_SERVER_TOKEN` —
+в том числе заданные в вашей оболочке. Нужную переменную можно пропустить явно:
+
+```toml
+[execute]
+pass_env = ["GITHUB_TOKEN"]
+```
 
 ```bash
 luna config path                        # где лежат файлы
@@ -277,8 +293,12 @@ luna agents list              # встроенные: researcher, reviewer
 
 - **MCP-серверы** лежат в `~/.config/luna/mcp.json` (или `./.luna/mcp.json`)
   в стандартном формате `{"mcpServers": {...}}` — записи можно копировать прямо
-  из Claude Desktop / Claude Code. `${ENV}` подставляется. Нужен
-  `pip install "luna-simple[mcp]"`.
+  из Claude Desktop / Claude Code. `${ENV}` подставляется — только из
+  настоящего окружения процесса: ключи из `credentials.toml` (`luna setup`,
+  `luna config set-key`) в окружение больше не экспортируются, поэтому
+  `${OPENAI_API_KEY}` из сохранённого ключа не раскроется. Передайте ключ
+  MCP-серверу через `export` в оболочке перед запуском Luna или прямо в
+  `"env": {...}` записи сервера. Нужен `pip install "luna-simple[mcp]"`.
 - **Скилы** — это Anthropic Agent Skills (`<имя>/SKILL.md`), ставятся в
   `~/.config/luna/skills/`. Нужен `git`.
 - **Субагенты** описываются в `~/.config/luna/subagents.toml`; агент делегирует

@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import sys
 import time
 
 import pytest
@@ -502,3 +503,92 @@ async def test_subagent_result_names_the_kept_worktree_on_commit_failure(
     kept = list((tmp_path / ".luna" / "worktrees").iterdir())
     assert len(kept) == 1 and (kept[0] / "notes.md").read_text() == "one\n"
     assert str(kept[0]) in result.text and "hook said no" in result.text
+
+
+def test_two_processes_create_and_finish_worktrees_in_one_repo(tmp_path):
+    import multiprocessing
+
+    from lock_workers import worktree_cycler
+
+    init_repo(tmp_path)
+    ctx = multiprocessing.get_context("spawn")
+    procs = [ctx.Process(target=worktree_cycler, args=(str(tmp_path), name, 6)) for name in "ab"]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(180)
+    assert [p.exitcode for p in procs] == [0, 0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the test holds the lock with fcntl")
+def test_worktree_bookkeeping_waits_for_another_processs_lock(tmp_path):
+    import fcntl
+    import multiprocessing
+
+    from lock_workers import create_one_worktree
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    lock_path = repo / ".git" / "luna-worktrees.lock"
+    marker = tmp_path / "done"
+    with open(lock_path, "a+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        proc = multiprocessing.get_context("spawn").Process(
+            target=create_one_worktree, args=(str(repo), str(marker))
+        )
+        proc.start()
+        time.sleep(1.5)
+        waited = not marker.exists()
+        fcntl.flock(held, fcntl.LOCK_UN)
+    proc.join(60)
+    assert waited and proc.exitcode == 0 and marker.exists()
+
+
+# -- deferred minors B2 --
+
+
+@pytest.mark.parametrize(
+    ("body", "key"),
+    [
+        ('tools = "read_file"', "tools"),
+        ("tools = [1, 2]", "tools"),
+        ("max_steps = 'many'", "max_steps"),
+        ("max_steps = true", "max_steps"),
+        ("max_cost = 'cheap'", "max_cost"),
+        ("model = 5", "model"),
+        ("description = 5", "description"),
+        ("prompt = ['a']", "prompt"),
+        ("unsafe = 'yes'", "unsafe"),
+        ("isolation = 3", "isolation"),
+    ],
+)
+def test_malformed_subagent_values_name_the_file_and_key(tmp_path, body, key):
+    bad = tmp_path / "bad.toml"
+    bad.write_text(f"[subagent.x]\n{body}\n")
+    with pytest.raises(SubagentConfigError) as info:
+        load_subagents([bad])
+    assert "bad.toml" in str(info.value) and key in str(info.value)
+
+
+def test_subagent_entry_that_is_not_a_table_is_a_config_error(tmp_path):
+    bad = tmp_path / "bad.toml"
+    bad.write_text("[subagent]\nx = 1\n")
+    with pytest.raises(SubagentConfigError, match="bad.toml"):
+        load_subagents([bad])
+
+
+def test_binary_subagent_changes_apply_with_the_hinted_command(tmp_path):
+    init_repo(tmp_path)
+    path, branch, base = create_worktree(tmp_path, "bin")
+    (path / "blob.bin").write_bytes(bytes(range(256)) * 4)
+    stat, diff = finish_worktree(tmp_path, path, branch, base, "m")
+    assert "GIT binary patch" in diff
+    from luna_core.subagents import SubagentResult
+
+    hint = SubagentResult("x", True, "t", branch=branch, base=base, diffstat=stat).render()
+    assert "git diff --binary" in hint and "git apply --3way --binary" in hint
+    raw = subprocess.run(
+        ["git", "diff", "--binary", base, branch], cwd=tmp_path, capture_output=True, check=True
+    ).stdout
+    subprocess.run(["git", "apply", "--3way", "--binary"], cwd=tmp_path, input=raw, check=True)
+    assert (tmp_path / "blob.bin").read_bytes() == bytes(range(256)) * 4

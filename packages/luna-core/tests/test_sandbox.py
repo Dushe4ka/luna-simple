@@ -119,3 +119,66 @@ async def test_docker_sandbox_real(tmp_path):
         assert "hi" in r.output and "workspace" in r.output
     finally:
         await box.close()
+
+
+_SECRETS = {
+    "OPENAI_API_KEY": "sk-leak-openai",
+    "GITHUB_TOKEN": "ghp-leak-token",
+    "MY_SECRET": "leak-secret",
+    "GIGACHAT_CREDENTIALS": "leak-giga",
+    "LUNA_SERVER_TOKEN": "leak-server",
+}
+
+
+async def test_local_scrubs_secret_env_by_default(tmp_path, monkeypatch):
+    for name, value in _SECRETS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LUNA_PLAIN_VAR", "visible-value")
+    r = await LocalSandbox().run("env", cwd=tmp_path, timeout=10)
+    assert r.exit_code == 0
+    assert "visible-value" in r.output
+    for name, value in _SECRETS.items():
+        assert value not in r.output and f"{name}=" not in r.output
+
+
+async def test_local_env_passthrough_lets_named_vars_through(tmp_path, monkeypatch):
+    for name, value in _SECRETS.items():
+        monkeypatch.setenv(name, value)
+    box = LocalSandbox(env_passthrough=("GITHUB_TOKEN",))
+    r = await box.run("env", cwd=tmp_path, timeout=10)
+    assert "ghp-leak-token" in r.output
+    assert "sk-leak-openai" not in r.output
+
+
+def test_scrub_env_default_patterns():
+    from luna_core.sandbox import SECRET_ENV_PATTERNS, scrub_env
+
+    assert {"*_API_KEY", "*_TOKEN", "*_SECRET", "GIGACHAT_*", "LUNA_SERVER_TOKEN"} <= set(
+        SECRET_ENV_PATTERNS
+    )
+    more = {"AWS_SECRET_ACCESS_KEY": "a", "DB_PASSWORD": "b", "GOOGLE_CREDENTIALS": "c"}
+    assert scrub_env({**more, "PATH": "/bin"}) == {"PATH": "/bin"}
+    env = {**_SECRETS, "PATH": "/bin", "HOME": "/h"}
+    assert scrub_env(env) == {"PATH": "/bin", "HOME": "/h"}
+    assert scrub_env(env, passthrough=["MY_SECRET"]) == {
+        "PATH": "/bin",
+        "HOME": "/h",
+        "MY_SECRET": "leak-secret",
+    }
+
+
+async def test_docker_passthrough_forwards_names_without_values(tmp_path, fake_docker, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-leak-token")
+    script, log = fake_docker
+    box = DockerSandbox(tmp_path, docker=str(script), env_passthrough=("GITHUB_TOKEN",))
+    await box.run("true", cwd=tmp_path, timeout=10)
+    exec_line = log.read_text().splitlines()[1]
+    assert "-e GITHUB_TOKEN " in exec_line and "ghp-leak-token" not in exec_line
+
+
+async def test_docker_scrubs_secrets_from_explicit_env(tmp_path, fake_docker):
+    script, log = fake_docker
+    box = DockerSandbox(tmp_path, docker=str(script))
+    await box.run("true", cwd=tmp_path, timeout=10, env={"OPENAI_API_KEY": "x", "A": "1"})
+    exec_line = log.read_text().splitlines()[1]
+    assert "OPENAI_API_KEY" not in exec_line and "-e A=1" in exec_line

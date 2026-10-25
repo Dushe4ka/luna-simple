@@ -102,3 +102,61 @@ async def test_errors_are_readable(pair):
     _server, client = pair
     with pytest.raises(ServerError, match="no session s9"):
         [e async for e in client.send("s9", "x", "/w")]
+
+
+@pytest.mark.parametrize("line", ["data: not json", "data: [1, 2]"])
+async def test_a_bad_sse_data_line_is_a_server_error(line):
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=f"{line}\n\n".encode(),
+        )
+
+    client = LunaClient(
+        "http://luna",
+        "tok",
+        client=httpx.AsyncClient(base_url="http://luna", transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ServerError, match="malformed"):
+        async for _event in client.send("s1", "hi", "/w"):
+            pass
+    await client.aclose()
+
+
+async def test_a_non_json_answer_is_a_server_error():
+    def handler(request):
+        return httpx.Response(200, content=b"<html>proxy</html>")
+
+    client = LunaClient(
+        "http://luna",
+        "tok",
+        client=httpx.AsyncClient(base_url="http://luna", transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ServerError, match="malformed"):
+        await client.health()
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("call", "body"),
+    [
+        (lambda c: c.list_sessions("/w"), {"nope": 1}),
+        (lambda c: c.create_session("/w"), {}),
+        (lambda c: c.history("s1", "/w"), {}),
+        (lambda c: c.cancel("s1"), {}),
+        (lambda c: c.commands("/w"), {}),
+    ],
+)
+async def test_an_answer_missing_its_key_is_a_server_error(call, body):
+    def handler(request):
+        return httpx.Response(200, json=body)
+
+    client = LunaClient(
+        "http://luna",
+        "tok",
+        client=httpx.AsyncClient(base_url="http://luna", transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ServerError, match="malformed"):
+        await call(client)
+    await client.aclose()

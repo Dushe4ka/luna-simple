@@ -192,3 +192,54 @@ async def test_approval_modal_buttons_are_in_russian_and_not_truncated():
         }
         for button in buttons.values():
             assert button.content_region.width >= len(str(button.label))
+
+
+@pytest.mark.parametrize(
+    ("request_extra", "expected"),
+    [
+        (
+            {
+                "suggested_rule": "execute:cd *",
+                "suggested_rules": ["execute:cd *", "execute:ls *"],
+            },
+            "Будет сохранено: execute:cd *, execute:ls *",
+        ),
+        ({"suggested_rule": "execute:* *"}, "не будет сохранено"),
+    ],
+)
+async def test_always_hint_names_the_rules_that_will_be_saved(request_extra, expected):
+    from textual.widgets import Static
+
+    request = {"name": "execute", "args": {"command": "cd src && ls"}, **request_extra}
+    seen = {}
+
+    async def steps(app, pilot):
+        hint = app.screen.query_one("#always-hint", Static)
+        seen["text"] = str(hint.render())
+        await pilot.click("#reject-button")
+
+    await _run_modal(request, steps)
+    assert expected in seen["text"]
+
+
+@pytest.mark.parametrize(
+    ("request_", "expected"),
+    [
+        ({"name": "write_file", "args": {"file_path": "*"}}, "Будет сохранено: write_file:[*]"),
+        (
+            {"name": "delete", "args": {"file_path": "x"}, "suggested_rule": "delete:*"},
+            "не будет сохранено",
+        ),
+    ],
+)
+async def test_always_hint_for_file_tools(request_, expected):
+    from textual.widgets import Static
+
+    seen = {}
+
+    async def steps(app, pilot):
+        seen["text"] = str(app.screen.query_one("#always-hint", Static).render())
+        await pilot.click("#reject-button")
+
+    await _run_modal(request_, steps)
+    assert expected in seen["text"]

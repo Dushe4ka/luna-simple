@@ -15,19 +15,26 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from luna_core.filelock import InterProcessRLock
+
 # Luna state that is never part of a snapshot (subagent worktrees live under .luna too).
 _EXCLUDES = (":(exclude).luna/undo", ":(exclude).luna/worktrees")
 
 
-# One lock per journal directory: parallel tool calls (threads) and several
-# ``UndoJournal`` objects for the same session must not lose each other's updates.
-_LOCKS: dict[str, threading.RLock] = {}
+# One lock per journal directory: parallel tool calls (threads), several
+# ``UndoJournal`` objects for the same session, and other processes (the REPL
+# and the server on one repository) must not lose each other's updates. The
+# OS lock file lives in the journal directory (excluded from snapshots).
+_LOCKS: dict[str, InterProcessRLock] = {}
 _LOCKS_GUARD = threading.Lock()
 
 
-def _lock_for(directory: Path) -> threading.RLock:
+def _lock_for(directory: Path) -> InterProcessRLock:
     with _LOCKS_GUARD:
-        return _LOCKS.setdefault(str(directory), threading.RLock())
+        lock = _LOCKS.get(str(directory))
+        if lock is None:
+            lock = _LOCKS[str(directory)] = InterProcessRLock(directory / "journal.lock")
+        return lock
 
 
 @dataclass(frozen=True)
@@ -146,6 +153,9 @@ class UndoJournal:
         except (OSError, ValueError):
             return {"turns": [], "redo": []}
 
+    def _exists(self) -> bool:
+        return (self.dir / "journal.json").is_file()
+
     def _save(self, data: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.dir / f"journal.json.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -175,6 +185,8 @@ class UndoJournal:
         was logged) — there is nothing for the user to see restored, so the
         record is dropped in place rather than undone.
         """
+        if not self._exists():
+            return  # nothing journaled: no lock file, no folder
         with self._lock:
             data = self._load()
             if data["turns"]:
@@ -214,6 +226,8 @@ class UndoJournal:
         journaled file. Undo/redo then touch only the paths the turn changed
         and skip any whose content moved on since (edited by the user).
         """
+        if not self._exists():
+            return  # nothing journaled: no lock file, no folder
         with self._lock:
             data = self._load()
             turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
@@ -234,6 +248,8 @@ class UndoJournal:
         Git mode remembers the path (undo restores only such paths); the
         file journal keeps ``rel``'s pre-image.
         """
+        if not self._exists():
+            return  # nothing journaled: no lock file, no folder
         with self._lock:
             data = self._load()
             turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
@@ -252,6 +268,8 @@ class UndoJournal:
 
     def note_command(self, turn_id: str) -> None:
         """Note that a shell command (which may touch any file) ran in this turn."""
+        if not self._exists():
+            return  # nothing journaled: no lock file, no folder
         with self._lock:
             data = self._load()
             turn = next((t for t in reversed(data["turns"]) if t["turn_id"] == turn_id), None)
@@ -304,6 +322,8 @@ class UndoJournal:
         instead of claiming "no file changes". The journal is saved even
         when a restore fails half-way.
         """
+        if not self._exists():
+            return None  # nothing journaled: no lock file, no folder
         with self._lock:
             data = self._load()
             if not data["turns"]:
@@ -393,6 +413,8 @@ class UndoJournal:
         A path whose content is no longer what the undo left (edited since)
         is skipped and named in the note.
         """
+        if not self._exists():
+            return None  # nothing journaled: no lock file, no folder
         with self._lock:
             data = self._load()
             if not data["redo"]:
@@ -552,5 +574,12 @@ def gc(
     if len(survivors) > keep_max:
         doomed += survivors[: len(survivors) - keep_max]
     for d in doomed:
-        shutil.rmtree(d, ignore_errors=True)
-        _git(Path(root), ["update-ref", "-d", f"refs/luna/undo/{d.name}"])
+        # A journal in use (its lock held, here or by another process) is kept.
+        lock = _lock_for(d.resolve())
+        if not lock.acquire(blocking=False):
+            continue
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+            _git(Path(root), ["update-ref", "-d", f"refs/luna/undo/{d.name}"])
+        finally:
+            lock.release()
