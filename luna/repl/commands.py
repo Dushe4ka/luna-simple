@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import getpass
 import inspect
-import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,8 +23,8 @@ from rich.console import Console
 
 from luna.commands import REGISTRY, run_line
 from luna.config.config import LunaConfig
-from luna.config.credentials import get_api_key, set_api_key
-from luna.config.providers import LunaConfigError, merge_providers
+from luna.config.credentials import set_api_key
+from luna.config.providers import LunaConfigError, merge_providers, resolve_api_key
 from luna.core.session_state import SessionState, SessionStateStore
 from luna.core.store import conversations
 from luna.repl import usercmd
@@ -276,14 +275,15 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
             )
             return DispatchResult()
         secret_fn = getpass.getpass
+    label = need.get("env_var") or "API-ключ"
     ctx.console.print(
-        f"{need['env_var']} · хранится в {need['path']} (права 0600)", style="dim", markup=False
+        f"{label} · хранится в {need['path']} (права 0600)", style="dim", markup=False
     )
     ctx.console.print(need["hint"], style="dim", markup=False)
     key = None
     try:
         try:
-            key = await in_thread(secret_fn, f"{need['env_var']} (ввод скрыт, Ctrl-C — отмена): ")
+            key = await in_thread(secret_fn, f"{label} (ввод скрыт, Ctrl-C — отмена): ")
         except (KeyboardInterrupt, EOFError):
             ctx.console.print("ввод ключа отменён", style="dim", markup=False)
             return DispatchResult()
@@ -364,9 +364,7 @@ async def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
     if name == "/model" and not arg and ctx.input_fn is not None and ctx.rebuild is not None:
         registry = merge_providers(ctx.config.custom_providers)
         spec = registry[ctx.config.provider]
-        api_key = os.environ.get(spec.env_var) if spec.env_var else None
-        if not api_key and spec.env_var:
-            api_key = get_api_key(ctx.config.provider)
+        api_key = resolve_api_key(ctx.config.provider, spec)
         arg = await in_thread(
             choose_model, ctx.console, ctx.input_fn, ctx.config.provider, spec, api_key=api_key
         )

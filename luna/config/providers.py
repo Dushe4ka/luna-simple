@@ -23,6 +23,9 @@ class ProviderSpec:
     env_var: str | None
     base_url: str | None = None
     options: dict = field(default_factory=dict)
+    #: declared in a project's ``.luna.toml``: its key never comes from the
+    #: environment (see :func:`resolve_api_key`)
+    project: bool = False
 
     def preset(self) -> Preset:
         """Return the core preset for this spec."""
@@ -75,6 +78,24 @@ def merge_providers(custom: dict[str, ProviderSpec]) -> dict[str, ProviderSpec]:
     return merged
 
 
+def resolve_api_key(provider: str, spec: ProviderSpec) -> str | None:
+    """Return ``provider``'s key, or ``None`` (also for a keyless provider).
+
+    Built-in and user-config providers: the shell variable ``spec.env_var``,
+    else the credentials file. A project's custom provider (``spec.project``)
+    never reads the environment — a cloned repository could otherwise name
+    ``GITHUB_TOKEN`` or ``AWS_SECRET_ACCESS_KEY`` and send it to its own
+    ``base_url`` — only a key stored under its own name.
+    """
+    if not spec.env_var:
+        return None
+    from luna.config.credentials import get_api_key
+
+    if spec.project:
+        return get_api_key(provider)
+    return os.environ.get(spec.env_var) or get_api_key(provider)
+
+
 def build_provider(
     provider: str, model: str | None, *, registry: dict[str, ProviderSpec] | None = None
 ) -> tuple[Provider, str]:
@@ -90,11 +111,7 @@ def build_provider(
         raise LunaConfigError(
             f"Unknown provider {provider!r}. Choose one of: {', '.join(sorted(reg))}."
         )
-    api_key = None
-    if spec.env_var:
-        from luna.config.credentials import get_api_key
-
-        api_key = os.environ.get(spec.env_var) or get_api_key(provider)
+    api_key = resolve_api_key(provider, spec)
     if spec.env_var and not api_key:
         raise LunaConfigError(
             f"No API key for {spec.key}. Run 'luna setup' to configure one, "

@@ -154,14 +154,12 @@ def _overrides(args: argparse.Namespace) -> dict:
 
 
 def _has_api_key(provider: str, registry: dict) -> bool:
-    import os
-
-    from luna.config.credentials import get_api_key
+    from luna.config.providers import resolve_api_key
 
     spec = registry[provider]
     if spec.env_var is None:
         return True
-    return bool(os.environ.get(spec.env_var) or get_api_key(provider))
+    return bool(resolve_api_key(provider, spec))
 
 
 # --- config subcommand ------------------------------------------------------

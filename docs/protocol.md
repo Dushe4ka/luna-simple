@@ -302,7 +302,12 @@ provider of the registry (built-in and `[provider.custom.*]`): ready ones
 first (a key is set or none is needed), then the ones that need a key;
 registry order inside each group. An option's value is the provider key;
 its label marks the current provider (`deepseek  ✓ текущий`) and the
-providers without a key (`anthropic  · нужен ключ`).
+providers without a key (`anthropic  · нужен ключ`). A custom provider from
+the project's `.luna.toml` is labelled with its host
+(`myproxy  · из проекта (api.example.com) · нужен ключ`): its key never comes
+from the environment, only from `credentials.toml` under its own name, so its
+`need_key` has `"env_var": null`. Skipped project entries come as `warn`
+notices.
 
 `/provider <key>` for a provider that needs a key and has none (neither in
 its environment variable nor in `credentials.toml`) does not switch. It

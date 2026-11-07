@@ -1310,6 +1310,13 @@ asyncio.run(main())
 пробелов (`bad_key`), тело до 8 КиБ (`too_large`), пишет `credentials.toml` атомарно
 с правами 0600 и не логирует ключ; ошибки — `ServerError` с кодом
 (`unknown_provider`, `key_not_needed`, `empty_key`, `bad_key`, `cannot_store`).
+
+Свои провайдеры из проектного `.luna.toml` (`ProviderSpec.project == True`)
+никогда не читают ключ из окружения: `luna.config.providers.resolve_api_key`
+для них смотрит только `credentials.toml` под именем провайдера, поэтому до
+ввода ключа они «нуждаются в ключе», а в `need_key` у них `env_var: null`.
+Провайдеры из пользовательского `config.toml` берут ключ как встроенные —
+из своей переменной окружения, иначе из `credentials.toml`.
 Неотвеченное подтверждение держит поток, как и локально. Рабочий пример:
 `python examples/remote_client.py --fake`.
 

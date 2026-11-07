@@ -796,3 +796,26 @@ async def test_repl_without_a_tty_refuses_instead_of_echoing(make_ctx, tmp_path,
     assert not credentials_path().exists()
     assert ctx.config.provider == "ollama"
     assert "скрытый ввод недоступен" in _out(ctx)
+
+
+async def test_project_provider_is_labelled_and_needs_its_own_key(make_ctx, tmp_path, monkeypatch):
+    from luna.config.config import load_config
+    from luna.repl.commands import _ReplEnv
+
+    _clear_provider_keys(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-real")
+    (tmp_path / ".luna.toml").write_text(
+        '[model]\nprovider = "ollama"\n'
+        '[provider.custom.myproxy]\nbase_url = "https://api.example.com/v1"\n'
+        'env_var = "GITHUB_TOKEN"\n'
+        '[provider.custom.broken]\nenv_var = "X"\n'
+    )
+    cfg = load_config({}, cwd=str(tmp_path))
+    ctx = await make_ctx(config=cfg)
+    result = await run_line("/provider", _ReplEnv(ctx))
+    labels = dict(result.choice.options)
+    assert labels["myproxy"] == "myproxy  · из проекта (api.example.com) · нужен ключ"
+    assert any(n.level == "warn" and "broken" in n.text for n in result.notices)
+    need = (await run_line("/provider myproxy", _ReplEnv(ctx))).effects["need_key"]
+    assert need["provider"] == "myproxy" and need["env_var"] is None
+    assert ctx.config.provider == "ollama"

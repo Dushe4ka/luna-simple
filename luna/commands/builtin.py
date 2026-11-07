@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 from luna_core.errors import LunaCoreError, ProviderError
 from luna_core.events import Compacted
@@ -11,15 +10,13 @@ from luna_core.loop import readable_error
 
 from luna.commands.base import Choice, CommandResult, Confirm
 from luna.commands.registry import register, register_ui
-from luna.config.credentials import get_api_key
-from luna.config.providers import LunaConfigError, key_hint, merge_providers
+from luna.config.providers import LunaConfigError, key_hint, merge_providers, resolve_api_key
 from luna.turn.engine import Notice
 from luna.turn.verify import run_verify
 
 
 def _api_key(provider: str, spec) -> str | None:
-    key = os.environ.get(spec.env_var) if spec.env_var else None
-    return key or (get_api_key(provider) if spec.env_var else None)
+    return resolve_api_key(provider, spec)
 
 
 def _models_for(cfg) -> list[str]:
@@ -409,6 +406,13 @@ async def _model(env, arg):
     return CommandResult(notices=[Notice("info", f"model → {arg}")], effects={"model": arg})
 
 
+def _host(url: str | None) -> str:
+    """Return the host of ``url`` for a picker label (the URL itself if it has none)."""
+    from urllib.parse import urlsplit
+
+    return urlsplit(url or "").hostname or (url or "?")
+
+
 def _need_key(provider: str, spec) -> CommandResult:
     """Ask the client to collect ``provider``'s key (never as command text)."""
     from pathlib import Path
@@ -425,7 +429,8 @@ def _need_key(provider: str, spec) -> CommandResult:
         effects={
             "need_key": {
                 "provider": provider,
-                "env_var": spec.env_var,
+                # a project provider's key never comes from a variable
+                "env_var": None if spec.project else spec.env_var,
                 "hint": key_hint(provider),
                 "path": shown,
             }
@@ -441,14 +446,18 @@ async def _provider(env, arg):
         ready = {k: not spec.env_var or bool(_api_key(k, spec)) for k, spec in registry.items()}
         options = []
         for key in sorted(registry, key=lambda k: not ready[k]):  # stable: registry order kept
-            label = key
-            if key == current:
-                label += "  ✓ текущий"
-            elif not ready[key]:
-                label += "  · нужен ключ"
+            label = key + ("  ✓ текущий" if key == current else "")
+            tags = []
+            if getattr(registry[key], "project", False):
+                tags.append(f"из проекта ({_host(registry[key].base_url)})")
+            if not ready[key] and key != current:
+                tags.append("нужен ключ")
+            if tags:
+                label += "  · " + " · ".join(tags)
             options.append((key, label))
+        warnings = [Notice("warn", w) for w in getattr(env.config, "warnings", [])]
         return CommandResult(
-            notices=[Notice("dim", f"provider: {current}")],
+            notices=[Notice("dim", f"provider: {current}"), *warnings],
             choice=Choice("Провайдер", options, "/provider {value}"),
         )
     if arg not in registry:
