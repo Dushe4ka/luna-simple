@@ -7,6 +7,7 @@ Precedence, highest first: CLI overrides > environment > ``./.luna.toml`` >
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -210,6 +211,16 @@ def load_config(
         if not base_url:
             raise LunaConfigError(
                 f"Custom provider {name!r} needs base_url in [provider.custom.{name}]."
+            )
+        builtin_owner = next(
+            (k for k, spec in PROVIDERS.items() if env_var and spec.env_var == env_var), None
+        )
+        if builtin_owner is not None:
+            # it would send the built-in provider's real key to this endpoint
+            raise LunaConfigError(
+                f"Custom provider {name!r} may not use {env_var}: that is the key of the "
+                f"built-in provider {builtin_owner!r}. Give it its own variable, e.g. "
+                f'env_var = "{re.sub(r"[^A-Z0-9]", "_", name.upper())}_API_KEY".'
             )
         custom_providers[name] = ProviderSpec(
             key=name,
