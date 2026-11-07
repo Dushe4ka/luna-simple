@@ -285,7 +285,7 @@ KeyModal .key-hint {
 }
 
 KeyModal #key-error {
-    color: $mauve;
+    color: $err;
     display: none;
 }
 
