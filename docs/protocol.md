@@ -98,6 +98,7 @@ an absolute, trusted project path.
 | POST | `/sessions/{id}/command` | `{"workdir", "line"}` | command result JSON |
 | POST | `/sessions/{id}/background` | `{"workdir", "content", "images"?, "reload_after"?}` | run info |
 | GET | `/agents` | — | `{"runs": [...], "tasks": [...]}` |
+| POST | `/credentials` | `{"workdir", "provider", "key"}` | `{"ok": true, "provider"}` |
 | GET | `/sessions/{id}/events` | `?after=` | SSE: buffered then live events of a background run |
 
 `/approve`, `/cancel` and `/events` carry no `workdir`: they act only on a
@@ -293,6 +294,52 @@ answers `effects: {"session": "<new id>"}` — the client switches to it.
 ← 200 {"text": "", "notices": [{"level": "info", "text": "plan mode: on"}], "choice": null,
         "confirm": null, "prompt": null, "effects": {"plan": true}}
 ```
+
+#### Эффект `need_key`
+
+`/provider` без аргумента возвращает `choice` со **всеми** провайдерами
+реестра (встроенные и `[provider.custom.*]`): сначала готовые к работе
+(ключ есть или не нужен), затем те, кому нужен ключ; внутри групп — порядок
+реестра. Значение опции — ключ провайдера, подпись помечает текущего
+(`deepseek  ✓ текущий`) и провайдеров без ключа (`anthropic  · нужен ключ`).
+
+`/provider <key>` для провайдера, которому нужен ключ, а ключа нет (ни в
+переменной окружения, ни в `credentials.toml`), не переключает провайдера и
+отвечает предупреждением плюс эффектом:
+
+```json
+← 200 {"text": "", "notices": [{"level": "warn", "text": "нет ключа для anthropic — …"}],
+        "choice": null, "confirm": null, "prompt": null,
+        "effects": {"need_key": {"provider": "anthropic", "env_var": "ANTHROPIC_API_KEY",
+                                 "hint": "Где взять ключ: https://console.anthropic.com/settings/keys",
+                                 "path": "~/.config/luna/credentials.toml"}}}
+```
+
+Клиент спрашивает ключ скрытым вводом, отправляет его через
+`POST /credentials` и повторяет `/provider <key>`. **Ключ никогда не
+передаётся строкой команды**: строка команды попадает в транскрипт, журнал
+событий и историю.
+
+### `POST /credentials`
+
+Сохраняет API-ключ провайдера в `credentials.toml` каталога конфигурации
+сервера (права `0600`, как `luna config set-key`). Ключ не экспортируется в
+`os.environ` и нигде не логируется; ответы об ошибках содержат только код.
+Следующее переключение на этого провайдера (`/provider <key>`) собирает
+агента уже с новым ключом. `workdir` проверяется на доверие, как в
+остальных маршрутах, и нужен, чтобы видеть пользовательских провайдеров
+проекта (`.luna.toml`).
+
+```json
+→ POST /credentials {"workdir": "/repo", "provider": "anthropic", "key": "sk-ant-…"}
+← 200 {"ok": true, "provider": "anthropic"}
+```
+
+Ключ очищается от пробелов по краям. Ошибки (`400`): `bad_request`
+(тело не JSON-объект, `provider`/`key` не строки), `unknown_provider`,
+`key_not_needed` (провайдеру ключ не нужен, например `ollama`),
+`empty_key`; `500 cannot_store` — файл не удалось записать. Без
+bearer-токена — `401`, как у всех маршрутов.
 
 ### `POST /sessions/{id}/background`
 

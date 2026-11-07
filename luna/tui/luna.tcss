@@ -263,6 +263,32 @@ ChoiceModal #picker-list {
     background: $bg;
 }
 
+KeyModal {
+    align: center middle;
+}
+
+KeyModal > Vertical {
+    width: 60%;
+    height: auto;
+    max-height: 70%;
+    background: $bg;
+    border: round $peri;
+    padding: 1 2;
+}
+
+KeyModal #key-input {
+    margin-top: 1;
+}
+
+KeyModal .key-hint {
+    color: $moon-dim;
+}
+
+KeyModal #key-error {
+    color: $mauve;
+    display: none;
+}
+
 .picker-title {
     text-style: bold;
     padding-bottom: 1;

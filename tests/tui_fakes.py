@@ -24,7 +24,10 @@ class FakeLunaClient:
         self.cancelled = []
         self.background_calls = []
         self.attached = []
-        self.command_results = {}
+        self.command_results = {}  # line -> result, or a list of results (one per call)
+        self.command_lines = []
+        self.keys_set = []  # (provider, workdir) — the key value itself is not kept
+        self.set_key_error = None
 
     async def list_sessions(self, workdir):
         return self.sessions
@@ -82,7 +85,18 @@ class FakeLunaClient:
             "prompt": None,
             "effects": {},
         }
-        return self.command_results.get(line, empty)
+        self.command_lines.append(line)
+        result = self.command_results.get(line, empty)
+        if isinstance(result, list):
+            return result.pop(0) if result else empty
+        return result
+
+    async def set_key(self, provider, key, workdir):
+        if self.set_key_error is not None:
+            raise self.set_key_error
+        self.keys_set.append((provider, workdir))
+        self.last_key_len = len(key)
+        return {"ok": True, "provider": provider}
 
     async def background(self, session_id, text, workdir):
         self.background_calls.append(text)

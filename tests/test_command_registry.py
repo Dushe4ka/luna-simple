@@ -185,8 +185,11 @@ async def test_provider_unknown_and_missing_key(monkeypatch):
         Notice("error", "unknown provider 'nope'")
     ]
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    notices = (await run_line("/provider openai", FakeEnv())).notices
-    assert notices == [Notice("error", "no key for openai; run: luna config set-key openai")]
+    result = await run_line("/provider openai", FakeEnv())
+    assert result.notices == [
+        Notice("warn", "нет ключа для openai — введите его или: luna config set-key openai")
+    ]
+    assert result.effects["need_key"]["env_var"] == "OPENAI_API_KEY"
 
 
 async def test_init_becomes_a_prompt_and_reloads_after(tmp_path, monkeypatch):
@@ -208,7 +211,7 @@ async def test_model_picker_marks_the_current_model(monkeypatch):
     assert (await run_line("/model", env)).choice.options == [("a", "a"), ("b", "b  ✓ текущая")]
 
 
-async def test_provider_picker_is_not_shown_empty(monkeypatch):
+async def test_provider_picker_lists_providers_even_without_any_key(monkeypatch):
     from luna.commands import builtin
 
     monkeypatch.setattr(builtin, "_api_key", lambda provider, spec: None)
@@ -218,11 +221,7 @@ async def test_provider_picker_is_not_shown_empty(monkeypatch):
         lambda custom: {"openai": type("S", (), {"env_var": "OPENAI_API_KEY"})()},
     )
     result = await run_line("/provider", FakeEnv())
-    assert result.choice is None
-    assert (
-        Notice("dim", "нет провайдеров с ключом — luna config set-key <провайдер>")
-        in result.notices
-    )
+    assert result.choice.options == [("openai", "openai  · нужен ключ")]
 
 
 def test_help_is_built_from_the_registry():

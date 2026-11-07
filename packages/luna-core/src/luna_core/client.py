@@ -152,6 +152,15 @@ class LunaClient:
         body = {"line": line, "workdir": workdir}
         return await self._json("POST", path, json=body, timeout=_STREAM_TIMEOUT)
 
+    async def set_key(self, provider: str, key: str, workdir: str) -> dict:
+        """Store ``provider``'s API key on the server (``POST /credentials``).
+
+        The key goes only in the request body — never as a command line, so
+        it never lands in a transcript or history. Returns ``{"ok", "provider"}``.
+        """
+        body = {"provider": provider, "key": key, "workdir": workdir}
+        return await self._json("POST", "/credentials", json=body)
+
     async def background(self, session_id: str, text: str, workdir: str) -> dict:
         """Run a turn detached from this client."""
         path = f"/sessions/{session_id}/background"

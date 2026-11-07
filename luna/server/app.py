@@ -18,6 +18,7 @@ from starlette.routing import Route
 
 import luna
 from luna.server.commands import get_commands, get_state, post_command
+from luna.server.credentials import post_credentials
 from luna.server.sessions import create_session, delete_session, list_sessions
 from luna.server.turns import (
     RUN_DONE,
@@ -148,6 +149,7 @@ def create_app(
             Route("/sessions/{session_id}/command", post_command, methods=["POST"]),
             Route("/commands", get_commands, methods=["GET"]),
             Route("/agents", get_agents, methods=["GET"]),
+            Route("/credentials", post_credentials, methods=["POST"]),
         ],
         middleware=[Middleware(_AuthMiddleware, token=token)],
         lifespan=lifespan,

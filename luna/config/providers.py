@@ -42,6 +42,31 @@ PROVIDERS: dict[str, ProviderSpec] = {
 }
 DEFAULT_PROVIDER = "anthropic"
 
+#: Where to get an API key for a built-in provider (shown when one is missing).
+KEY_URLS: dict[str, str] = {
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "openai_chat": "https://platform.openai.com/api-keys",
+    "google": "https://aistudio.google.com/apikey",
+    "gigachat": "https://developers.sber.ru/studio",
+    "yandex": "https://console.yandex.cloud",
+    "mistral": "https://console.mistral.ai/api-keys",
+    "xai": "https://console.x.ai",
+    "groq": "https://console.groq.com/keys",
+    "fireworks": "https://fireworks.ai/account/api-keys",
+    "together": "https://api.together.ai/settings/api-keys",
+    "openrouter": "https://openrouter.ai/keys",
+    "perplexity": "https://www.perplexity.ai/settings/api",
+    "cerebras": "https://cloud.cerebras.ai",
+}
+
+
+def key_hint(provider: str) -> str:
+    """Return a one-line Russian hint on where to get ``provider``'s API key."""
+    url = KEY_URLS.get(provider)
+    return f"Где взять ключ: {url}" if url else "Ключ выдаёт ваш провайдер"
+
 
 def merge_providers(custom: dict[str, ProviderSpec]) -> dict[str, ProviderSpec]:
     """Merge custom providers with the built-ins; a custom entry never shadows a built-in."""

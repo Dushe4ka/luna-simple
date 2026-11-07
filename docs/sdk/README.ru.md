@@ -1293,7 +1293,8 @@ asyncio.run(main())
 
 Методы `LunaClient`: `health`, `list_sessions`, `create_session`, `delete_session`,
 `history`, `state`, `send` (SSE-поток словарей), `decide`, `cancel`, `commands`,
-`run_command`, `background`, `agents`, `attach(session_id, after=-1)` (подключение
+`run_command`, `set_key(provider, key, workdir)` (сохранить API-ключ провайдера через
+`POST /credentials` — ключ идёт только в теле запроса), `background`, `agents`, `attach(session_id, after=-1)` (подключение
 к фоновому запуску с повтором пропущенного), `aclose`. Ошибки HTTP и недоступность
 сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`); ответ или
 строка `data:` в SSE, которые не являются JSON-объектом, тоже дают `ServerError`

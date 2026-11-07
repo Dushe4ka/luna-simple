@@ -11,6 +11,7 @@ interactive part of ``/model``).
 
 from __future__ import annotations
 
+import getpass
 import inspect
 import os
 from collections.abc import Callable
@@ -22,8 +23,8 @@ from rich.console import Console
 
 from luna.commands import REGISTRY, run_line
 from luna.config.config import LunaConfig
-from luna.config.credentials import get_api_key
-from luna.config.providers import merge_providers
+from luna.config.credentials import get_api_key, set_api_key
+from luna.config.providers import LunaConfigError, merge_providers
 from luna.core.session_state import SessionState, SessionStateStore
 from luna.core.store import conversations
 from luna.repl import usercmd
@@ -52,6 +53,8 @@ class CommandContext:
     log: object
     state: SessionState
     input_fn: Callable[[str], str] | None = None
+    #: hidden input for secrets (API keys); ``getpass.getpass`` when ``None``
+    secret_fn: Callable[[str], str] | None = None
     user_commands: dict | None = None
     plan_state: list | None = None
 
@@ -254,6 +257,36 @@ class _ReplEnv:
         await self._switch(provider, None)
 
 
+async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
+    """Read a missing API key with hidden input, store it, then redo the switch.
+
+    The key never goes through the command line, the console or the history.
+    """
+    provider = need["provider"]
+    ctx.console.print(
+        f"{need['env_var']} · хранится в {need['path']} (права 0600)", style="dim", markup=False
+    )
+    ctx.console.print(need["hint"], style="dim", markup=False)
+    secret_fn = ctx.secret_fn or getpass.getpass
+    try:
+        key = await in_thread(secret_fn, f"{need['env_var']} (ввод скрыт, Ctrl-C — отмена): ")
+    except (KeyboardInterrupt, EOFError):
+        ctx.console.print("ввод ключа отменён", style="dim", markup=False)
+        return DispatchResult()
+    key = key.strip()
+    if not key:
+        ctx.console.print("пустой ключ — ничего не сохранено", style="dim", markup=False)
+        return DispatchResult()
+    try:
+        set_api_key(provider, key, registry=merge_providers(ctx.config.custom_providers))
+    except LunaConfigError as exc:
+        ctx.console.print(str(exc), style=_STYLE["error"], markup=False)
+        return DispatchResult()
+    del key
+    ctx.console.print(f"ключ для {provider} сохранён", style=_STYLE["info"], markup=False)
+    return await dispatch(f"/provider {provider}", ctx)
+
+
 async def _render(result, ctx: CommandContext) -> DispatchResult:
     for notice in result.notices:
         ctx.console.print(notice.text, style=_STYLE.get(notice.level, ""), markup=False)
@@ -278,6 +311,9 @@ async def _render(result, ctx: CommandContext) -> DispatchResult:
             ctx.console.print(f"[dim]{result.confirm.cancelled}[/]")
             return out
         return await dispatch(result.confirm.resubmit, ctx)
+    need = result.effects.get("need_key")
+    if need and ctx.input_fn is not None:
+        return await _collect_key(need, ctx)
     if result.prompt is not None:
         out.prompt = result.prompt
         out.reload_after = bool(result.effects.get("reload_after_turn"))

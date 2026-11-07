@@ -12,7 +12,7 @@ from luna_core.loop import readable_error
 from luna.commands.base import Choice, CommandResult, Confirm
 from luna.commands.registry import register, register_ui
 from luna.config.credentials import get_api_key
-from luna.config.providers import LunaConfigError, merge_providers
+from luna.config.providers import LunaConfigError, key_hint, merge_providers
 from luna.turn.engine import Notice
 from luna.turn.verify import run_verify
 
@@ -409,26 +409,58 @@ async def _model(env, arg):
     return CommandResult(notices=[Notice("info", f"model → {arg}")], effects={"model": arg})
 
 
+def _need_key(provider: str, spec) -> CommandResult:
+    """Ask the client to collect ``provider``'s key (never as command text)."""
+    from pathlib import Path
+
+    from luna.config.credentials import credentials_path
+
+    path = credentials_path()
+    try:
+        shown = f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        shown = str(path)
+    return CommandResult(
+        notices=[
+            Notice(
+                "warn",
+                f"нет ключа для {provider} — введите его или: luna config set-key {provider}",
+            )
+        ],
+        effects={
+            "need_key": {
+                "provider": provider,
+                "env_var": spec.env_var,
+                "hint": key_hint(provider),
+                "path": shown,
+            }
+        },
+    )
+
+
 @register("/provider", "show or switch the provider (/provider <key>)", "mutate")
 async def _provider(env, arg):
     registry = merge_providers(env.config.custom_providers)
     if not arg:
-        current = Notice("dim", f"provider: {env.config.provider}")
-        usable = [k for k, spec in registry.items() if not spec.env_var or _api_key(k, spec)]
-        if not usable:
-            hint = Notice("dim", "нет провайдеров с ключом — luna config set-key <провайдер>")
-            return CommandResult(notices=[current, hint])
+        current = env.config.provider
+        ready = {k: not spec.env_var or bool(_api_key(k, spec)) for k, spec in registry.items()}
+        options = []
+        for key in sorted(registry, key=lambda k: not ready[k]):  # stable: registry order kept
+            label = key
+            if key == current:
+                label += "  ✓ текущий"
+            elif not ready[key]:
+                label += "  · нужен ключ"
+            options.append((key, label))
         return CommandResult(
-            notices=[current],
-            choice=Choice("Провайдер", [(k, k) for k in usable], "/provider {value}"),
+            notices=[Notice("dim", f"provider: {current}")],
+            choice=Choice("Провайдер", options, "/provider {value}"),
         )
     if arg not in registry:
         return CommandResult(notices=[Notice("error", f"unknown provider {arg!r}")])
     spec = registry[arg]
     if spec.env_var and not _api_key(arg, spec):
-        return CommandResult(
-            notices=[Notice("error", f"no key for {arg}; run: luna config set-key {arg}")]
-        )
+        return _need_key(arg, spec)
     try:
         await env.switch_provider(arg)
     except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the session

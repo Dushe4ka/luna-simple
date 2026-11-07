@@ -625,3 +625,118 @@ async def test_undo_redo_rewind_refused_while_background_tasks_run(make_ctx):
         await background.wait(handle)
     assert [m.text for m in ctx.session.messages()] == ["first", "a"]
     assert _out(ctx).count("background tasks are still running") == 3
+
+
+# --- /provider: every provider listed, a missing key is collected -----------
+
+
+def _clear_provider_keys(monkeypatch):
+    from luna.config.providers import PROVIDERS
+
+    for spec in PROVIDERS.values():
+        if spec.env_var:
+            monkeypatch.delenv(spec.env_var, raising=False)
+
+
+async def test_provider_lists_every_provider_ready_ones_first(make_ctx, tmp_path, monkeypatch):
+    from luna.config.providers import PROVIDERS
+    from luna.repl.commands import _ReplEnv
+
+    _clear_provider_keys(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    ctx = await make_ctx(config=LunaConfig(workdir=str(tmp_path), provider="deepseek"))
+    result = await run_line("/provider", _ReplEnv(ctx))
+    options = result.choice.options
+    assert sorted(v for v, _ in options) == sorted(PROVIDERS)
+    assert options[0] == ("deepseek", "deepseek  ✓ текущий")
+    assert options[1] == ("ollama", "ollama")
+    labels = dict(options)
+    assert labels["anthropic"] == "anthropic  · нужен ключ"
+    assert labels["openrouter"] == "openrouter  · нужен ключ"
+    # registry order is kept inside each group
+    rest = [v for v, _ in options[2:]]
+    assert rest == [k for k in PROVIDERS if k not in ("deepseek", "ollama")]
+    assert result.choice.resubmit == "/provider {value}"
+
+
+async def test_provider_list_includes_custom_providers(make_ctx, tmp_path, monkeypatch):
+    from luna.config.providers import ProviderSpec
+    from luna.repl.commands import _ReplEnv
+
+    _clear_provider_keys(monkeypatch)
+    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    custom = {
+        "mylocal": ProviderSpec("mylocal", "openai_chat", "m", "MYLOCAL_API_KEY", "http://x/v1")
+    }
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="ollama", custom_providers=custom)
+    )
+    result = await run_line("/provider", _ReplEnv(ctx))
+    assert ("mylocal", "mylocal  · нужен ключ") in result.choice.options
+
+
+async def test_provider_without_key_asks_the_client_for_one(make_ctx, tmp_path, monkeypatch):
+    from luna.repl.commands import _ReplEnv
+
+    _clear_provider_keys(monkeypatch)
+    ctx = await make_ctx(config=LunaConfig(workdir=str(tmp_path), provider="ollama"))
+    result = await run_line("/provider anthropic", _ReplEnv(ctx))
+    need = result.effects["need_key"]
+    assert need["provider"] == "anthropic"
+    assert need["env_var"] == "ANTHROPIC_API_KEY"
+    assert "console.anthropic.com" in need["hint"]
+    assert need["path"].endswith("credentials.toml")
+    assert ctx.config.provider == "ollama"
+    assert "provider" not in result.effects
+    assert result.to_json()["effects"]["need_key"] == need
+
+
+async def test_repl_collects_a_missing_key_hidden_and_switches(make_ctx, tmp_path, monkeypatch):
+    import os
+    import stat
+
+    from luna.config.credentials import credentials_path, get_api_key
+
+    _clear_provider_keys(monkeypatch)
+    prompts = []
+
+    def secret(prompt):
+        prompts.append(prompt)
+        return "  sk-ant-SECRET-123  "
+
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="ollama"),
+        input_fn=lambda p: pytest.fail("the key must not be read with a visible prompt"),
+        secret_fn=secret,
+    )
+    await dispatch("/provider anthropic", ctx)
+    assert get_api_key("anthropic") == "sk-ant-SECRET-123"
+    assert stat.S_IMODE(credentials_path().stat().st_mode) == 0o600
+    assert ctx.config.provider == "anthropic"
+    assert "ANTHROPIC_API_KEY" in prompts[0]
+    assert "sk-ant-SECRET-123" not in _out(ctx)
+    assert "sk-ant-SECRET-123" not in os.environ.values()
+
+
+@pytest.mark.parametrize("answer", [KeyboardInterrupt, EOFError, ""])
+async def test_repl_key_prompt_cancel_or_empty_keeps_everything(
+    make_ctx, tmp_path, monkeypatch, answer
+):
+    from luna.config.credentials import credentials_path
+
+    _clear_provider_keys(monkeypatch)
+
+    def secret(prompt):
+        if isinstance(answer, str):
+            return answer
+        raise answer
+
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="ollama"),
+        input_fn=lambda p: "",
+        secret_fn=secret,
+    )
+    await dispatch("/provider anthropic", ctx)
+    assert not credentials_path().exists()
+    assert ctx.config.provider == "ollama"
+    assert "отмен" in _out(ctx) or "пуст" in _out(ctx)
