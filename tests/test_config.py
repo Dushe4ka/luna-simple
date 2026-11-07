@@ -292,3 +292,79 @@ def test_invalid_limits_are_rejected(tmp_path, toml):
     (tmp_path / ".luna.toml").write_text(toml)
     with pytest.raises(LunaConfigError):
         load_config({}, env={}, cwd=str(tmp_path))
+
+
+# --- a project provider's stored key is bound to its base_url ------------
+
+
+def _project(path, name, base_url, provider_line=True):
+    path.mkdir(parents=True, exist_ok=True)
+    head = f'[model]\nprovider = "{name}"\n' if provider_line else ""
+    (path / ".luna.toml").write_text(
+        head + f'[provider.custom.{name}]\nbase_url = "{base_url}"\nenv_var = "LITELLM_KEY"\n'
+    )
+    cfg = load_config({}, cwd=str(path))
+    return cfg, merge_providers(cfg.custom_providers)
+
+
+def test_project_b_does_not_get_project_a_key_for_the_same_name(tmp_path):
+    from luna.config.credentials import set_api_key
+    from luna.config.providers import build_provider, resolve_api_key
+
+    _, reg_a = _project(tmp_path / "a", "litellm", "https://LLM.corp.example:8443/v1/")
+    set_api_key("litellm", "sk-a", registry=reg_a)
+    assert resolve_api_key("litellm", reg_a["litellm"]) == "sk-a"  # A re-uses its key
+
+    _, reg_b = _project(tmp_path / "b", "litellm", "https://evil.example/v1")
+    assert resolve_api_key("litellm", reg_b["litellm"]) is None
+    with pytest.raises(LunaConfigError):
+        build_provider("litellm", None, registry=reg_b)
+
+
+def test_base_url_is_normalised_for_the_binding(tmp_path):
+    from luna.config.credentials import load_credentials, set_api_key
+    from luna.config.providers import resolve_api_key
+
+    _, reg = _project(tmp_path / "a", "litellm", "https://LLM.corp.example:8443/v1/")
+    set_api_key("litellm", "sk-a", registry=reg)
+    assert load_credentials()["litellm"]["base_url"] == "https://llm.corp.example:8443/v1"
+    _, same = _project(tmp_path / "a2", "litellm", "HTTPS://llm.corp.example:8443/v1")
+    assert resolve_api_key("litellm", same["litellm"]) == "sk-a"
+
+
+def test_changed_base_url_asks_again_and_saving_rebinds(tmp_path):
+    from luna.config.credentials import set_api_key
+    from luna.config.providers import resolve_api_key
+
+    _, old = _project(tmp_path / "a", "litellm", "https://one.example/v1")
+    set_api_key("litellm", "sk-one", registry=old)
+    _, new = _project(tmp_path / "a", "litellm", "https://two.example/v1")
+    assert resolve_api_key("litellm", new["litellm"]) is None
+    set_api_key("litellm", "sk-two", registry=new)
+    assert resolve_api_key("litellm", new["litellm"]) == "sk-two"
+    assert resolve_api_key("litellm", old["litellm"]) is None
+
+
+def test_legacy_key_without_binding_is_no_key_for_a_project_provider(tmp_path):
+    from luna.config.credentials import set_api_key
+    from luna.config.providers import PROVIDERS, ProviderSpec, resolve_api_key
+
+    plain = {**PROVIDERS, "litellm": ProviderSpec("litellm", "openai_chat", "m", "K", "http://x")}
+    set_api_key("litellm", "sk-legacy", registry=plain)
+    _, reg = _project(tmp_path / "a", "litellm", "http://x")
+    assert resolve_api_key("litellm", reg["litellm"]) is None
+
+
+def test_global_provider_key_is_not_bound(tmp_path, monkeypatch):
+    from luna.config.credentials import load_credentials, set_api_key
+    from luna.config.providers import resolve_api_key
+
+    monkeypatch.delenv("LITELLM_KEY", raising=False)
+    _global_toml(
+        '[provider.custom.litellm]\nbase_url = "https://gw.example/v1"\nenv_var = "LITELLM_KEY"\n'
+    )
+    cfg = load_config({}, cwd=str(tmp_path))
+    reg = merge_providers(cfg.custom_providers)
+    set_api_key("litellm", "sk-global", registry=reg)
+    assert "base_url" not in load_credentials()["litellm"]
+    assert resolve_api_key("litellm", reg["litellm"]) == "sk-global"

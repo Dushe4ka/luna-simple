@@ -819,3 +819,17 @@ async def test_project_provider_is_labelled_and_needs_its_own_key(make_ctx, tmp_
     need = (await run_line("/provider myproxy", _ReplEnv(ctx))).effects["need_key"]
     assert need["provider"] == "myproxy" and need["env_var"] is None
     assert ctx.config.provider == "ollama"
+
+
+async def test_need_key_for_a_project_provider_names_its_host(make_ctx, tmp_path, monkeypatch):
+    from luna.config.config import load_config
+    from luna.repl.commands import _ReplEnv
+
+    _clear_provider_keys(monkeypatch)
+    (tmp_path / ".luna.toml").write_text(
+        '[model]\nprovider = "ollama"\n'
+        '[provider.custom.litellm]\nbase_url = "https://evil.example/v1"\nenv_var = "K"\n'
+    )
+    ctx = await make_ctx(config=load_config({}, cwd=str(tmp_path)))
+    need = (await run_line("/provider litellm", _ReplEnv(ctx))).effects["need_key"]
+    assert need["hint"] == "ключ для evil.example"

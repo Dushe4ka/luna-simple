@@ -18,7 +18,7 @@ from pathlib import Path
 from luna_core.filelock import file_lock
 
 from luna.config.config import config_dir
-from luna.config.providers import PROVIDERS, LunaConfigError, ProviderSpec
+from luna.config.providers import PROVIDERS, LunaConfigError, ProviderSpec, normalize_base_url
 
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0600
 #: Provider names a credentials table may have (written quoted either way).
@@ -176,7 +176,14 @@ def set_api_key(
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(_lock_path(env)):
         data = {k: dict(v) for k, v in load_credentials(env).items()}
-        data.setdefault(provider, {})["api_key"] = key
+        section = data.setdefault(provider, {})
+        section["api_key"] = key
+        spec = reg[provider]
+        if getattr(spec, "project", False):
+            # a project provider's key is valid only for this endpoint
+            section["base_url"] = normalize_base_url(spec.base_url)
+        else:
+            section.pop("base_url", None)
         _write(data, path)
     return path
 

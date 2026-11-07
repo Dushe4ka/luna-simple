@@ -93,6 +93,9 @@ async def test_custom_provider_from_the_project_config(tmp_path):
         resp = await _set(c, str(tmp_path), provider="mylocal")
     assert resp.status_code == 200, resp.text
     assert get_api_key("mylocal") == SECRET
+    from luna.config.credentials import load_credentials
+
+    assert load_credentials()["mylocal"]["base_url"] == "http://localhost:1/v1"
 
 
 async def test_key_then_switch_never_leaks_into_logs_events_or_history(tmp_path, caplog):

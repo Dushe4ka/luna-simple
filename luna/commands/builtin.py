@@ -431,7 +431,7 @@ def _need_key(provider: str, spec) -> CommandResult:
                 "provider": provider,
                 # a project provider's key never comes from a variable
                 "env_var": None if spec.project else spec.env_var,
-                "hint": key_hint(provider),
+                "hint": f"ключ для {_host(spec.base_url)}" if spec.project else key_hint(provider),
                 "path": shown,
             }
         },

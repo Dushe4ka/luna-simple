@@ -85,15 +85,31 @@ def resolve_api_key(provider: str, spec: ProviderSpec) -> str | None:
     else the credentials file. A project's custom provider (``spec.project``)
     never reads the environment — a cloned repository could otherwise name
     ``GITHUB_TOKEN`` or ``AWS_SECRET_ACCESS_KEY`` and send it to its own
-    ``base_url`` — only a key stored under its own name.
+    ``base_url`` — only a key stored under its own name *for the same*
+    ``base_url`` (see :func:`normalize_base_url`).
     """
     if not spec.env_var:
         return None
-    from luna.config.credentials import get_api_key
+    from luna.config.credentials import get_api_key, load_credentials
 
     if spec.project:
+        # bound to the endpoint it was entered for: another project reusing
+        # the name with its own base_url gets "no key", not this one
+        section = load_credentials().get(provider, {})
+        if section.get("base_url") != normalize_base_url(spec.base_url):
+            return None
         return get_api_key(provider)
     return os.environ.get(spec.env_var) or get_api_key(provider)
+
+
+def normalize_base_url(url: str | None) -> str:
+    """Return ``url`` as scheme://host[:port]/path: lowercase, no trailing slash."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit((url or "").strip())
+    host = (parts.hostname or "").lower()
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme.lower()}://{host}{port}{parts.path.rstrip('/')}"
 
 
 def build_provider(

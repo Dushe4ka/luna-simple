@@ -305,8 +305,12 @@ its label marks the current provider (`deepseek  ✓ текущий`) and the
 providers without a key (`anthropic  · нужен ключ`). A custom provider from
 the project's `.luna.toml` is labelled with its host
 (`myproxy  · из проекта (api.example.com) · нужен ключ`): its key never comes
-from the environment, only from `credentials.toml` under its own name, so its
-`need_key` has `"env_var": null`. Skipped project entries come as `warn`
+from the environment, only from `credentials.toml` under its own name and only
+when the `base_url` stored with it (normalised: lowercase scheme and host,
+port, path without a trailing slash) equals the provider's. So another project
+reusing the name with a different endpoint gets `need_key`, never the key. Its
+`need_key` has `"env_var": null` and `"hint": "ключ для <host>"`;
+`POST /credentials` for it stores the binding. Skipped project entries come as `warn`
 notices.
 
 `/provider <key>` for a provider that needs a key and has none (neither in
