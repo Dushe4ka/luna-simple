@@ -421,12 +421,7 @@ def _need_key(provider: str, spec) -> CommandResult:
     except ValueError:
         shown = str(path)
     return CommandResult(
-        notices=[
-            Notice(
-                "warn",
-                f"нет ключа для {provider} — введите его или: luna config set-key {provider}",
-            )
-        ],
+        notices=[Notice("dim", f"нужен ключ для {provider} — luna config set-key {provider}")],
         effects={
             "need_key": {
                 "provider": provider,

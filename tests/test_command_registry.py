@@ -186,9 +186,7 @@ async def test_provider_unknown_and_missing_key(monkeypatch):
     ]
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     result = await run_line("/provider openai", FakeEnv())
-    assert result.notices == [
-        Notice("warn", "нет ключа для openai — введите его или: luna config set-key openai")
-    ]
+    assert result.notices == [Notice("dim", "нужен ключ для openai — luna config set-key openai")]
     assert result.effects["need_key"]["env_var"] == "OPENAI_API_KEY"
 
 

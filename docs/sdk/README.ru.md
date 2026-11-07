@@ -1299,6 +1299,17 @@ asyncio.run(main())
 сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`); ответ или
 строка `data:` в SSE, которые не являются JSON-объектом, тоже дают `ServerError`
 («malformed …»), а не `JSONDecodeError`.
+
+**Ключ провайдера из клиента.** `run_command(sid, "/provider anthropic", wd)` для
+провайдера без ключа не переключает его, а возвращает `effects["need_key"]` —
+`{"provider", "env_var", "hint", "path"}` (переменная окружения, где взять ключ,
+куда он сохранится). Клиент спрашивает ключ скрытым вводом и вызывает
+`await client.set_key("anthropic", key, wd)` (`POST /credentials`), затем повторяет
+`/provider anthropic`. Ключ никогда не передаётся строкой команды — она попадает в
+транскрипт, журнал событий и историю. Сервер принимает только печатные ASCII без
+пробелов (`bad_key`), тело до 8 КиБ (`too_large`), пишет `credentials.toml` атомарно
+с правами 0600 и не логирует ключ; ошибки — `ServerError` с кодом
+(`unknown_provider`, `key_not_needed`, `empty_key`, `bad_key`, `cannot_store`).
 Неотвеченное подтверждение держит поток, как и локально. Рабочий пример:
 `python examples/remote_client.py --fake`.
 

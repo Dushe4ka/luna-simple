@@ -756,3 +756,43 @@ async def test_repl_refuses_a_malformed_key_without_echoing_it(make_ctx, tmp_pat
     assert ctx.config.provider == "ollama"
     assert "printable ASCII" in _out(ctx)
     assert "sk bad key" not in _out(ctx)
+
+
+async def test_repl_notice_says_type_it_below(make_ctx, tmp_path, monkeypatch):
+    _clear_provider_keys(monkeypatch)
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="ollama"),
+        input_fn=lambda p: "",
+        secret_fn=lambda p: "",
+    )
+    await dispatch("/provider anthropic", ctx)
+    out = _out(ctx)
+    assert "нужен ключ для anthropic — введите его ниже (или: luna config set-key anthropic)" in out
+    assert "нет ключа" not in out
+
+
+async def test_one_shot_only_suggests_set_key(make_ctx, tmp_path, monkeypatch):
+    _clear_provider_keys(monkeypatch)
+    ctx = await make_ctx(config=LunaConfig(workdir=str(tmp_path), provider="ollama"))
+    await dispatch("/provider anthropic", ctx)
+    out = _out(ctx)
+    assert "нужен ключ для anthropic — luna config set-key anthropic" in out
+    assert "введите" not in out
+
+
+async def test_repl_without_a_tty_refuses_instead_of_echoing(make_ctx, tmp_path, monkeypatch):
+    import getpass
+    import sys
+
+    from luna.config.credentials import credentials_path
+
+    _clear_provider_keys(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(getpass, "getpass", lambda p: pytest.fail("getpass would echo"))
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="ollama"), input_fn=lambda p: ""
+    )
+    await dispatch("/provider anthropic", ctx)
+    assert not credentials_path().exists()
+    assert ctx.config.provider == "ollama"
+    assert "скрытый ввод недоступен" in _out(ctx)

@@ -76,6 +76,9 @@ class KeyModal(ModalScreen[bool]):
         except ServerError as exc:
             self._show_error(readable(exc))
             return
+        except Exception:  # noqa: BLE001 - a crash report (show_locals) could print the key
+            self._show_error("Не удалось сохранить ключ. Попробуйте ещё раз или нажмите Esc.")
+            return
         finally:
             self._saving = False
         field.value = ""

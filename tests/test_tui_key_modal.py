@@ -19,7 +19,7 @@ def _res(**kw):
 
 
 NEED = _res(
-    notices=[{"level": "warn", "text": "нет ключа для anthropic"}],
+    notices=[{"level": "dim", "text": "нужен ключ для anthropic — luna config set-key anthropic"}],
     effects={
         "need_key": {
             "provider": "anthropic",
@@ -150,3 +150,35 @@ def test_new_credential_error_codes_read_in_russian():
         "Ключ содержит недопустимые символы: только печатные ASCII без пробелов."
     )
     assert readable(ServerError("HTTP 413: too_large", 413)) == "Ключ слишком длинный."
+
+
+async def test_transcript_notice_is_neutral_and_points_at_the_window():
+    app = _app(_client())
+    async with app.run_test(size=(130, 36)) as pilot:
+        chat = await _open_modal(app, pilot)
+        rows = [(r.level, r.text) for r in chat.query(NoticeRow)]
+        assert rows == [
+            (
+                "dim",
+                "нужен ключ для anthropic — введите его в окне "
+                "(или: luna config set-key anthropic)",
+            )
+        ]
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+
+async def test_an_unexpected_save_failure_is_a_generic_inline_error():
+    client = _client()
+    client.set_key_error = RuntimeError(f"boom {SECRET}")
+    app = _app(client)
+    async with app.run_test(size=(130, 36)) as pilot:
+        await _open_modal(app, pilot)
+        await pilot.press(*SECRET, "enter")
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, KeyModal)
+        error = str(app.screen.query_one("#key-error", Static).render())
+        assert error == "Не удалось сохранить ключ. Попробуйте ещё раз или нажмите Esc."
+        assert SECRET not in _everything_shown(app)
+        await pilot.press("escape")
+        await pilot.pause(0.2)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import getpass
 import inspect
 import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -29,6 +30,7 @@ from luna.core.session_state import SessionState, SessionStateStore
 from luna.core.store import conversations
 from luna.repl import usercmd
 from luna.repl.setup_wizard import choose_model
+from luna.turn.engine import Notice
 from luna.ui.interact import arrow_confirm, arrow_pick, in_thread
 from luna.ui.theme import PALETTE
 
@@ -261,34 +263,55 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
     """Read a missing API key with hidden input, store it, then redo the switch.
 
     The key never goes through the command line, the console or the history.
+    Without a terminal ``getpass`` would echo the key, so the REPL refuses.
     """
     provider = need["provider"]
+    secret_fn = ctx.secret_fn
+    if secret_fn is None:
+        if not sys.stdin.isatty():
+            ctx.console.print(
+                f"скрытый ввод недоступен (stdin не терминал) — luna config set-key {provider}",
+                style=_STYLE["warn"],
+                markup=False,
+            )
+            return DispatchResult()
+        secret_fn = getpass.getpass
     ctx.console.print(
         f"{need['env_var']} · хранится в {need['path']} (права 0600)", style="dim", markup=False
     )
     ctx.console.print(need["hint"], style="dim", markup=False)
-    secret_fn = ctx.secret_fn or getpass.getpass
+    key = None
     try:
-        key = await in_thread(secret_fn, f"{need['env_var']} (ввод скрыт, Ctrl-C — отмена): ")
-    except (KeyboardInterrupt, EOFError):
-        ctx.console.print("ввод ключа отменён", style="dim", markup=False)
-        return DispatchResult()
-    key = key.strip()
-    if not key:
-        ctx.console.print("пустой ключ — ничего не сохранено", style="dim", markup=False)
-        return DispatchResult()
-    try:
-        set_api_key(provider, key, registry=merge_providers(ctx.config.custom_providers))
-    except LunaConfigError as exc:
-        ctx.console.print(str(exc), style=_STYLE["error"], markup=False)
-        return DispatchResult()
-    del key
+        try:
+            key = await in_thread(secret_fn, f"{need['env_var']} (ввод скрыт, Ctrl-C — отмена): ")
+        except (KeyboardInterrupt, EOFError):
+            ctx.console.print("ввод ключа отменён", style="dim", markup=False)
+            return DispatchResult()
+        if not key.strip():
+            ctx.console.print("пустой ключ — ничего не сохранено", style="dim", markup=False)
+            return DispatchResult()
+        try:
+            set_api_key(provider, key, registry=merge_providers(ctx.config.custom_providers))
+        except LunaConfigError as exc:
+            ctx.console.print(str(exc), style=_STYLE["error"], markup=False)
+            return DispatchResult()
+        except Exception:  # noqa: BLE001 - a traceback could show the key
+            ctx.console.print("не удалось сохранить ключ", style=_STYLE["error"], markup=False)
+            return DispatchResult()
+    finally:
+        del key
     ctx.console.print(f"ключ для {provider} сохранён", style=_STYLE["info"], markup=False)
     return await dispatch(f"/provider {provider}", ctx)
 
 
 async def _render(result, ctx: CommandContext) -> DispatchResult:
-    for notice in result.notices:
+    need = result.effects.get("need_key")
+    notices = result.notices
+    if need and ctx.input_fn is not None:
+        provider = need["provider"]
+        text = f"нужен ключ для {provider} — введите его ниже (или: luna config set-key {provider})"
+        notices = [Notice("dim", text)]
+    for notice in notices:
         ctx.console.print(notice.text, style=_STYLE.get(notice.level, ""), markup=False)
     if result.text:
         ctx.console.print(result.text, markup=False)
@@ -311,7 +334,6 @@ async def _render(result, ctx: CommandContext) -> DispatchResult:
             ctx.console.print(f"[dim]{result.confirm.cancelled}[/]")
             return out
         return await dispatch(result.confirm.resubmit, ctx)
-    need = result.effects.get("need_key")
     if need and ctx.input_fn is not None:
         return await _collect_key(need, ctx)
     if result.prompt is not None:

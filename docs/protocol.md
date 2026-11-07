@@ -295,51 +295,54 @@ answers `effects: {"session": "<new id>"}` — the client switches to it.
         "confirm": null, "prompt": null, "effects": {"plan": true}}
 ```
 
-#### Эффект `need_key`
+#### The `need_key` effect
 
-`/provider` без аргумента возвращает `choice` со **всеми** провайдерами
-реестра (встроенные и `[provider.custom.*]`): сначала готовые к работе
-(ключ есть или не нужен), затем те, кому нужен ключ; внутри групп — порядок
-реестра. Значение опции — ключ провайдера, подпись помечает текущего
-(`deepseek  ✓ текущий`) и провайдеров без ключа (`anthropic  · нужен ключ`).
+`/provider` without an argument returns a `choice` listing **every**
+provider of the registry (built-in and `[provider.custom.*]`): ready ones
+first (a key is set or none is needed), then the ones that need a key;
+registry order inside each group. An option's value is the provider key;
+its label marks the current provider (`deepseek  ✓ текущий`) and the
+providers without a key (`anthropic  · нужен ключ`).
 
-`/provider <key>` для провайдера, которому нужен ключ, а ключа нет (ни в
-переменной окружения, ни в `credentials.toml`), не переключает провайдера и
-отвечает предупреждением плюс эффектом:
+`/provider <key>` for a provider that needs a key and has none (neither in
+its environment variable nor in `credentials.toml`) does not switch. It
+answers a neutral `dim` notice suggesting `luna config set-key` (enough for
+a client that cannot ask) and an effect:
 
 ```json
-← 200 {"text": "", "notices": [{"level": "warn", "text": "нет ключа для anthropic — …"}],
+← 200 {"text": "", "notices": [{"level": "dim", "text": "нужен ключ для anthropic — luna config set-key anthropic"}],
         "choice": null, "confirm": null, "prompt": null,
         "effects": {"need_key": {"provider": "anthropic", "env_var": "ANTHROPIC_API_KEY",
                                  "hint": "Где взять ключ: https://console.anthropic.com/settings/keys",
                                  "path": "~/.config/luna/credentials.toml"}}}
 ```
 
-Клиент спрашивает ключ скрытым вводом, отправляет его через
-`POST /credentials` и повторяет `/provider <key>`. **Ключ никогда не
-передаётся строкой команды**: строка команды попадает в транскрипт, журнал
-событий и историю.
+An interactive client asks for the key with masked input (it may replace
+the notice with its own wording), sends it with `POST /credentials` and
+re-runs `/provider <key>`. **The key is never sent as a command line**: a
+command line lands in the transcript, the event log and the history.
 
 ### `POST /credentials`
 
-Сохраняет API-ключ провайдера в `credentials.toml` каталога конфигурации
-сервера (права `0600`, как `luna config set-key`). Ключ не экспортируется в
-`os.environ` и нигде не логируется; ответы об ошибках содержат только код.
-Следующее переключение на этого провайдера (`/provider <key>`) собирает
-агента уже с новым ключом. `workdir` проверяется на доверие, как в
-остальных маршрутах, и нужен, чтобы видеть пользовательских провайдеров
-проекта (`.luna.toml`).
+Stores a provider's API key in the server's `credentials.toml` (mode
+`0600`, the same file as `luna config set-key`). The file is replaced
+atomically under an inter-process lock. The key is not exported to
+`os.environ` and never logged; error answers carry only a code. The next
+switch to that provider (`/provider <key>`) builds the agent with the new
+key. `workdir` is trust-checked like on every other route and is needed to
+see the project's custom providers (`.luna.toml`).
 
 ```json
 → POST /credentials {"workdir": "/repo", "provider": "anthropic", "key": "sk-ant-…"}
 ← 200 {"ok": true, "provider": "anthropic"}
 ```
 
-Ключ очищается от пробелов по краям. Ошибки (`400`): `bad_request`
-(тело не JSON-объект, `provider`/`key` не строки), `unknown_provider`,
-`key_not_needed` (провайдеру ключ не нужен, например `ollama`),
-`empty_key`; `500 cannot_store` — файл не удалось записать. Без
-bearer-токена — `401`, как у всех маршрутов.
+Surrounding whitespace is stripped. Errors: `400 bad_request` (the body is
+not a JSON object, `provider`/`key` are not strings), `400 unknown_provider`,
+`400 key_not_needed` (e.g. `ollama`), `400 empty_key`, `400 bad_key` (only
+printable ASCII without spaces is accepted), `413 too_large` (body over
+8 KiB), `500 cannot_store`. Without the bearer token: `401`, as on every
+route.
 
 ### `POST /sessions/{id}/background`
 

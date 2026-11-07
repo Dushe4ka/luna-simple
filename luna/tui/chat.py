@@ -539,7 +539,16 @@ class ChatPane(Widget):
 
     async def _render_command_result(self, result: dict) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
-        for notice in result.get("notices", []):
+        notices = result.get("notices", [])
+        need = (result.get("effects") or {}).get("need_key")
+        if need:
+            provider = need["provider"]
+            text = (
+                f"нужен ключ для {provider} — введите его в окне "
+                f"(или: luna config set-key {provider})"
+            )
+            notices = [{"level": "dim", "text": text}]
+        for notice in notices:
             await transcript.mount(NoticeRow(notice["level"], notice["text"]))
         if result.get("text"):
             await transcript.mount(SystemMessage(result["text"]))
