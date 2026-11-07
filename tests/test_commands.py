@@ -740,3 +740,19 @@ async def test_repl_key_prompt_cancel_or_empty_keeps_everything(
     assert not credentials_path().exists()
     assert ctx.config.provider == "ollama"
     assert "отмен" in _out(ctx) or "пуст" in _out(ctx)
+
+
+async def test_repl_refuses_a_malformed_key_without_echoing_it(make_ctx, tmp_path, monkeypatch):
+    from luna.config.credentials import credentials_path
+
+    _clear_provider_keys(monkeypatch)
+    ctx = await make_ctx(
+        config=LunaConfig(workdir=str(tmp_path), provider="ollama"),
+        input_fn=lambda p: "",
+        secret_fn=lambda p: "sk bad key",
+    )
+    await dispatch("/provider anthropic", ctx)
+    assert not credentials_path().exists()
+    assert ctx.config.provider == "ollama"
+    assert "printable ASCII" in _out(ctx)
+    assert "sk bad key" not in _out(ctx)

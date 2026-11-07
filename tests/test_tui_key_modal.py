@@ -141,3 +141,12 @@ async def test_server_error_is_shown_inline_in_russian_and_modal_stays():
         assert client.command_lines == ["/provider anthropic"]
         await pilot.press("escape")
         await pilot.pause(0.2)
+
+
+def test_new_credential_error_codes_read_in_russian():
+    from luna.tui.errors import readable
+
+    assert readable(ServerError("HTTP 400: bad_key", 400)) == (
+        "Ключ содержит недопустимые символы: только печатные ASCII без пробелов."
+    )
+    assert readable(ServerError("HTTP 413: too_large", 413)) == "Ключ слишком длинный."

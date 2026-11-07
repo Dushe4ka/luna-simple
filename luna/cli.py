@@ -194,7 +194,7 @@ def _run_config(argv: list[str]) -> int:
         set_api_key,
         unset_api_key,
     )
-    from luna.config.providers import merge_providers
+    from luna.config.providers import LunaConfigError, merge_providers
     from luna.ui.console import get_console
 
     console = get_console()
@@ -226,7 +226,11 @@ def _run_config(argv: list[str]) -> int:
     if args.cmd == "set-key":
         registry = merge_providers(load_config({}).custom_providers)
         key = args.api_key or getpass.getpass(f"{args.provider} API key: ")
-        path = set_api_key(args.provider, key, registry=registry)
+        try:
+            path = set_api_key(args.provider, key, registry=registry)
+        except LunaConfigError as exc:
+            print(f"luna: {exc}", file=sys.stderr)
+            return 1
         console.print(f"stored {mask_key(key)} for {args.provider}  ->  {path}")
         return 0
 

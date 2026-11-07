@@ -16,9 +16,26 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from luna.config.config import load_config
-from luna.config.credentials import set_api_key
+from luna.config.credentials import BadApiKeyError, check_api_key, set_api_key
 from luna.config.providers import PROVIDERS, LunaConfigError, merge_providers
 from luna.server.trust import trust_error
+
+#: A key is well under 1 KiB; anything bigger is refused before it is read in full.
+MAX_BODY = 8 * 1024
+
+
+async def _read_capped(request: Request) -> bytes | None:
+    """Return the body, or ``None`` when it exceeds :data:`MAX_BODY`."""
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_BODY:
+        return None
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _error(code: str, status: int = 400) -> JSONResponse:
@@ -36,8 +53,11 @@ def _registry(workdir: str | None) -> dict:
 
 async def post_credentials(request: Request) -> JSONResponse:
     """Validate and store ``{"provider", "key"}``; answer ``{"ok", "provider"}``."""
+    raw = await _read_capped(request)
+    if raw is None:
+        return _error("too_large", 413)
     try:
-        body = json.loads(await request.body())
+        body = json.loads(raw)
     except ValueError:
         return _error("bad_request")
     if not isinstance(body, dict):
@@ -55,11 +75,16 @@ async def post_credentials(request: Request) -> JSONResponse:
         return _error("unknown_provider")
     if not spec.env_var:
         return _error("key_not_needed")
-    key = key.strip()
-    if not key:
+    if not key.strip():
         return _error("empty_key")
     try:
+        key = check_api_key(key)
+    except BadApiKeyError:
+        return _error("bad_key")
+    try:
         await asyncio.to_thread(set_api_key, provider, key, registry=registry)
-    except (LunaConfigError, OSError):
+    except Exception:  # noqa: BLE001 - only a code goes back: a message could quote the key
         return _error("cannot_store", 500)
+    finally:
+        del key
     return JSONResponse({"ok": True, "provider": provider})

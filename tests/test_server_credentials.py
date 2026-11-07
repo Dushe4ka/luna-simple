@@ -1,5 +1,6 @@
 """``POST /credentials``: store an API key out of band (never as command text)."""
 
+import json
 import logging
 import os
 import stat
@@ -51,15 +52,18 @@ async def test_stores_the_key_0600_stripped(tmp_path):
         ("nope", SECRET, "unknown_provider"),
         ("ollama", SECRET, "key_not_needed"),
         ("anthropic", "   ", "empty_key"),
+        ("anthropic", "sk-a\nb", "bad_key"),
+        ("anthropic", "sk a", "bad_key"),
+        ("anthropic", "sk-\ud800", "bad_key"),
         ("anthropic", None, "bad_request"),
         (None, SECRET, "bad_request"),
     ],
 )
 async def test_rejects_bad_input_with_4xx(tmp_path, provider, key, error):
     async with client(make_app()) as c:
-        resp = await c.post(
-            "/credentials", json={"workdir": str(tmp_path), "provider": provider, "key": key}
-        )
+        body = {"workdir": str(tmp_path), "provider": provider, "key": key}
+        # json.dumps escapes a lone surrogate as \\ud800, like any JSON client would
+        resp = await c.post("/credentials", content=json.dumps(body).encode())
     assert resp.status_code == 400
     assert resp.json() == {"error": error}
     assert SECRET not in resp.text
@@ -113,3 +117,24 @@ async def test_key_then_switch_never_leaks_into_logs_events_or_history(tmp_path,
     for path in config_home.rglob("*"):
         if path.is_file() and path.name != "credentials.toml":
             assert SECRET.encode() not in path.read_bytes(), path
+
+
+async def test_oversized_body_is_refused_unread(tmp_path):
+    async with client(make_app()) as c:
+        resp = await _set(c, str(tmp_path), key="k" * 9000)
+    assert resp.status_code == 413
+    assert resp.json() == {"error": "too_large"}
+    assert not credentials_path().exists()
+
+
+async def test_an_unexpected_storage_failure_is_500_without_the_key(tmp_path, monkeypatch):
+    from luna.server import credentials as route
+
+    def boom(*a, **kw):
+        raise RuntimeError(f"boom {SECRET}")
+
+    monkeypatch.setattr(route, "set_api_key", boom)
+    async with client(make_app()) as c:
+        resp = await _set(c, str(tmp_path))
+    assert resp.status_code == 500
+    assert resp.json() == {"error": "cannot_store"}

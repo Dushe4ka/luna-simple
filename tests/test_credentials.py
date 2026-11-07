@@ -115,3 +115,113 @@ def test_credentials_file_is_never_created_world_readable(monkeypatch):
     monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
     path = set_api_key("openai", "sk-secret")
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+# --- the credentials file can never be corrupted or emptied ---------------
+
+
+@pytest.mark.parametrize(
+    "bad", ["a\nb", "a\rb", "a\x00b", "a\x1fb", "a\x7fb", "a b", "a\tb", "ключ"]
+)
+def test_keys_with_control_chars_whitespace_or_non_ascii_are_refused(bad):
+    from luna.config.credentials import BadApiKeyError
+
+    set_api_key("anthropic", "good")
+    with pytest.raises(BadApiKeyError):
+        set_api_key("openai", bad)
+    assert get_api_key("anthropic") == "good"
+    assert get_api_key("openai") is None
+
+
+def test_lone_surrogate_never_empties_the_file():
+    from luna.config.credentials import BadApiKeyError
+
+    set_api_key("anthropic", "good")
+    with pytest.raises(BadApiKeyError):
+        set_api_key("openai", "a\ud800b")
+    assert get_api_key("anthropic") == "good"
+
+
+def test_quote_and_backslash_in_a_key_round_trip():
+    set_api_key("anthropic", 'a"b\\c')
+    assert get_api_key("anthropic") == 'a"b\\c'
+
+
+def test_dotted_custom_provider_name_round_trips():
+    registry = {"my.llm": ProviderSpec("my.llm", "openai_chat", "m", "MY_LLM_KEY", "http://x/v1")}
+    set_api_key("anthropic", "good")
+    set_api_key("my.llm", "k1", registry=registry)
+    assert get_api_key("my.llm") == "k1"
+    assert get_api_key("anthropic") == "good"
+
+
+@pytest.mark.parametrize("name", ["a]\n[b", 'a"b', "a b", ""])
+def test_provider_names_that_could_inject_tables_are_refused(name):
+    registry = {name: ProviderSpec(name, "openai_chat", "m", "X_KEY", "http://x/v1")}
+    with pytest.raises(LunaConfigError):
+        set_api_key(name, "k", registry=registry)
+    assert not credentials_path().exists()
+
+
+def test_a_crash_mid_write_leaves_the_old_file_intact(monkeypatch):
+    from luna.config import credentials
+
+    set_api_key("anthropic", "good")
+
+    def boom(*a, **kw):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(credentials.os, "fsync", boom)
+        with pytest.raises(OSError):
+            set_api_key("openai", "other")
+    assert get_api_key("anthropic") == "good"
+    assert get_api_key("openai") is None
+    assert [
+        p.name
+        for p in credentials_path().parent.iterdir()
+        if "credentials" in p.name and not p.name.endswith(".lock")
+    ] == ["credentials.toml"]
+
+
+def test_concurrent_writers_never_lose_a_key(monkeypatch):
+    import threading
+    import time
+
+    from luna.config import credentials
+
+    real_load = credentials.load_credentials
+
+    def slow_load(env=None):
+        data = real_load(env)
+        time.sleep(0.01)  # widen the read-modify-write window
+        return data
+
+    patch = monkeypatch.context()
+    patch.__enter__().setattr(credentials, "load_credentials", slow_load)
+    names = [f"p{i}" for i in range(12)]
+    registry = {
+        n: ProviderSpec(n, "openai_chat", "m", f"{n.upper()}_KEY", "http://x/v1") for n in names
+    }
+    threads = [
+        threading.Thread(target=set_api_key, args=(n, f"k-{n}"), kwargs={"registry": registry})
+        for n in names
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    patch.__exit__(None, None, None)
+    assert {n: get_api_key(n) for n in names} == {n: f"k-{n}" for n in names}
+
+
+def test_write_does_not_follow_a_symlink(tmp_path):
+    target = tmp_path / "elsewhere.txt"
+    target.write_text('[x]\napi_key = "keep"\n')
+    path = credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    set_api_key("anthropic", "good")
+    assert target.read_text() == '[x]\napi_key = "keep"\n'
+    assert not path.is_symlink()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
