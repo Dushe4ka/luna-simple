@@ -215,13 +215,35 @@ def test_concurrent_writers_never_lose_a_key(monkeypatch):
     assert {n: get_api_key(n) for n in names} == {n: f"k-{n}" for n in names}
 
 
-def test_write_does_not_follow_a_symlink(tmp_path):
-    target = tmp_path / "elsewhere.txt"
+def test_a_stow_style_symlink_is_written_through_to_its_target(tmp_path):
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "credentials.toml"
     target.write_text('[x]\napi_key = "keep"\n')
     path = credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.symlink_to(target)
     set_api_key("anthropic", "good")
-    assert target.read_text() == '[x]\napi_key = "keep"\n'
-    assert not path.is_symlink()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.is_symlink()
+    assert get_api_key("anthropic") == "good" and get_api_key("x") == "keep"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert [p.name for p in dotfiles.iterdir()] == ["credentials.toml"]
+
+
+def test_legacy_nested_tables_are_preserved_not_stringified():
+    from luna.config.credentials import load_credentials
+
+    path = credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[my.llm]\napi_key = "k"\n')
+    set_api_key("anthropic", "good")
+    data = load_credentials()
+    assert data["my"] == {"llm": {"api_key": "k"}}
+    assert data["anthropic"] == {"api_key": "good"}
+
+
+def test_writers_stay_serialized_when_the_lock_file_cannot_be_created(monkeypatch):
+    from luna_core import filelock
+
+    monkeypatch.setattr(filelock, "_open", lambda path: None)
+    test_concurrent_writers_never_lose_a_key(monkeypatch)

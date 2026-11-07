@@ -55,10 +55,12 @@ def write_private(path: Path, text: str) -> None:
     The text is encoded before anything touches the disk, then written to a
     fresh temporary file in the same directory (``mkstemp``: 0600, ``O_EXCL``,
     never follows a symlink), flushed with ``fsync`` and moved over ``path``
-    with ``os.replace``. A failure at any step leaves the old file intact;
-    a symlink at ``path`` is replaced, never written through.
+    with ``os.replace``. A failure at any step leaves the old file intact.
+    A symlinked ``path`` (dotfiles managers such as stow) keeps its link: the
+    replace happens next to the link's real target.
     """
     data = text.encode("utf-8")
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -102,14 +104,36 @@ def get_api_key(provider: str, *, env: Mapping[str, str] | None = None) -> str |
     return key.strip() if isinstance(key, str) and key.strip() else None
 
 
-def _write(data: Mapping[str, Mapping[str, str]], path: Path) -> None:
+def _write(data: Mapping[str, Mapping[str, object]], path: Path) -> None:
     lines: list[str] = []
     for provider, values in data.items():
-        lines.append(f"[{_quote(provider)}]")
-        for key, value in values.items():
-            lines.append(f"{_quote(key)} = {_quote(str(value))}")
-        lines.append("")
+        _emit_table([provider], values, lines)
     write_private(path, "\n".join(lines).rstrip() + "\n")
+
+
+def _emit_table(names: list[str], values: Mapping[str, object], lines: list[str]) -> None:
+    """Write one table and its sub-tables (a legacy ``[my.llm]`` stays nested)."""
+    scalars = [(k, _scalar(v)) for k, v in values.items() if not isinstance(v, dict)]
+    tables = [(k, v) for k, v in values.items() if isinstance(v, dict)]
+    if scalars or not tables:
+        lines.append("[" + ".".join(_quote(n) for n in names) + "]")
+        # a value TOML can hold but we cannot write back (arrays, dates) is dropped
+        lines += [f"{_quote(k)} = {v}" for k, v in scalars if v is not None]
+        lines.append("")
+    for key, sub in tables:
+        _emit_table([*names, key], sub, lines)
+
+
+def _scalar(value: object) -> str | None:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value == value and abs(value) != float("inf"):
+        return repr(value)
+    if isinstance(value, str):
+        return _quote(value)
+    return None
 
 
 def _quote(text: str) -> str:
