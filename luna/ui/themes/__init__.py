@@ -8,9 +8,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from luna.config.config import config_dir
 from luna.ui.colors import _hex_to_rgb, _lerp_rgb, _rgb_to_hex
+
+if TYPE_CHECKING:
+    from rich.theme import Theme as RichTheme
+    from textual.theme import Theme as TextualTheme
 
 TOKENS: tuple[str, ...] = (
     "bg",
@@ -203,3 +208,98 @@ def load_theme(theme_id: str, env: Mapping[str, str] | None = None) -> ThemeSpec
 def theme_warnings() -> list[str]:
     """Warnings collected by the most recent load."""
     return list(_warnings)
+
+
+def resolve(choice: str, *, dark_terminal: bool, env: Mapping[str, str] | None = None) -> ThemeSpec:
+    """Pick the theme for a config choice; ``auto`` follows the terminal background."""
+    themes = _load_all(env)
+    auto_id = "moonlight" if dark_terminal else "daymoon"
+    if choice == AUTO:
+        return themes[auto_id]
+    if choice in themes:
+        return themes[choice]
+    # Appended after _load_all, which clears the warning list at its start.
+    _warnings.append(f"неизвестная тема {choice!r} — используется «Авто»")
+    return themes[auto_id]
+
+
+def rich_color(value: str) -> str:
+    """Map a token value to a rich color: ``ansi_bright_blue`` -> ``bright_blue``."""
+    if value.startswith("ansi_"):
+        return value[len("ansi_") :]
+    return value
+
+
+def rich_theme(spec: ThemeSpec) -> RichTheme:
+    """Build a ``rich`` theme with ``luna.<token>`` and semantic ``luna.*`` styles."""
+    from rich.theme import Theme
+
+    c = {name: rich_color(value) for name, value in spec.tokens.items()}
+    styles = {f"luna.{name}": c[name] for name in TOKENS}
+    styles.update(
+        {
+            "luna.title": f"bold {c['strong']}",
+            "luna.prompt": f"bold {c['primary']}",
+            "luna.tagline": f"italic {c['accent']}",
+            "luna.step": c["primary"],
+            "luna.tool.name": f"bold {c['tool']}",
+            "luna.ok": c["ok"],
+            "luna.warn": c["warn"],
+            "luna.error": c["err"],
+            "luna.diff.add": f"{c['add']} on {c['add_bg']}",
+            "luna.diff.del": f"{c['del']} on {c['del_bg']}",
+            "luna.diff.ctx": c["muted"],
+            "luna.diff.hunk": c["primary"],
+        }
+    )
+    return Theme(styles)
+
+
+def textual_name(spec: ThemeSpec) -> str:
+    """Name under which the theme is registered in Textual."""
+    return f"luna-{spec.id}"
+
+
+def _textual_color(value: str) -> str:
+    return "ansi_default" if value == "default" else value
+
+
+def textual_theme(spec: ThemeSpec) -> TextualTheme:
+    """Build a Textual theme; Textual is imported lazily (REPL must not load it)."""
+    from textual.theme import Theme as TextualTheme
+
+    tk = {k: _textual_color(v) for k, v in spec.tokens.items()}
+    variables = {k.replace("_", "-"): v for k, v in tk.items() if k != "text"}
+    return TextualTheme(
+        name=textual_name(spec),
+        primary=tk["primary"],
+        secondary=tk["accent"],
+        accent=tk["accent"],
+        background=tk["bg"],
+        surface=tk["panel"],
+        panel=tk["panel"],
+        foreground=tk["text"],
+        success=tk["ok"],
+        warning=tk["warn"],
+        error=tk["err"],
+        dark=spec.dark,
+        ansi=spec.ansi,
+        variables=variables,
+    )
+
+
+_active: ThemeSpec | None = None
+
+
+def active() -> ThemeSpec:
+    """Return the theme in use (``moonlight`` until one is set)."""
+    global _active
+    if _active is None:
+        _active = load_theme("moonlight")
+    return _active
+
+
+def set_active(spec: ThemeSpec) -> None:
+    """Make ``spec`` the current theme."""
+    global _active
+    _active = spec

@@ -1,7 +1,20 @@
 import pytest
+from rich.style import Style
 
 from luna.ui import themes
-from luna.ui.themes import BUILTIN_ORDER, TOKENS, available_themes, contrast, load_theme
+from luna.ui.themes import (
+    BUILTIN_ORDER,
+    TOKENS,
+    active,
+    available_themes,
+    contrast,
+    load_theme,
+    resolve,
+    rich_theme,
+    set_active,
+    textual_theme,
+    theme_warnings,
+)
 
 READABLE = ("text", "muted", "strong", "primary", "tool", "code", "ok", "warn", "err", "add", "del")
 
@@ -138,3 +151,55 @@ def test_unreadable_user_dir_keeps_builtins(monkeypatch, tmp_path):
     monkeypatch.setattr("pathlib.Path.glob", boom)
     assert [t.id for t in available_themes()] == list(BUILTIN_ORDER)
     assert themes.theme_warnings()
+
+
+def test_resolve_auto():
+    assert resolve("auto", dark_terminal=True).id == "moonlight"
+    assert resolve("auto", dark_terminal=False).id == "daymoon"
+    assert resolve("daymoon-cb", dark_terminal=True).id == "daymoon-cb"
+
+
+def test_resolve_unknown_falls_back_to_auto():
+    assert resolve("neon", dark_terminal=False).id == "daymoon"
+    assert any("neon" in w for w in theme_warnings())
+
+
+def test_rich_theme_styles():
+    spec = load_theme("moonlight")
+    tokens = spec.tokens
+    styles = rich_theme(spec).styles
+    assert styles["luna.primary"] == Style.parse(tokens["primary"])
+    assert styles["luna.error"] == Style.parse(tokens["err"])
+    assert styles["luna.diff.add"] == Style.parse(f"{tokens['add']} on {tokens['add_bg']}")
+    assert styles["luna.border_subtle"] == Style.parse(tokens["border_subtle"])
+    assert styles["luna.title"] == Style.parse(f"bold {tokens['strong']}")
+    assert styles["luna.primary"] == Style.parse("#a3b5ff")
+
+
+def test_rich_theme_ansi_names():
+    styles = rich_theme(load_theme("ansi-dark")).styles
+    assert styles["luna.primary"] == Style.parse("bright_blue")
+
+
+def test_textual_theme_variables():
+    t = textual_theme(load_theme("daymoon"))
+    assert t.name == "luna-daymoon" and t.dark is False
+    assert t.background == "#f8f7f3" and t.foreground == "#1e2026"
+    assert t.variables["muted"] == "#5f636d"
+    assert t.variables["add-bg"] == "#dcefe0"
+    assert "text" not in t.variables
+
+
+def test_textual_theme_ansi():
+    t = textual_theme(load_theme("ansi-light"))
+    assert t.ansi is True and t.variables["primary"] == "ansi_blue"
+    assert t.background == "ansi_default"
+
+
+def test_active_roundtrip():
+    before = active()
+    try:
+        set_active(load_theme("daymoon"))
+        assert active().id == "daymoon"
+    finally:
+        set_active(before)
