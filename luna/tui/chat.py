@@ -18,6 +18,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
+from textual.worker import WorkerCancelled
 
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
@@ -275,6 +276,8 @@ class ChatPane(Widget):
     ) -> None:
         super().__init__()
         self._workdir = workdir
+        #: Set when a ``theme`` effect was applied (``_pick_theme`` reverts otherwise).
+        self._theme_applied = False
         # Required, not defaulted: the pane must always open on a real
         # thread id resolved by the CLI. Leaving the reactive at its None
         # default made every fresh session address a graph thread literally
@@ -538,6 +541,7 @@ class ChatPane(Widget):
             # the server saved it; this process paints it (its own terminal for "auto")
             self.app.apply_theme_choice(effects["theme"])
             self.app.theme_choice = effects["theme"]
+            self._theme_applied = True
         need = effects.get("need_key")
         if need:
             provider = need["provider"]
@@ -581,14 +585,20 @@ class ChatPane(Widget):
         from luna.ui.theme_picker import theme_options
 
         app = self.app
+        original = app.theme_choice
         modal = ThemeModal(
             theme_options(app.dark_terminal),
-            current=app.theme_choice,
+            current=original,
             on_preview=app.apply_theme_choice,
         )
         picked = await self._ask(modal).wait()
-        if picked is not None:
-            await self._run_command(f"/theme {picked}")
+        if picked is None:
+            return
+        self._theme_applied = False
+        await self._run_command(f"/theme {picked}")
+        if not self._theme_applied:
+            # not saved (server error or a refusal): drop the preview
+            app.apply_theme_choice(original)
 
     async def _collect_key(self, need: dict) -> None:
         """Ask for a missing key in a masked modal, store it, then redo the switch.
@@ -676,7 +686,13 @@ class ChatPane(Widget):
         """Worker body: run the line, surface any unexpected error, release busy."""
         try:
             await self.submit(content, mid_turn=mid_turn)
+        except WorkerCancelled:
+            # a modal's worker was cancelled (the app quits with it open): not an
+            # error to show; asyncio.CancelledError is a BaseException and passes
+            return
         except Exception as exc:  # noqa: BLE001 - shown to the user instead of vanishing
+            if not self.is_mounted:
+                return  # torn down meanwhile: nowhere to show it
             transcript = self.query_one("#transcript", VerticalScroll)
             await transcript.mount(NoticeRow("error", f"{type(exc).__name__}: {exc}"))
             transcript.anchor()

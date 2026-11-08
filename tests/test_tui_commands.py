@@ -401,9 +401,6 @@ async def test_theme_modal_starts_on_the_current_choice():
         items = app.screen.query_one("#picker-list", ListView)
         assert items.highlighted_child.data_value == "daymoon"
         assert app.theme == "luna-daymoon"
-        await pilot.press("escape")
-        await pilot.pause()
-        assert app.theme == "luna-daymoon"
 
 
 async def test_theme_effect_applies_the_theme_in_the_tui():
@@ -415,3 +412,50 @@ async def test_theme_effect_applies_the_theme_in_the_tui():
         await pilot.pause(0.3)
         assert app.theme == "luna-daymoon"
         assert app.theme_choice == "daymoon"
+
+
+async def test_quitting_with_the_theme_modal_open_is_clean():
+    app, client = _theme_app()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_theme_modal(app, pilot)
+        await pilot.press("down")
+        await pilot.pause()
+    assert app.return_code in (None, 0), app.return_code
+    assert client.command_lines == ["/theme"]
+
+
+async def test_a_failed_theme_save_reverts_the_preview():
+    from luna_core.client import ServerError
+
+    app, client = _theme_app()
+    original_run = client.run_command
+
+    async def run_command(session_id, line, workdir):
+        if line == "/theme daymoon":
+            client.command_lines.append(line)
+            raise ServerError("boom", 500)
+        return await original_run(session_id, line, workdir)
+
+    client.run_command = run_command
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_theme_modal(app, pilot)
+        await pilot.press("down", "down", "enter")
+        await pilot.pause(0.3)
+        assert app.theme == "luna-moonlight"
+        assert app.theme_choice == "auto"
+        rows = app.query_one(ChatPane).query(NoticeRow)
+        assert any(r.level == "error" for r in rows)
+    assert client.command_lines == ["/theme", "/theme daymoon"]
+
+
+async def test_a_theme_reply_without_the_effect_reverts_the_preview():
+    app, client = _theme_app()
+    client.command_results["/theme daymoon"] = _res(
+        notices=[{"level": "error", "text": "нет темы 'daymoon'"}]
+    )
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_theme_modal(app, pilot)
+        await pilot.press("down", "down", "enter")
+        await pilot.pause(0.3)
+        assert app.theme == "luna-moonlight"
+        assert app.theme_choice == "auto"
