@@ -23,6 +23,9 @@ class ProviderSpec:
     env_var: str | None
     base_url: str | None = None
     options: dict = field(default_factory=dict)
+    #: declared in a project's ``.luna.toml``: its key never comes from the
+    #: environment (see :func:`resolve_api_key`)
+    project: bool = False
 
     def preset(self) -> Preset:
         """Return the core preset for this spec."""
@@ -42,12 +45,71 @@ PROVIDERS: dict[str, ProviderSpec] = {
 }
 DEFAULT_PROVIDER = "anthropic"
 
+#: Where to get an API key for a built-in provider (shown when one is missing).
+KEY_URLS: dict[str, str] = {
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "openai_chat": "https://platform.openai.com/api-keys",
+    "google": "https://aistudio.google.com/apikey",
+    "gigachat": "https://developers.sber.ru/studio",
+    "yandex": "https://console.yandex.cloud",
+    "mistral": "https://console.mistral.ai/api-keys",
+    "xai": "https://console.x.ai",
+    "groq": "https://console.groq.com/keys",
+    "fireworks": "https://fireworks.ai/account/api-keys",
+    "together": "https://api.together.ai/settings/api-keys",
+    "openrouter": "https://openrouter.ai/keys",
+    "perplexity": "https://www.perplexity.ai/settings/api",
+    "cerebras": "https://cloud.cerebras.ai",
+}
+
+
+def key_hint(provider: str) -> str:
+    """Return a one-line Russian hint on where to get ``provider``'s API key."""
+    url = KEY_URLS.get(provider)
+    return f"Где взять ключ: {url}" if url else "Ключ выдаёт ваш провайдер"
+
 
 def merge_providers(custom: dict[str, ProviderSpec]) -> dict[str, ProviderSpec]:
     """Merge custom providers with the built-ins; a custom entry never shadows a built-in."""
     merged = dict(custom)
     merged.update(PROVIDERS)
     return merged
+
+
+def resolve_api_key(provider: str, spec: ProviderSpec) -> str | None:
+    """Return ``provider``'s key, or ``None`` (also for a keyless provider).
+
+    Built-in and user-config providers: the shell variable ``spec.env_var``,
+    else the credentials file. A project's custom provider (``spec.project``)
+    never reads the environment — a cloned repository could otherwise name
+    ``GITHUB_TOKEN`` or ``AWS_SECRET_ACCESS_KEY`` and send it to its own
+    ``base_url`` — only a key stored under its own name *for the same*
+    ``base_url`` (see :func:`normalize_base_url`).
+    """
+    if not spec.env_var:
+        return None
+    from luna.config.credentials import get_api_key, load_credentials
+
+    if spec.project:
+        # bound to the endpoint it was entered for: another project reusing
+        # the name with its own base_url gets "no key", not this one
+        section = load_credentials().get(provider, {})
+        if section.get("base_url") != normalize_base_url(spec.base_url):
+            return None
+        return get_api_key(provider)
+    return os.environ.get(spec.env_var) or get_api_key(provider)
+
+
+def normalize_base_url(url: str | None) -> str:
+    """Return ``url`` as scheme://host[:port]/path: lowercase, no trailing slash."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit((url or "").strip())
+    host = (parts.hostname or "").lower()
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme.lower()}://{host}{port}{parts.path.rstrip('/')}"
 
 
 def build_provider(
@@ -65,11 +127,7 @@ def build_provider(
         raise LunaConfigError(
             f"Unknown provider {provider!r}. Choose one of: {', '.join(sorted(reg))}."
         )
-    api_key = None
-    if spec.env_var:
-        from luna.config.credentials import get_api_key
-
-        api_key = os.environ.get(spec.env_var) or get_api_key(provider)
+    api_key = resolve_api_key(provider, spec)
     if spec.env_var and not api_key:
         raise LunaConfigError(
             f"No API key for {spec.key}. Run 'luna setup' to configure one, "

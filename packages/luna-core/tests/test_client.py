@@ -45,6 +45,10 @@ class Server:
             return httpx.Response(200, json={"cancelled": True})
         if path == "/sessions/s9/messages":
             return httpx.Response(404, json={"error": "no session s9"})
+        if path == "/credentials":
+            if body.get("provider") == "nope":
+                return httpx.Response(400, json={"error": "unknown_provider"})
+            return httpx.Response(200, json={"ok": True, "provider": body["provider"]})
         if path == "/agents":
             return httpx.Response(
                 200, json={"runs": [{"session_id": "s1", "status": "running"}], "tasks": []}
@@ -160,3 +164,20 @@ async def test_an_answer_missing_its_key_is_a_server_error(call, body):
     with pytest.raises(ServerError, match="malformed"):
         await call(client)
     await client.aclose()
+
+
+async def test_set_key_posts_the_key_in_the_body_only(pair):
+    server, client = pair
+    assert await client.set_key("anthropic", "sk-x", "/w") == {"ok": True, "provider": "anthropic"}
+    method, path, params, body, auth = server.calls[-1]
+    assert (method, path, params, auth) == ("POST", "/credentials", {}, "Bearer tok")
+    assert body == {"provider": "anthropic", "key": "sk-x", "workdir": "/w"}
+
+
+async def test_set_key_error_is_a_server_error_without_the_key(pair):
+    server, client = pair
+    with pytest.raises(ServerError) as info:
+        await client.set_key("nope", "sk-x", "/w")
+    assert info.value.status == 400
+    assert "unknown_provider" in str(info.value)
+    assert "sk-x" not in str(info.value)

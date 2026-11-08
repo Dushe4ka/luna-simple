@@ -87,6 +87,17 @@ def _release(fd: int | None) -> None:
         os.close(fd)
 
 
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock(path: str | Path) -> threading.Lock:
+    """Return the in-process lock for ``path`` (it serializes even without a lock file)."""
+    key = os.path.abspath(path)
+    with _THREAD_LOCKS_GUARD:
+        return _THREAD_LOCKS.setdefault(key, threading.Lock())
+
+
 @contextlib.contextmanager
 def file_lock(path: str | Path) -> Iterator[None]:
     """Hold an exclusive OS lock on ``path`` (created if missing) for the block.
@@ -94,11 +105,12 @@ def file_lock(path: str | Path) -> Iterator[None]:
     Not reentrant: within one process, guard it with a thread lock (see
     :class:`InterProcessRLock`) so the same file is not locked twice.
     """
-    _acquired, fd = _acquire(Path(path), True)
-    try:
-        yield
-    finally:
-        _release(fd)
+    with _thread_lock(path):
+        _acquired, fd = _acquire(Path(path), True)
+        try:
+            yield
+        finally:
+            _release(fd)
 
 
 class InterProcessRLock:

@@ -21,6 +21,7 @@ from textual.widgets.markdown import MarkdownStream
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
 from luna.tui.errors import readable
+from luna.tui.key_modal import KeyModal
 from luna.tui.pickers import ChoiceModal, ConfirmModal
 from luna.tui.status_bar import StatusBar
 from luna.tui.theme import TUI_VARIABLES
@@ -538,7 +539,16 @@ class ChatPane(Widget):
 
     async def _render_command_result(self, result: dict) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
-        for notice in result.get("notices", []):
+        notices = result.get("notices", [])
+        need = (result.get("effects") or {}).get("need_key")
+        if need:
+            provider = need["provider"]
+            text = (
+                f"нужен ключ для {provider} — введите его в окне "
+                f"(или: luna config set-key {provider})"
+            )
+            notices = [{"level": "dim", "text": text}]
+        for notice in notices:
             await transcript.mount(NoticeRow(notice["level"], notice["text"]))
         if result.get("text"):
             await transcript.mount(SystemMessage(result["text"]))
@@ -559,10 +569,41 @@ class ChatPane(Widget):
             reload_after = bool(result.get("effects", {}).get("reload_after_turn"))
             await self._send(result["prompt"], echo=None, reload_after=reload_after)
         effects = result.get("effects") or {}
+        if effects.get("need_key"):
+            await self._collect_key(effects["need_key"])
+            return
         if effects:
             await self.refresh_state()
         if effects.get("session"):
             self.post_message(self.SwitchSession(effects["session"]))
+
+    async def _collect_key(self, need: dict) -> None:
+        """Ask for a missing key in a masked modal, store it, then redo the switch.
+
+        The key goes only to ``client.set_key`` — never into a command line,
+        the transcript, a toast or this pane's state.
+        """
+        provider = need["provider"]
+
+        async def save(key: str) -> None:
+            await self.app.client.set_key(provider, key, self._workdir)
+
+        if not await self._ask(KeyModal(need, save)).wait():
+            transcript = self.query_one("#transcript", VerticalScroll)
+            await transcript.mount(NoticeRow("dim", "ввод ключа отменён"))
+            transcript.anchor()
+            return
+        line = f"/provider {provider}"
+        try:
+            result = await self.app.client.run_command(self.thread_id, line, self._workdir)
+        except ServerError as exc:
+            self.notify(f"Ключ сохранён. {readable(exc)}", severity="warning", markup=False)
+            return
+        if (result.get("effects") or {}).get("provider") == provider:
+            self.notify(f"Ключ сохранён, провайдер → {provider}", markup=False)
+        else:
+            self.notify("Ключ сохранён", markup=False)
+        await self._render_command_result(result)
 
     def _help_markdown(self) -> str:
         groups = {

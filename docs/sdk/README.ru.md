@@ -1293,11 +1293,34 @@ asyncio.run(main())
 
 Методы `LunaClient`: `health`, `list_sessions`, `create_session`, `delete_session`,
 `history`, `state`, `send` (SSE-поток словарей), `decide`, `cancel`, `commands`,
-`run_command`, `background`, `agents`, `attach(session_id, after=-1)` (подключение
+`run_command`, `set_key(provider, key, workdir)` (сохранить API-ключ провайдера через
+`POST /credentials` — ключ идёт только в теле запроса), `background`, `agents`, `attach(session_id, after=-1)` (подключение
 к фоновому запуску с повтором пропущенного), `aclose`. Ошибки HTTP и недоступность
 сервера это `luna_core.client.ServerError` (подкласс `LunaCoreError`); ответ или
 строка `data:` в SSE, которые не являются JSON-объектом, тоже дают `ServerError`
 («malformed …»), а не `JSONDecodeError`.
+
+**Ключ провайдера из клиента.** `run_command(sid, "/provider anthropic", wd)` для
+провайдера без ключа не переключает его, а возвращает `effects["need_key"]` —
+`{"provider", "env_var", "hint", "path"}` (переменная окружения, где взять ключ,
+куда он сохранится). Клиент спрашивает ключ скрытым вводом и вызывает
+`await client.set_key("anthropic", key, wd)` (`POST /credentials`), затем повторяет
+`/provider anthropic`. Ключ никогда не передаётся строкой команды — она попадает в
+транскрипт, журнал событий и историю. Сервер принимает только печатные ASCII без
+пробелов (`bad_key`), тело до 8 КиБ (`too_large`), пишет `credentials.toml` атомарно
+с правами 0600 и не логирует ключ; ошибки — `ServerError` с кодом
+(`unknown_provider`, `key_not_needed`, `empty_key`, `bad_key`, `cannot_store`).
+
+Свои провайдеры из проектного `.luna.toml` (`ProviderSpec.project == True`)
+никогда не читают ключ из окружения: `luna.config.providers.resolve_api_key`
+для них смотрит только `credentials.toml` под именем провайдера и только если
+сохранённый рядом `base_url` совпадает с адресом провайдера
+(`normalize_base_url`: схема и хост в нижнем регистре, порт, путь без `/` в
+конце). Поэтому до ввода ключа они «нуждаются в ключе»; в `need_key` у них
+`env_var: null` и `hint: "ключ для <хост>"`. `set_api_key` для проектного
+провайдера сам записывает `base_url` рядом с `api_key`.
+Провайдеры из пользовательского `config.toml` берут ключ как встроенные —
+из своей переменной окружения, иначе из `credentials.toml`.
 Неотвеченное подтверждение держит поток, как и локально. Рабочий пример:
 `python examples/remote_client.py --fake`.
 

@@ -61,6 +61,8 @@
   - `turns.py` — `/messages`, `/background`, `/events`, `/approve`,
     `/cancel`, `/agents`, история
   - `commands.py` — `/command`, `/commands`, `/state`
+  - `credentials.py` — `POST /credentials`: сохранить API-ключ провайдера (0600),
+    ключ не идёт строкой команды и не логируется
   - `run.py` — жизненный цикл процесса сервера (`ensure_running`),
     `make_session_build` (свой агент на каждую сессию) и `luna serve`
 - `luna/tui/` — полноэкранный клиент на `Textual` поверх `luna/server/`
@@ -82,6 +84,8 @@
     каталога, клик постит `SessionSelected`
   - `sidebar_activity.py` — правый сайдбар: live-список инструментов,
     выполняющихся в текущем ходе
+  - `key_modal.py` — скрытый ввод API-ключа по эффекту `need_key` команды
+    `/provider` (сохранение через `LunaClient.set_key`)
   - `approval_modal.py` — модальный диалог подтверждения мутирующих
     действий (approve/always/edit/reject) взамен блокирующего REPL-промпта
   - `status_bar.py` — нижняя строка статуса: модель, стоимость,

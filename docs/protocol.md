@@ -98,6 +98,7 @@ an absolute, trusted project path.
 | POST | `/sessions/{id}/command` | `{"workdir", "line"}` | command result JSON |
 | POST | `/sessions/{id}/background` | `{"workdir", "content", "images"?, "reload_after"?}` | run info |
 | GET | `/agents` | — | `{"runs": [...], "tasks": [...]}` |
+| POST | `/credentials` | `{"workdir", "provider", "key"}` | `{"ok": true, "provider"}` |
 | GET | `/sessions/{id}/events` | `?after=` | SSE: buffered then live events of a background run |
 
 `/approve`, `/cancel` and `/events` carry no `workdir`: they act only on a
@@ -293,6 +294,64 @@ answers `effects: {"session": "<new id>"}` — the client switches to it.
 ← 200 {"text": "", "notices": [{"level": "info", "text": "plan mode: on"}], "choice": null,
         "confirm": null, "prompt": null, "effects": {"plan": true}}
 ```
+
+#### The `need_key` effect
+
+`/provider` without an argument returns a `choice` listing **every**
+provider of the registry (built-in and `[provider.custom.*]`): ready ones
+first (a key is set or none is needed), then the ones that need a key;
+registry order inside each group. An option's value is the provider key;
+its label marks the current provider (`deepseek  ✓ текущий`) and the
+providers without a key (`anthropic  · нужен ключ`). A custom provider from
+the project's `.luna.toml` is labelled with its host
+(`myproxy  · из проекта (api.example.com) · нужен ключ`): its key never comes
+from the environment, only from `credentials.toml` under its own name and only
+when the `base_url` stored with it (normalised: lowercase scheme and host,
+port, path without a trailing slash) equals the provider's. So another project
+reusing the name with a different endpoint gets `need_key`, never the key. Its
+`need_key` has `"env_var": null` and `"hint": "ключ для <host>"`;
+`POST /credentials` for it stores the binding. Skipped project entries come as `warn`
+notices.
+
+`/provider <key>` for a provider that needs a key and has none (neither in
+its environment variable nor in `credentials.toml`) does not switch. It
+answers a neutral `dim` notice suggesting `luna config set-key` (enough for
+a client that cannot ask) and an effect:
+
+```json
+← 200 {"text": "", "notices": [{"level": "dim", "text": "нужен ключ для anthropic — luna config set-key anthropic"}],
+        "choice": null, "confirm": null, "prompt": null,
+        "effects": {"need_key": {"provider": "anthropic", "env_var": "ANTHROPIC_API_KEY",
+                                 "hint": "Где взять ключ: https://console.anthropic.com/settings/keys",
+                                 "path": "~/.config/luna/credentials.toml"}}}
+```
+
+An interactive client asks for the key with masked input (it may replace
+the notice with its own wording), sends it with `POST /credentials` and
+re-runs `/provider <key>`. **The key is never sent as a command line**: a
+command line lands in the transcript, the event log and the history.
+
+### `POST /credentials`
+
+Stores a provider's API key in the server's `credentials.toml` (mode
+`0600`, the same file as `luna config set-key`). The file is replaced
+atomically under an inter-process lock. The key is not exported to
+`os.environ` and never logged; error answers carry only a code. The next
+switch to that provider (`/provider <key>`) builds the agent with the new
+key. `workdir` is trust-checked like on every other route and is needed to
+see the project's custom providers (`.luna.toml`).
+
+```json
+→ POST /credentials {"workdir": "/repo", "provider": "anthropic", "key": "sk-ant-…"}
+← 200 {"ok": true, "provider": "anthropic"}
+```
+
+Surrounding whitespace is stripped. Errors: `400 bad_request` (the body is
+not a JSON object, `provider`/`key` are not strings), `400 unknown_provider`,
+`400 key_not_needed` (e.g. `ollama`), `400 empty_key`, `400 bad_key` (only
+printable ASCII without spaces is accepted), `413 too_large` (body over
+8 KiB), `500 cannot_store`. Without the bearer token: `401`, as on every
+route.
 
 ### `POST /sessions/{id}/background`
 

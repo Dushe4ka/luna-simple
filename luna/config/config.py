@@ -83,6 +83,8 @@ class LunaConfig:
     hooks: list[dict] = field(default_factory=list)
     ignored_extra: bool = False
     custom_providers: dict[str, ProviderSpec] = field(default_factory=dict)
+    #: non-fatal problems (skipped project entries), shown by ``/provider``
+    warnings: list[str] = field(default_factory=list)
 
 
 def _load_toml(path: Path) -> dict:
@@ -95,7 +97,8 @@ def _load_toml(path: Path) -> dict:
         raise LunaConfigError(f"Cannot read config {path}: {exc}") from exc
 
 
-def _apply_toml(data: dict, into: dict) -> None:
+def _apply_toml(data: dict, into: dict, *, project: bool = False) -> None:
+    """Apply one TOML layer; ``project`` marks the project's ``.luna.toml``."""
     model = data.get("model", {})
     if "provider" in model:
         into["provider"] = model["provider"]
@@ -149,9 +152,22 @@ def _apply_toml(data: dict, into: dict) -> None:
 
     provider = data.get("provider", {})
     if isinstance(provider.get("custom"), dict):
-        into["custom_providers"] = {
-            k: dict(v) for k, v in provider["custom"].items() if isinstance(v, dict)
-        }
+        custom = dict(into.get("custom_providers", {}))
+        warnings = into.setdefault("warnings", [])
+        for name, fields in provider["custom"].items():
+            if not isinstance(fields, dict):
+                if project:
+                    warnings.append(f".luna.toml: [provider.custom.{name}] skipped: not a table.")
+                continue
+            if project and name in custom and not custom[name].get("_project"):
+                # a cloned repository must not re-point the user's own provider
+                warnings.append(
+                    f".luna.toml: [provider.custom.{name}] skipped: the user config "
+                    "already defines a provider with this name."
+                )
+                continue
+            custom[name] = {**fields, "_project": project}
+        into["custom_providers"] = custom
 
 
 def _validate_hook(index: int, entry: dict) -> None:
@@ -196,21 +212,26 @@ def load_config(
 
     merged: dict = {}
     _apply_toml(_load_toml(config_path(env)), merged)
-    _apply_toml(_load_toml(cwd_path / ".luna.toml"), merged)
+    _apply_toml(_load_toml(cwd_path / ".luna.toml"), merged, project=True)
     _apply_env(env, merged)
 
     for key, value in (cli_overrides or {}).items():
         if value is not None:
             merged[key] = value
 
+    warnings: list[str] = list(merged.get("warnings", []))
     custom_providers: dict[str, ProviderSpec] = {}
     for name, fields in merged.get("custom_providers", {}).items():
+        project = bool(fields.get("_project"))
         base_url = fields.get("base_url")
         env_var = fields.get("env_var")
         if not base_url:
-            raise LunaConfigError(
-                f"Custom provider {name!r} needs base_url in [provider.custom.{name}]."
-            )
+            message = f"Custom provider {name!r} needs base_url in [provider.custom.{name}]."
+            if not project:
+                raise LunaConfigError(message)
+            # a broken project entry must not make the whole folder unusable
+            warnings.append(f".luna.toml: {message} Skipped.")
+            continue
         custom_providers[name] = ProviderSpec(
             key=name,
             api="openai_chat",
@@ -219,6 +240,7 @@ def load_config(
             # API key at all — same as the built-in ``ollama`` provider.
             env_var=env_var or None,
             base_url=base_url,
+            project=project,
         )
 
     registry = merge_providers(custom_providers)
@@ -287,6 +309,7 @@ def load_config(
         execute_pass_env=tuple(pass_env),
         hooks=hooks,
         ignored_extra=bool(merged.get("ignored_extra", False)),
+        warnings=warnings,
         custom_providers=custom_providers,
     )
 

@@ -169,6 +169,16 @@ def test_config_set_key_and_show(capsys):
     assert "key.deepseek" in capsys.readouterr().out
 
 
+def test_config_set_key_refuses_a_malformed_key(capsys):
+    from luna.config.credentials import get_api_key
+
+    assert main(["config", "set-key", "deepseek", "dsk-good"]) == 0
+    assert main(["config", "set-key", "openai", "sk bad"]) == 1
+    err = capsys.readouterr().err
+    assert "printable ASCII" in err and "sk bad" not in err
+    assert get_api_key("deepseek") == "dsk-good"
+
+
 def test_config_set_value(capsys):
     assert main(["config", "set", "model.provider", "openai"]) == 0
     from luna.config.config import load_config

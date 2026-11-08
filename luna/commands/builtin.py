@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 from luna_core.errors import LunaCoreError, ProviderError
 from luna_core.events import Compacted
@@ -11,15 +10,13 @@ from luna_core.loop import readable_error
 
 from luna.commands.base import Choice, CommandResult, Confirm
 from luna.commands.registry import register, register_ui
-from luna.config.credentials import get_api_key
-from luna.config.providers import LunaConfigError, merge_providers
+from luna.config.providers import LunaConfigError, key_hint, merge_providers, resolve_api_key
 from luna.turn.engine import Notice
 from luna.turn.verify import run_verify
 
 
 def _api_key(provider: str, spec) -> str | None:
-    key = os.environ.get(spec.env_var) if spec.env_var else None
-    return key or (get_api_key(provider) if spec.env_var else None)
+    return resolve_api_key(provider, spec)
 
 
 def _models_for(cfg) -> list[str]:
@@ -409,26 +406,65 @@ async def _model(env, arg):
     return CommandResult(notices=[Notice("info", f"model → {arg}")], effects={"model": arg})
 
 
+def _host(url: str | None) -> str:
+    """Return the host of ``url`` for a picker label (the URL itself if it has none)."""
+    from urllib.parse import urlsplit
+
+    return urlsplit(url or "").hostname or (url or "?")
+
+
+def _need_key(provider: str, spec) -> CommandResult:
+    """Ask the client to collect ``provider``'s key (never as command text)."""
+    from pathlib import Path
+
+    from luna.config.credentials import credentials_path
+
+    path = credentials_path()
+    try:
+        shown = f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        shown = str(path)
+    return CommandResult(
+        notices=[Notice("dim", f"нужен ключ для {provider} — luna config set-key {provider}")],
+        effects={
+            "need_key": {
+                "provider": provider,
+                # a project provider's key never comes from a variable
+                "env_var": None if spec.project else spec.env_var,
+                "hint": f"ключ для {_host(spec.base_url)}" if spec.project else key_hint(provider),
+                "path": shown,
+            }
+        },
+    )
+
+
 @register("/provider", "show or switch the provider (/provider <key>)", "mutate")
 async def _provider(env, arg):
     registry = merge_providers(env.config.custom_providers)
     if not arg:
-        current = Notice("dim", f"provider: {env.config.provider}")
-        usable = [k for k, spec in registry.items() if not spec.env_var or _api_key(k, spec)]
-        if not usable:
-            hint = Notice("dim", "нет провайдеров с ключом — luna config set-key <провайдер>")
-            return CommandResult(notices=[current, hint])
+        current = env.config.provider
+        ready = {k: not spec.env_var or bool(_api_key(k, spec)) for k, spec in registry.items()}
+        options = []
+        for key in sorted(registry, key=lambda k: not ready[k]):  # stable: registry order kept
+            label = key + ("  ✓ текущий" if key == current else "")
+            tags = []
+            if getattr(registry[key], "project", False):
+                tags.append(f"из проекта ({_host(registry[key].base_url)})")
+            if not ready[key] and key != current:
+                tags.append("нужен ключ")
+            if tags:
+                label += "  · " + " · ".join(tags)
+            options.append((key, label))
+        warnings = [Notice("warn", w) for w in getattr(env.config, "warnings", [])]
         return CommandResult(
-            notices=[current],
-            choice=Choice("Провайдер", [(k, k) for k in usable], "/provider {value}"),
+            notices=[Notice("dim", f"provider: {current}"), *warnings],
+            choice=Choice("Провайдер", options, "/provider {value}"),
         )
     if arg not in registry:
         return CommandResult(notices=[Notice("error", f"unknown provider {arg!r}")])
     spec = registry[arg]
     if spec.env_var and not _api_key(arg, spec):
-        return CommandResult(
-            notices=[Notice("error", f"no key for {arg}; run: luna config set-key {arg}")]
-        )
+        return _need_key(arg, spec)
     try:
         await env.switch_provider(arg)
     except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the session
