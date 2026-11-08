@@ -39,6 +39,8 @@ _SETTABLE: dict[str, str] = {
     "agent.temperature": "float",
     "agent.max_tokens": "int",
     "ui.splash": "bool",
+    "ui.theme": "str",
+    "ui.motion": "bool",
 }
 
 
@@ -70,6 +72,8 @@ class LunaConfig:
     diagnose_command: str = "auto"
     language: str = ""
     show_splash: bool = True
+    theme: str = "auto"
+    motion: bool = True
     temperature: float | None = None
     max_tokens: int | None = None
     reasoning: str | None = None
@@ -149,6 +153,10 @@ def _apply_toml(data: dict, into: dict, *, project: bool = False) -> None:
     ui = data.get("ui", {})
     if "splash" in ui:
         into["show_splash"] = bool(ui["splash"])
+    if "theme" in ui:
+        into["theme"] = str(ui["theme"])
+    if "motion" in ui:
+        into["motion"] = bool(ui["motion"])
 
     provider = data.get("provider", {})
     if isinstance(provider.get("custom"), dict):
@@ -196,8 +204,20 @@ def _apply_env(env: Mapping[str, str], into: dict) -> None:
         into["model"] = env["LUNA_MODEL"]
     if env.get("LUNA_WORKDIR"):
         into["workdir"] = env["LUNA_WORKDIR"]
+    if env.get("LUNA_THEME"):
+        into["theme"] = env["LUNA_THEME"]
     if "LUNA_YOLO" in env:
         into["yolo"] = env["LUNA_YOLO"].strip().lower() in _TRUTHY
+
+
+def user_setting(dotted: str, env: Mapping[str, str] | None = None) -> object | None:
+    """Return ``dotted`` from the user ``config.toml`` only (no env/project)."""
+    node: object = _load_toml(config_path(env))
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
 
 
 def load_config(
@@ -297,6 +317,8 @@ def load_config(
         diagnose_command=str(merged.get("diagnose_command", "auto")),
         language=str(merged.get("language", "")),
         show_splash=bool(merged.get("show_splash", True)),
+        theme=str(merged.get("theme", "auto")),
+        motion=bool(merged.get("motion", True)),
         temperature=merged.get("temperature"),
         max_tokens=merged.get("max_tokens"),
         reasoning=reasoning,
