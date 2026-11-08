@@ -712,29 +712,47 @@ def _terminal_is_dark(theme: str, *, probe: bool, first_run: bool) -> bool:
     return termbg.parse_colorfgbg(os.environ.get("COLORFGBG")) is not False
 
 
-def _first_run_theme(console, *, dark: bool) -> None:
+def _first_run_theme(console, *, dark: bool) -> str | None:
     """Ask for a theme once, when none is configured yet, and save the answer.
 
     Skipped when ``ui.theme`` is already in the user config or ``LUNA_THEME``
-    is set. ``KeyboardInterrupt`` from the picker propagates (nothing saved).
+    is set. Returns the picked theme id (``None`` when nothing was asked), so
+    the caller applies it for this session even if saving failed.
+    ``KeyboardInterrupt`` from the picker propagates (nothing saved).
     """
     if not _theme_unset():
-        return
+        return None
+    from rich.text import Text
+
     from luna.config.config import set_config_values
     from luna.ui import theme_picker
     from luna.ui.themes import AUTO, available_themes
 
     choice = theme_picker.pick_theme(current=AUTO, dark_terminal=dark)
     if choice is None:
-        return
-    set_config_values({"ui.theme": choice})
+        return None
+    try:
+        set_config_values({"ui.theme": choice})
+    except OSError as exc:
+        if console is not None:
+            console.print(Text(f"не удалось сохранить тему: {exc}", style="luna.warn"))
+        return choice
     if console is None:
-        return
-    from rich.text import Text
+        return choice
 
     titles = {t.id: t.title for t in available_themes()}
     title = "Авто" if choice == AUTO else titles.get(choice, choice)
     console.print(Text(f"тема: {title} · сменить — /theme", style="luna.muted"))
+    return choice
+
+
+def _with_theme(config, theme: str | None):
+    """Return ``config`` with ``theme`` applied for this session (``None`` keeps it)."""
+    if theme is None or config.theme == theme:
+        return config
+    import dataclasses
+
+    return dataclasses.replace(config, theme=theme)
 
 
 def _skip_theme() -> None:
@@ -822,13 +840,14 @@ def _main(raw: list[str]) -> int:
     first_run = interactive and not prompt and _theme_unset()
 
     dark = _terminal_is_dark(config.theme, probe=interactive, first_run=first_run)
+    picked_theme = None
     if first_run:
         try:
-            _first_run_theme(console, dark=dark)
+            picked_theme = _first_run_theme(console, dark=dark)
         except (KeyboardInterrupt, EOFError):
             print()
             return 130
-        config = load_config(_overrides(args))
+        config = _with_theme(load_config(_overrides(args)), picked_theme)
     _apply_theme(config.theme, dark, console)
 
     # Trust gate: only the TUI path asks. `-p` and a piped-stdin REPL are
@@ -850,7 +869,7 @@ def _main(raw: list[str]) -> int:
             except (KeyboardInterrupt, EOFError):
                 print()
                 return 130
-            config = load_config(_overrides(args))
+            config = _with_theme(load_config(_overrides(args)), picked_theme)
         # non-interactive: fall through; build_agent raises the clean error.
 
     if interactive and not prompt:

@@ -15,6 +15,7 @@ from luna.ui.themes import rich_theme as build_rich_theme
 TITLE = "Выберите тему оформления"
 SUBTITLE = "Сменить потом: /theme или luna config set ui.theme …"
 HINT = "↑↓ выбрать · Enter сохранить · Esc — Авто"
+HINT_KEEP = "↑↓ выбрать · Enter сохранить · Esc — оставить"
 PREVIEW_WIDTH = 60
 _ESC_TIMEOUT = 0.05
 _SAMPLE_DIFF = "@@ -1,2 +1,2 @@\n-Luna — простой агнет\n+Luna — простой агент\n для кода"
@@ -83,12 +84,20 @@ def _option_lines(options: list[tuple[str, str]], index: int) -> str:
     return buf.getvalue()
 
 
-def pick_theme(*, current: str, dark_terminal: bool, input=None, output=None) -> str | None:  # noqa: A002
+def pick_theme(
+    *,
+    current: str,
+    dark_terminal: bool,
+    escape_value: str = AUTO,
+    input=None,
+    output=None,
+) -> str | None:
     """Show the picker; return the chosen theme id.
 
     ↑/↓ move and repaint the preview, Enter saves the highlighted theme,
-    Esc means ``auto``, Ctrl+C raises ``KeyboardInterrupt``. The picker is
-    erased from the screen when done. ``input``/``output`` are for tests.
+    Esc returns ``escape_value`` (``auto`` by default), Ctrl+C raises
+    ``KeyboardInterrupt``. The picker is erased from the screen when done.
+    ``input``/``output`` are for tests.
     """
     from prompt_toolkit.application import Application
     from prompt_toolkit.formatted_text import ANSI
@@ -120,7 +129,7 @@ def pick_theme(*, current: str, dark_terminal: bool, input=None, output=None) ->
             + "\n"
             + render_preview(spec_at(index), width)
             + "\n\n"
-            + HINT
+            + (HINT if escape_value == AUTO else HINT_KEEP)
         )
         return ANSI(body)
 
@@ -140,7 +149,7 @@ def pick_theme(*, current: str, dark_terminal: bool, input=None, output=None) ->
 
     @kb.add("escape")
     def _escape(event) -> None:
-        event.app.exit(result=AUTO)
+        event.app.exit(result=escape_value)
 
     @kb.add("c-c")
     def _interrupt(event) -> None:

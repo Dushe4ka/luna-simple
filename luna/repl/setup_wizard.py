@@ -110,11 +110,10 @@ def _pick_theme_interactively(env: Mapping[str, str] | None) -> str | None:
     from luna.ui.theme_picker import pick_theme
     from luna.ui.themes import AUTO
 
-    current = user_setting("ui.theme", env=env)
-    return pick_theme(
-        current=current if isinstance(current, str) else AUTO,
-        dark_terminal=detect_dark(),
-    )
+    saved = user_setting("ui.theme", env=env)
+    current = saved if isinstance(saved, str) else AUTO
+    # Esc keeps what is there: setup must not silently reset a chosen theme.
+    return pick_theme(current=current, dark_terminal=detect_dark(), escape_value=current)
 
 
 def run_setup(
@@ -129,7 +128,7 @@ def run_setup(
 
     ``theme_fn`` asks for the color theme (``None`` answer = keep the current
     one). By default the theme picker runs on a real terminal and the step is
-    skipped otherwise.
+    skipped otherwise; it is always skipped while ``LUNA_THEME`` is set.
     """
     if theme_fn is None and console.is_terminal and sys.stdin.isatty():
         theme_fn = lambda: _pick_theme_interactively(env)  # noqa: E731
@@ -171,7 +170,11 @@ def run_setup(
     model = choose_model(console, input_fn, provider, spec, api_key=resolved_key)
 
     updates = {"model.provider": provider, "model.name": model}
-    theme = theme_fn() if theme_fn is not None else None
+    theme = None
+    if (env if env is not None else os.environ).get("LUNA_THEME"):
+        console.print("[luna.muted]тема задана LUNA_THEME[/]")
+    elif theme_fn is not None:
+        theme = theme_fn()
     if theme is not None:
         updates["ui.theme"] = theme
     config_file = set_config_values(updates, env=env)

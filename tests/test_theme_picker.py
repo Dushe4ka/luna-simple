@@ -13,7 +13,7 @@ from luna.ui.themes import available_themes, load_theme
 _TIMEOUT = 10
 
 
-def _pick(keys, *, current="auto"):
+def _pick(keys, *, current="auto", **kw):
     """Run the picker on a pipe in a thread, so a stuck key never hangs the suite."""
     box = {}
 
@@ -23,7 +23,7 @@ def _pick(keys, *, current="auto"):
             with create_app_session(input=inp, output=DummyOutput()):
                 try:
                     box["value"] = pick_theme(
-                        current=current, dark_terminal=True, input=inp, output=DummyOutput()
+                        current=current, dark_terminal=True, input=inp, output=DummyOutput(), **kw
                     )
                 except BaseException as exc:  # noqa: BLE001 - re-raised in the test thread
                     box["error"] = exc
@@ -89,3 +89,7 @@ def test_preview_lines_are_padded_to_width():
 def test_preview_renders_ansi_themes():
     out = render_preview(load_theme("ansi-dark"), width=40)
     assert "✓" in out
+
+
+def test_escape_value_keeps_the_given_theme():
+    assert _pick("\x1b[B\x1b", current="daymoon", escape_value="daymoon") == "daymoon"

@@ -735,3 +735,20 @@ def test_ctrl_c_in_the_theme_picker_exits_130_without_saving(monkeypatch, tmp_pa
     assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 130
     assert not config_path().exists()
     assert seen == {}
+
+
+def test_first_run_theme_unsaveable_config_still_applies_the_choice(monkeypatch, tmp_path, capsys):
+    from luna.ui.themes import active
+
+    seen = {}
+    cli_mod = _interactive_tui(monkeypatch, seen)
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", lambda **kw: "daymoon")
+
+    def read_only(*a, **k):
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr("luna.config.config.set_config_values", read_only)
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 0
+    assert "не удалось сохранить тему: read-only file system" in capsys.readouterr().out
+    assert seen["theme"] == "daymoon"
+    assert active().id == "daymoon"

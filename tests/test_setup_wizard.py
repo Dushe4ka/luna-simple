@@ -7,6 +7,7 @@ from luna.config import model_discovery
 from luna.config.config import config_path, load_config
 from luna.config.credentials import credentials_path, get_api_key
 from luna.repl.setup_wizard import run_setup
+from luna.ui.theme_picker import pick_theme as real_pick_theme
 
 
 def _console():
@@ -215,3 +216,42 @@ def test_wizard_theme_step_skipped_without_a_terminal():
     from luna.config.config import user_setting
 
     assert user_setting("ui.theme") is None
+
+
+def test_wizard_escape_keeps_an_explicit_theme(monkeypatch):
+    """Esc in ``luna setup`` keeps the saved theme instead of resetting it to auto."""
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from luna.config.config import set_config_values
+
+    set_config_values({"ui.theme": "daymoon"})
+    monkeypatch.delenv("LUNA_THEME", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    seen = {}
+
+    def pick_on_pipe(**kw):
+        seen.update(kw)
+        with create_pipe_input() as inp:
+            inp.send_text("\x1b[B\x1b")  # move away, then Esc
+            return real_pick_theme(**kw, input=inp, output=DummyOutput())
+
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", pick_on_pipe)
+    run_setup(_console(), input_fn=_scripted("2", ""), getpass_fn=_scripted("dsk-live-key"))
+    assert seen["current"] == "daymoon" and seen["escape_value"] == "daymoon"
+    assert load_config({}).theme == "daymoon"
+
+
+def test_wizard_skips_theme_when_luna_theme_is_set(monkeypatch):
+    monkeypatch.setenv("LUNA_THEME", "moonlight")
+    console = _console()
+    run_setup(
+        console,
+        input_fn=_scripted("2", ""),
+        getpass_fn=_scripted("dsk-live-key"),
+        theme_fn=lambda: pytest.fail("theme must not be asked while LUNA_THEME is set"),
+    )
+    from luna.config.config import user_setting
+
+    assert user_setting("ui.theme") is None
+    assert "тема задана LUNA_THEME" in console.file.getvalue()
