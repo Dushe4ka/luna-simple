@@ -880,7 +880,7 @@ async def test_repl_theme_esc_keeps_the_current_theme(make_ctx, monkeypatch, res
 async def test_repl_theme_without_a_terminal_only_names_the_theme(make_ctx, restore_theme):
     ctx = await make_ctx(input_fn=None)
     await dispatch("/theme", ctx)  # the conftest guard fails if the picker opens
-    assert "тема: auto" in ctx.console.file.getvalue()
+    assert "тема: Авто" in ctx.console.file.getvalue()  # the title, not the raw id
 
 
 async def test_repl_theme_with_an_id_applies_it(make_ctx, restore_theme):

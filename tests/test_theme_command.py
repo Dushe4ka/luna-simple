@@ -27,8 +27,7 @@ async def test_theme_is_registered_and_listed_in_help():
 async def test_theme_without_arg_asks():
     result = await run_line("/theme", _Env())
     assert result.effects["pick_theme"]["current"] == "auto"
-    assert result.notices[0].level == "dim"
-    assert "auto" in result.notices[0].text
+    assert result.notices == []  # the picker shows the current choice itself
 
 
 async def test_theme_sets_and_saves():

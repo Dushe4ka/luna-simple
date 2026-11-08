@@ -342,7 +342,6 @@ def _theme_app():
 
     client = FakeLunaClient()
     client.command_results["/theme"] = _res(
-        notices=[{"level": "dim", "text": "тема: auto"}],
         effects={"pick_theme": {"current": "auto"}},
     )
     client.command_results["/theme daymoon"] = _res(
@@ -376,6 +375,7 @@ async def test_theme_modal_previews_live_and_esc_restores():
         await pilot.pause()
         assert app.theme == "luna-moonlight"
         assert app.theme_choice == "auto"
+        assert not app.query_one(ChatPane).query(NoticeRow)  # nothing left behind
     assert client.command_lines == ["/theme"]
 
 

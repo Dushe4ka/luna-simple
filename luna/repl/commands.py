@@ -318,6 +318,14 @@ def _pick_theme(current: str) -> str | None:
         return None
 
 
+def _theme_title(choice: str) -> str:
+    """Return the display title of ``choice`` (``auto`` included), or the id if unknown."""
+    from luna.ui.themes import AUTO, AUTO_TITLE, available_themes
+
+    titles = {AUTO: AUTO_TITLE, **{t.id: t.title for t in available_themes()}}
+    return titles.get(choice, choice)
+
+
 def _apply_theme(choice: str) -> None:
     """Restyle this process's console with ``choice`` (``auto`` follows the terminal)."""
     from luna.ui.console import use_theme
@@ -343,7 +351,12 @@ async def _render(result, ctx: CommandContext) -> DispatchResult:
         ctx.console.print(result.text, markup=False)
     out = DispatchResult()
     pick = effects.get("pick_theme")
-    if pick is not None and ctx.input_fn is not None:
+    if pick is not None and ctx.input_fn is None:
+        # no terminal to pick in: just name the current theme
+        title = await in_thread(_theme_title, pick["current"])
+        ctx.console.print(Text(f"тема: {title}", style=_STYLE["dim"]))
+        return out
+    if pick is not None:
         current = pick["current"]
         picked = await in_thread(_pick_theme, current)
         if picked is not None and picked != current:

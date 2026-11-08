@@ -495,10 +495,8 @@ async def _theme(env, arg):
 
     current = env.config.theme
     if not arg:
-        return CommandResult(
-            notices=[Notice("dim", f"тема: {current}")],
-            effects={"pick_theme": {"current": current}},
-        )
+        # no notice: the picker already shows the current choice (by title)
+        return CommandResult(effects={"pick_theme": {"current": current}})
     titles = {AUTO: AUTO_TITLE}
     titles.update({t.id: t.title for t in await asyncio.to_thread(available_themes)})
     if arg not in titles:
