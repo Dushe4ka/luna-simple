@@ -1,0 +1,25 @@
+title = "Тёмная · цвета терминала"
+dark = true
+ansi = true
+
+[tokens]
+bg = "default"
+panel = "default"
+element = "default"
+border = "ansi_bright_black"
+border_subtle = "ansi_bright_black"
+text = "default"
+muted = "ansi_bright_black"
+strong = "ansi_bright_white"
+primary = "ansi_bright_blue"
+on_primary = "ansi_black"
+accent = "ansi_magenta"
+tool = "ansi_cyan"
+code = "ansi_bright_cyan"
+ok = "ansi_green"
+warn = "ansi_yellow"
+err = "ansi_red"
+add = "ansi_green"
+del = "ansi_red"
+add_bg = "default"
+del_bg = "default"

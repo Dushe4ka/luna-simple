@@ -1,0 +1,25 @@
+title = "Светлая · цвета терминала"
+dark = false
+ansi = true
+
+[tokens]
+bg = "default"
+panel = "default"
+element = "default"
+border = "ansi_bright_black"
+border_subtle = "ansi_bright_black"
+text = "default"
+muted = "ansi_bright_black"
+strong = "ansi_black"
+primary = "ansi_blue"
+on_primary = "ansi_white"
+accent = "ansi_magenta"
+tool = "ansi_cyan"
+code = "ansi_blue"
+ok = "ansi_green"
+warn = "ansi_yellow"
+err = "ansi_red"
+add = "ansi_green"
+del = "ansi_red"
+add_bg = "default"
+del_bg = "default"
