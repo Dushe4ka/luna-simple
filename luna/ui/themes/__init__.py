@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ AUTO_TITLE = "Авто (по фону терминала)"
 _BUILTIN_DIR = Path(__file__).parent
 _LIFT_STEP = 0.05
 _LIFT_MAX_STEPS = 20
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_ANSI_RE = re.compile(r"^(default|ansi_[a-z_]+)$")
 _warnings: list[str] = []
 
 
@@ -74,6 +77,8 @@ def _build(theme_id: str, raw: Mapping, base: Mapping[str, ThemeSpec]) -> ThemeS
     ansi = bool(raw.get("ansi", False))
     parent_id = raw.get("extends")
     if parent_id is not None:
+        if not isinstance(parent_id, str):
+            raise ValueError("extends должен быть строкой")
         parent = base.get(parent_id)
         if parent is None:
             raise ValueError(f"неизвестная база extends={parent_id!r}")
@@ -89,6 +94,11 @@ def _build(theme_id: str, raw: Mapping, base: Mapping[str, ThemeSpec]) -> ThemeS
         if not isinstance(value, str):
             raise ValueError(f"токен {name!r} должен быть строкой")
         tokens[name] = value
+    pattern = _ANSI_RE if ansi else _HEX_RE
+    for name, value in tokens.items():
+        if not pattern.match(value):
+            kind = "ansi_*/default" if ansi else "#rrggbb"
+            raise ValueError(f"токен {name!r}: значение {value!r} не в формате {kind}")
     missing = [name for name in TOKENS if name not in tokens]
     if missing:
         raise ValueError(f"не заданы токены: {', '.join(missing)}")
@@ -159,19 +169,24 @@ def _load_all(env: Mapping[str, str] | None = None) -> dict[str, ThemeSpec]:
         themes[theme_id] = _build(theme_id, raw, themes)
     builtin = dict(themes)
     user_dir = config_dir(env) / "themes"
-    if not user_dir.is_dir():
+    try:
+        paths = sorted(user_dir.glob("*.toml")) if user_dir.is_dir() else []
+    except OSError as exc:
+        _warnings.append(f"темы пользователя: {exc} — пропущены")
         return themes
-    for path in sorted(user_dir.glob("*.toml")):
+    for path in paths:
         theme_id = path.stem
         if theme_id in builtin:
             _warnings.append(f"тема {theme_id}: имя занято встроенной темой, файл пропущен")
             continue
         try:
             spec = _build(theme_id, _read(path), themes)
+            if not spec.ansi:
+                spec = _lift_contrast(spec)
         except (ValueError, OSError) as exc:
             _warnings.append(f"тема {theme_id}: {exc} — пропущена")
             continue
-        themes[theme_id] = spec if spec.ansi else _lift_contrast(spec)
+        themes[theme_id] = spec
     return themes
 
 

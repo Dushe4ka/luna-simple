@@ -97,3 +97,44 @@ def test_low_contrast_user_theme_is_lifted(monkeypatch, tmp_path):
 def test_missing_theme_raises():
     with pytest.raises(KeyError):
         load_theme("nope")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[tokens]\nprimary = "red"\n',
+        '[tokens]\nprimary = "#fff"\n',
+        '[tokens]\nprimary = "#12"\n',
+        "tokens = 5\n",
+        "[tokens]\nprimary = 5\n",
+        "extends = [1]\n",
+        "extends = 7\n",
+        'extends = "ghost"\n',
+        '[tokens]\nbg = "#000000"\n',
+    ],
+)
+def test_bad_user_theme_is_skipped_with_warning(monkeypatch, tmp_path, body):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    if "extends" not in body or body.startswith("[tokens]"):
+        body = (
+            'extends = "moonlight"\n' + body
+            if body.startswith("[tokens]") and "bg" not in body
+            else body
+        )
+    _user_theme(tmp_path, "bad", body)
+    ids = [t.id for t in available_themes()]
+    assert "bad" not in ids
+    assert ids[: len(BUILTIN_ORDER)] == list(BUILTIN_ORDER)
+    assert any("bad" in w for w in themes.theme_warnings())
+
+
+def test_unreadable_user_dir_keeps_builtins(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    _user_theme(tmp_path, "x", 'extends = "moonlight"\n')
+
+    def boom(self, pattern):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("pathlib.Path.glob", boom)
+    assert [t.id for t in available_themes()] == list(BUILTIN_ORDER)
+    assert themes.theme_warnings()
