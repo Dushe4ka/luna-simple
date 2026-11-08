@@ -8,7 +8,7 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
 
     launched = {}
 
-    def fake_run_tui(config, *, workdir, thread_id):
+    def fake_run_tui(config, *, workdir, thread_id, dark_terminal=True):
         launched["called"] = True
         return 0
 
@@ -16,6 +16,7 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
         pytest.fail("run_repl should not be called when interactive")
 
     monkeypatch.setattr(cli_mod, "run_tui", fake_run_tui)
+    monkeypatch.setattr(cli_mod, "_first_run_theme", lambda *a, **k: None)
     monkeypatch.setattr("luna.ui.trust.ensure_trusted", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
     monkeypatch.setattr("luna.core.session.run_repl", fail_run_repl)
@@ -34,6 +35,7 @@ def test_main_launches_tui_when_interactive_and_no_prompt(monkeypatch, tmp_path)
 
 
 def _force_interactive(monkeypatch, cli_mod):
+    monkeypatch.setattr(cli_mod, "_first_run_theme", lambda *a, **k: None)
     monkeypatch.setattr("luna.ui.trust.ensure_trusted", lambda *a, **k: True)
     monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
     monkeypatch.setattr(
@@ -53,7 +55,7 @@ def test_run_tui_receives_the_freshly_generated_start_thread(monkeypatch, tmp_pa
 
     seen = {}
 
-    def fake_run_tui(config, *, workdir, thread_id):
+    def fake_run_tui(config, *, workdir, thread_id, dark_terminal=True):
         seen["workdir"] = workdir
         seen["thread_id"] = thread_id
         return 0
@@ -75,7 +77,7 @@ def test_run_tui_receives_the_thread_resolved_by_resume(monkeypatch, tmp_path):
 
     seen = {}
 
-    def fake_run_tui(config, *, workdir, thread_id):
+    def fake_run_tui(config, *, workdir, thread_id, dark_terminal=True):
         seen["thread_id"] = thread_id
         return 0
 
@@ -165,7 +167,9 @@ def test_tui_gets_an_absolute_workdir_even_when_launched_with_the_default(monkey
     _force_interactive(monkeypatch, cli_mod)
     launched = {}
     monkeypatch.setattr(
-        cli_mod, "run_tui", lambda config, *, workdir, thread_id: launched.update(w=workdir) or 0
+        cli_mod,
+        "run_tui",
+        lambda config, *, workdir, thread_id, dark_terminal=True: launched.update(w=workdir) or 0,
     )
     monkeypatch.chdir(tmp_path)
 

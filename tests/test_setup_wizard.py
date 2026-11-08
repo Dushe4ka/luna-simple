@@ -194,3 +194,24 @@ def test_choose_model_free_text_blank_returns_default(monkeypatch):
         _console(), lambda _p: "", "openai", PROVIDERS["openai"], api_key="sk-test"
     )
     assert result == PROVIDERS["openai"].default_model
+
+
+def test_wizard_saves_the_picked_theme():
+    run_setup(
+        _console(),
+        input_fn=_scripted("2", ""),
+        getpass_fn=_scripted("dsk-live-key"),
+        theme_fn=lambda: "ansi-dark",
+    )
+    assert load_config({}).theme == "ansi-dark"
+
+
+def test_wizard_theme_step_skipped_without_a_terminal():
+    run_setup(
+        _console(),
+        input_fn=_scripted("2", ""),
+        getpass_fn=_scripted("dsk-live-key"),
+    )
+    from luna.config.config import user_setting
+
+    assert user_setting("ui.theme") is None

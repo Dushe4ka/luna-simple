@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import getpass
 import os
+import sys
 from collections.abc import Callable, Mapping
 
 from rich.console import Console
 
 from luna.config import model_discovery
-from luna.config.config import set_config_values
+from luna.config.config import set_config_values, user_setting
 from luna.config.credentials import get_api_key, mask_key, set_api_key
 from luna.config.providers import DEFAULT_PROVIDER, PROVIDERS, ProviderSpec
 from luna.ui.interact import arrow_confirm, arrow_pick
@@ -103,14 +104,35 @@ def choose_model(
         return raw
 
 
+def _pick_theme_interactively(env: Mapping[str, str] | None) -> str | None:
+    """Theme step on a real terminal: the picker, starting on the saved choice."""
+    from luna.ui.termbg import detect_dark
+    from luna.ui.theme_picker import pick_theme
+    from luna.ui.themes import AUTO
+
+    current = user_setting("ui.theme", env=env)
+    return pick_theme(
+        current=current if isinstance(current, str) else AUTO,
+        dark_terminal=detect_dark(),
+    )
+
+
 def run_setup(
     console: Console,
     *,
     input_fn: Callable[[str], str] = input,
     getpass_fn: Callable[[str], str] = getpass.getpass,
     env: Mapping[str, str] | None = None,
+    theme_fn: Callable[[], str | None] | None = None,
 ) -> int:
-    """Run the wizard. Returns a process exit code."""
+    """Run the wizard. Returns a process exit code.
+
+    ``theme_fn`` asks for the color theme (``None`` answer = keep the current
+    one). By default the theme picker runs on a real terminal and the step is
+    skipped otherwise.
+    """
+    if theme_fn is None and console.is_terminal and sys.stdin.isatty():
+        theme_fn = lambda: _pick_theme_interactively(env)  # noqa: E731
     console.print("[luna.title]Luna setup[/]\n")
 
     provider = _choose_provider(console, input_fn)
@@ -148,7 +170,11 @@ def run_setup(
 
     model = choose_model(console, input_fn, provider, spec, api_key=resolved_key)
 
-    config_file = set_config_values({"model.provider": provider, "model.name": model}, env=env)
+    updates = {"model.provider": provider, "model.name": model}
+    theme = theme_fn() if theme_fn is not None else None
+    if theme is not None:
+        updates["ui.theme"] = theme
+    config_file = set_config_values(updates, env=env)
 
     console.print("\n[luna.ok]saved.[/]")
     console.print(f"  config:      {config_file}")

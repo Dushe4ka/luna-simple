@@ -98,15 +98,18 @@ def query_osc11(timeout: float = 0.2) -> str | None:
 def detect_dark(
     env: Mapping[str, str] | None = None,
     *,
-    query: Callable[[], str | None] = query_osc11,
+    query: Callable[[], str | None] | None = None,
 ) -> bool:
-    """Detect a dark background: OSC 11, then COLORFGBG, then assume dark."""
+    """Detect a dark background: OSC 11, then COLORFGBG, then assume dark.
+
+    ``query`` defaults to :func:`query_osc11`, looked up at call time.
+    """
     global _cached
     if _cached is not None:
         return _cached
     env = os.environ if env is None else env
     result = None
-    reply = query()
+    reply = (query or query_osc11)()
     if reply:
         result = parse_osc11(reply)
     if result is None:

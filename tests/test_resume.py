@@ -143,6 +143,7 @@ def test_main_handles_keyboard_interrupt_during_resume_list(tmp_path, monkeypatc
         raise KeyboardInterrupt()
 
     monkeypatch.setattr("luna.ui.interact.arrow_pick", _raise_keyboard_interrupt)
+    monkeypatch.setattr(cli, "_first_run_theme", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     # Ensure interactive detection works: console must be terminal, stdin must be tty

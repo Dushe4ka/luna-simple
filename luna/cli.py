@@ -682,6 +682,78 @@ async def _init_core(config, console) -> int:
     return 0
 
 
+# --- theme -----------------------------------------------------------------
+
+
+def _theme_unset() -> bool:
+    """Return True when neither ``LUNA_THEME`` nor the user config chooses a theme."""
+    import os
+
+    from luna.config.config import user_setting
+
+    return not os.environ.get("LUNA_THEME") and user_setting("ui.theme") is None
+
+
+def _terminal_is_dark(theme: str, *, probe: bool, first_run: bool) -> bool:
+    """Background darkness, measured only when ``auto`` or the picker needs it.
+
+    The OSC 11 query runs only in an interactive terminal (``probe``); a
+    scripted run falls back to ``COLORFGBG``, and to dark without it.
+    """
+    from luna.ui import termbg
+    from luna.ui.themes import AUTO
+
+    if theme != AUTO and not first_run:
+        return True
+    if probe:
+        return termbg.detect_dark()
+    import os
+
+    return termbg.parse_colorfgbg(os.environ.get("COLORFGBG")) is not False
+
+
+def _first_run_theme(console, *, dark: bool) -> None:
+    """Ask for a theme once, when none is configured yet, and save the answer.
+
+    Skipped when ``ui.theme`` is already in the user config or ``LUNA_THEME``
+    is set. ``KeyboardInterrupt`` from the picker propagates (nothing saved).
+    """
+    if not _theme_unset():
+        return
+    from luna.config.config import set_config_values
+    from luna.ui import theme_picker
+    from luna.ui.themes import AUTO, available_themes
+
+    choice = theme_picker.pick_theme(current=AUTO, dark_terminal=dark)
+    if choice is None:
+        return
+    set_config_values({"ui.theme": choice})
+    if console is None:
+        return
+    from rich.text import Text
+
+    titles = {t.id: t.title for t in available_themes()}
+    title = "Авто" if choice == AUTO else titles.get(choice, choice)
+    console.print(Text(f"тема: {title} · сменить — /theme", style="luna.muted"))
+
+
+def _skip_theme() -> None:
+    """``run_setup`` theme step that asks nothing."""
+    return None
+
+
+def _apply_theme(choice: str, dark: bool, console) -> None:
+    """Activate the chosen theme and print theme warnings (as plain text)."""
+    from rich.text import Text
+
+    from luna.ui.console import use_theme
+    from luna.ui.themes import resolve, theme_warnings
+
+    use_theme(resolve(choice, dark_terminal=dark))
+    for warning in theme_warnings():
+        console.print(Text(f"luna: {warning}", style="luna.warn"))
+
+
 # --- main -------------------------------------------------------------------
 
 
@@ -747,6 +819,17 @@ def _main(raw: list[str]) -> int:
 
     prompt = args.prompt_pos or args.prompt
     interactive = console.is_terminal and sys.stdin.isatty() and not args.no_input
+    first_run = interactive and not prompt and _theme_unset()
+
+    dark = _terminal_is_dark(config.theme, probe=interactive, first_run=first_run)
+    if first_run:
+        try:
+            _first_run_theme(console, dark=dark)
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
+        config = load_config(_overrides(args))
+    _apply_theme(config.theme, dark, console)
 
     # Trust gate: only the TUI path asks. `-p` and a piped-stdin REPL are
     # scripted invocations, where the invocation itself is the consent.
@@ -762,7 +845,8 @@ def _main(raw: list[str]) -> int:
 
             console.print(f"[luna.warn]No API key for {config.provider}.[/] Let's set one up.")
             try:
-                run_setup(console)
+                # the TUI start has just asked for the theme; don't ask twice
+                run_setup(console, theme_fn=None if prompt else _skip_theme)
             except (KeyboardInterrupt, EOFError):
                 print()
                 return 130
@@ -785,7 +869,7 @@ def _main(raw: list[str]) -> int:
         render_splash(console)
 
     if interactive and not prompt:
-        return _run_tui_path(args, config, console)
+        return _run_tui_path(args, config, console, dark)
     try:
         return asyncio.run(_run_core(args, config, console, prompt, interactive))
     except KeyboardInterrupt:
@@ -796,7 +880,7 @@ def _main(raw: list[str]) -> int:
         return 1
 
 
-def _run_tui_path(args, config, console) -> int:
+def _run_tui_path(args, config, console, dark: bool = True) -> int:
     """Launch the full-screen TUI (served by the local server on luna-core)."""
     import uuid
 
@@ -828,7 +912,7 @@ def _run_tui_path(args, config, console) -> int:
         # Absolute: the shared server would resolve a relative "." against
         # its own cwd, i.e. whichever project happened to start it.
         workdir = str(Path(config.workdir).resolve())
-        return run_tui(config, workdir=workdir, thread_id=start_thread)
+        return run_tui(config, workdir=workdir, thread_id=start_thread, dark_terminal=dark)
     except KeyboardInterrupt:
         console.print()
         return 130
