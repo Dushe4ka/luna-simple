@@ -243,3 +243,20 @@ async def test_always_hint_for_file_tools(request_, expected):
 
     await _run_modal(request_, steps)
     assert expected in seen["text"]
+
+
+@pytest.mark.parametrize("command", ['echo "[/]"', "echo ${arr[$i]} [b]x[/b]"])
+async def test_approval_modal_shows_a_markup_like_command_literally(command):
+    """Regression: the body went through markup, so ``[/]`` raised MarkupError."""
+    from textual.app import App
+    from textual.widgets import Static
+
+    class _TestApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(ApprovalModal({"name": "execute", "args": {"command": command}}))
+
+    app = _TestApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        body = app.screen.query(Static).first()
+        assert str(body.render()) == f"$ {command}"

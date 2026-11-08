@@ -110,9 +110,10 @@ class LunaApp(App):
     def apply_theme_choice(self, choice: str) -> ThemeSpec:
         """Switch to the theme for ``choice`` (``auto`` follows the terminal background)."""
         spec = resolve(choice, dark_terminal=self.dark_terminal)
-        self.theme_choice = choice
         self.theme = textual_name(spec)
         set_active(spec)
+        # recorded only once the switch has gone through
+        self.theme_choice = choice
         return spec
 
     def _repaint_after_theme(self, _theme) -> None:

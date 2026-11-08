@@ -21,10 +21,10 @@ class ChoiceModal(ModalScreen[str | None]):
     def compose(self):
         """Render the title, the option list and a key hint."""
         with Vertical():
-            yield Static(self._title, classes="picker-title")
+            yield Static(self._title, classes="picker-title", markup=False)
             items = []
             for value, label in self._options:
-                item = ListItem(Label(label))
+                item = ListItem(Label(label, markup=False))
                 item.data_value = value
                 items.append(item)
             yield ListView(*items, id="picker-list")
@@ -55,7 +55,7 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self):
         """Render the question and Yes/No buttons."""
         with Vertical():
-            yield Static(self._question, classes="picker-title")
+            yield Static(self._question, classes="picker-title", markup=False)
             yield Button("Да", id="confirm-yes", variant="warning")
             yield Button("Нет", id="confirm-no")
 

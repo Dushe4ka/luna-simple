@@ -58,8 +58,8 @@ class SessionsSidebar(Widget):
         # Resolved for display only: the CLI may pass a relative "." here.
         resolved = Path(self._workdir).resolve()
         with Vertical():
-            yield Label(f"◐ {resolved.name or resolved}", classes="project-name")
-            yield Label(short_path(str(resolved), 28), classes="project-path")
+            yield Label(f"◐ {resolved.name or resolved}", classes="project-name", markup=False)
+            yield Label(short_path(str(resolved), 28), classes="project-path", markup=False)
             yield ListView(id="session-list")
 
     async def refresh_sessions(self) -> None:
@@ -138,8 +138,8 @@ class _SessionRow(Horizontal):
         if self._marker is not None:
             glyph, kind = self._marker
             yield Label(glyph, classes=f"session-marker {kind}")
-        yield Label(self._title, classes="session-title")
-        yield Label(self._relative_time, classes="session-time")
+        yield Label(self._title, classes="session-title", markup=False)
+        yield Label(self._relative_time, classes="session-time", markup=False)
 
 
 class _NewSessionRow(Horizontal):

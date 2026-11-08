@@ -65,7 +65,8 @@ class ApprovalModal(ModalScreen[dict]):
     def compose(self):
         """Render the pending action's description and the decision buttons."""
         with Vertical():
-            yield Static(self._body())
+            # literal text: a command like ``echo "[/]"`` is not markup
+            yield Static(self._body(), markup=False)
             yield Button("Разрешить", id="approve-button", variant="success")
             yield Button("Разрешить всегда", id="always-button")
             yield Static(self._always_hint(), id="always-hint", classes="picker-hint", markup=False)

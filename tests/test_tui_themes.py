@@ -205,3 +205,39 @@ async def test_approval_modal_diff_uses_theme_colors():
         spans = {str(s.style) for s in getattr(rendered, "spans", [])}
         # moonlight add on add_bg: #86d6a8 on #15281f
         assert "rgb(134,214,168) on rgb(21,40,31)" in spans, spans
+
+
+async def test_failed_theme_switch_keeps_the_previous_choice():
+    from textual.app import InvalidThemeError
+
+    app = make_app(theme_choice="moonlight")
+    async with app.run_test():
+        app.unregister_theme("luna-daymoon")
+        with pytest.raises(InvalidThemeError):
+            app.apply_theme_choice("daymoon")
+        assert app.theme_choice == "moonlight"
+        assert app.theme == "luna-moonlight"
+        assert themes.active().id == "moonlight"
+
+
+async def test_session_title_and_pickers_are_literal_not_markup():
+    from textual.widgets import Label
+
+    from luna.tui.pickers import ChoiceModal, ConfirmModal
+    from luna.tui.sidebar_sessions import _SessionRow
+
+    title = "fix [/] and [$ok] ${arr[$i]}"
+    app = make_app(theme_choice="moonlight")
+    async with app.run_test() as pilot:
+        row = _SessionRow(title, "[b]now[/b]")
+        await app.query_one("#transcript").mount(row)
+        await pilot.pause()
+        assert [str(lbl.render()) for lbl in row.query(Label)] == [title, "[b]now[/b]"]
+        app.push_screen(ChoiceModal(title, [("a", "[/] option [$x]")]))
+        await pilot.pause()
+        assert title in [str(w.render()) for w in app.screen.query(".picker-title")]
+        assert "[/] option [$x]" in [str(lbl.render()) for lbl in app.screen.query(Label)]
+        app.pop_screen()
+        app.push_screen(ConfirmModal(title))
+        await pilot.pause()
+        assert title in [str(w.render()) for w in app.screen.query(".picker-title")]

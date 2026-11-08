@@ -1,3 +1,4 @@
+import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
@@ -48,3 +49,24 @@ async def test_replayed_failure_shows_detail():
     row = ToolRow("execute", "false", result=(False, "exit 1"))
     async with _Host(row).run_test():
         assert "└ exit 1" in _text(row)
+
+
+@pytest.mark.parametrize(
+    ("name", "preview"),
+    [
+        ("execute", "echo ${arr[$i]}"),
+        ("execute", "x [$ok] y"),
+        ("execute", "a[$unknown-var]b"),
+        ("odd[/]name", "closing [/] tag"),
+        ("x[$err]", "[b]not bold[/b]"),
+    ],
+)
+async def test_tool_text_is_literal_not_markup(name, preview):
+    """Regression: markup escape() does not escape ``[$var]`` tags."""
+    for ok in (True, False):
+        row = ToolRow(name, preview, result=(ok, "[/] detail [$x]"))
+        async with _Host(row).run_test():
+            head = row.query_one(".tool-head", Static)
+            mark = "✓" if ok else "✗"
+            assert head.render().plain == f"{mark} {name}  «{preview}»"
+            assert "└ [/] detail [$x]" in _text(row)

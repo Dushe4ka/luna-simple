@@ -14,7 +14,6 @@ import time
 
 from textual.containers import Vertical
 from textual.content import Content
-from textual.markup import escape
 from textual.widgets import Static
 
 from luna.tui.widgets import PulseGlyph
@@ -52,11 +51,17 @@ class ToolRow(Vertical):
             yield PulseGlyph(self._label())
             return
         ok, detail = self._result
-        mark = "[$ok]✓[/]" if ok else "[$err]✗[/]"
-        markup = f"{mark} [b]{escape(self.tool_name)}[/]"
-        if self.preview:
-            markup += f"  [$muted]«{escape(self.preview)}»[/]"
-        yield Static(Content.from_markup(markup), classes="tool-head")
+        # Assembled from literal parts, never markup: escape() leaves ``[$var]``
+        # tags alone, so a command like ``echo ${arr[$i]}`` would be recolored.
+        # The ``$ok``/``$muted`` styles resolve at render time, so they follow
+        # theme switches.
+        head = Content.assemble(
+            ("✓", "$ok") if ok else ("✗", "$err"),
+            " ",
+            (self.tool_name, "bold"),
+            ("  «" + self.preview + "»", "$muted") if self.preview else "",
+        )
+        yield Static(head, classes="tool-head")
         tail = " · ".join(part for part in (detail, self._duration) if part)
         if tail:
             yield Static(f"  └ {tail}", classes="tool-detail", markup=False)

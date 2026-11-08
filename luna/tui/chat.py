@@ -929,4 +929,4 @@ class _CommandLabel(ListItem):
     def compose(self):
         from textual.widgets import Label
 
-        yield Label(f"{self._name}  {self._text}")
+        yield Label(f"{self._name}  {self._text}", markup=False)
