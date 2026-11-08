@@ -86,6 +86,8 @@
     каталога, клик постит `SessionSelected`
   - `sidebar_activity.py` — правый сайдбар: live-список инструментов,
     выполняющихся в текущем ходе
+  - `pickers.py` — модальные выборы: `ChoiceModal`, `ConfirmModal`,
+    `ThemeModal` (`/theme` с живым просмотром темы, Esc возвращает прежнюю)
   - `key_modal.py` — скрытый ввод API-ключа по эффекту `need_key` команды
     `/provider` (сохранение через `LunaClient.set_key`)
   - `approval_modal.py` — модальный диалог подтверждения мутирующих
@@ -93,8 +95,14 @@
   - `status_bar.py` — нижняя строка статуса: модель, стоимость,
     закреплённый `@file`, режим `/plan`, глубина `/undo`
 - `luna/ui/` — тема `rich` и весь визуальный слой REPL
-  - `themes/` — темы из ролевых токенов (TOML) → `rich`- и Textual-темы,
-    активная тема
+  - `themes/` — шесть встроенных тем (`*.toml`, ролевые токены) и загрузчик
+    `__init__.py`: пользовательские темы из `~/.config/luna/themes/`, `extends`,
+    проверка контраста, `rich`- и Textual-темы, активная тема (`active`/`set_active`)
+  - `termbg.py` — определение фона терминала (OSC 11, затем `COLORFGBG`) для «Авто»
+  - `motion.py` — «дыхание» цвета и переключатель анимации (`ui.motion`)
+  - `diffview.py` — рендер unified diff стилями темы (`luna.diff.*`)
+  - `theme_picker.py` — стрелочный выбор темы с живым примером (первый запуск,
+    `luna setup`)
   - `colors.py` — чистая RGB-математика (используется `splash.py` и `progress.py`)
   - `splash.py` — стартовая заставка (градиентный wordmark)
   - `progress.py` — живой индикатор выполнения инструментов во время хода
