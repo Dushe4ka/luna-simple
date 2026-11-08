@@ -305,8 +305,33 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
     return await dispatch(f"/provider {provider}", ctx)
 
 
+def _pick_theme(current: str) -> str | None:
+    """Arrow-pick a theme with a live preview; Esc keeps ``current``, Ctrl-C cancels."""
+    from luna.ui import theme_picker
+    from luna.ui.termbg import detect_dark
+
+    try:
+        return theme_picker.pick_theme(
+            current=current, dark_terminal=detect_dark(), escape_value=current
+        )
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+
+def _apply_theme(choice: str) -> None:
+    """Restyle this process's console with ``choice`` (``auto`` follows the terminal)."""
+    from luna.ui.console import use_theme
+    from luna.ui.termbg import detect_dark
+    from luna.ui.themes import resolve
+
+    use_theme(resolve(choice, dark_terminal=detect_dark()))
+
+
 async def _render(result, ctx: CommandContext) -> DispatchResult:
-    need = result.effects.get("need_key")
+    effects = result.effects or {}
+    if "theme" in effects:
+        _apply_theme(effects["theme"])  # first, so the notice already shows it
+    need = effects.get("need_key")
     notices = result.notices
     if need and ctx.input_fn is not None:
         provider = need["provider"]
@@ -317,6 +342,13 @@ async def _render(result, ctx: CommandContext) -> DispatchResult:
     if result.text:
         ctx.console.print(result.text, markup=False)
     out = DispatchResult()
+    pick = effects.get("pick_theme")
+    if pick is not None and ctx.input_fn is not None:
+        current = pick["current"]
+        picked = await in_thread(_pick_theme, current)
+        if picked is not None and picked != current:
+            return await dispatch(f"/theme {picked}", ctx)
+        return out
     if result.choice is not None and ctx.input_fn is not None:
         picked = await in_thread(
             arrow_pick, ctx.console, ctx.input_fn, result.choice.options, default=None

@@ -833,3 +833,59 @@ async def test_need_key_for_a_project_provider_names_its_host(make_ctx, tmp_path
     ctx = await make_ctx(config=load_config({}, cwd=str(tmp_path)))
     need = (await run_line("/provider litellm", _ReplEnv(ctx))).effects["need_key"]
     assert need["hint"] == "ключ для evil.example"
+
+
+@pytest.fixture
+def restore_theme():
+    from luna.ui import console as console_mod
+    from luna.ui.themes import active
+
+    before = active()
+    yield
+    console_mod.use_theme(before)
+
+
+async def test_repl_theme_picks_with_the_arrow_picker_and_applies(
+    make_ctx, monkeypatch, restore_theme
+):
+    from luna.config.config import user_setting
+    from luna.ui.themes import active
+
+    calls = []
+
+    def fake_pick(**kw):
+        calls.append(kw)
+        return "daymoon"
+
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", fake_pick)
+    ctx = await make_ctx(input_fn=lambda _p: "")
+    await dispatch("/theme", ctx)
+    assert calls == [{"current": "auto", "dark_terminal": True, "escape_value": "auto"}]
+    assert user_setting("ui.theme") == "daymoon"
+    assert ctx.config.theme == "daymoon"
+    assert active().id == "daymoon"
+    assert "Дневная луна" in ctx.console.file.getvalue()
+
+
+async def test_repl_theme_esc_keeps_the_current_theme(make_ctx, monkeypatch, restore_theme):
+    from luna.config.config import user_setting
+
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", lambda **kw: kw["current"])
+    ctx = await make_ctx(input_fn=lambda _p: "")
+    await dispatch("/theme", ctx)
+    assert user_setting("ui.theme") is None
+    assert ctx.config.theme == "auto"
+
+
+async def test_repl_theme_without_a_terminal_only_names_the_theme(make_ctx, restore_theme):
+    ctx = await make_ctx(input_fn=None)
+    await dispatch("/theme", ctx)  # the conftest guard fails if the picker opens
+    assert "тема: auto" in ctx.console.file.getvalue()
+
+
+async def test_repl_theme_with_an_id_applies_it(make_ctx, restore_theme):
+    from luna.ui.themes import active
+
+    ctx = await make_ctx(input_fn=None)
+    await dispatch("/theme daymoon-cb", ctx)
+    assert active().id == "daymoon-cb"

@@ -23,7 +23,7 @@ from luna.tui.banner import LunaBanner
 from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
 from luna.tui.errors import readable
 from luna.tui.key_modal import KeyModal
-from luna.tui.pickers import ChoiceModal, ConfirmModal
+from luna.tui.pickers import ChoiceModal, ConfirmModal, ThemeModal
 from luna.tui.status_bar import StatusBar
 from luna.tui.tool_row import ToolRow
 from luna.tui.widgets import PulseGlyph
@@ -533,7 +533,12 @@ class ChatPane(Widget):
     async def _render_command_result(self, result: dict) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
         notices = result.get("notices", [])
-        need = (result.get("effects") or {}).get("need_key")
+        effects = result.get("effects") or {}
+        if "theme" in effects:
+            # the server saved it; this process paints it (its own terminal for "auto")
+            self.app.apply_theme_choice(effects["theme"])
+            self.app.theme_choice = effects["theme"]
+        need = effects.get("need_key")
         if need:
             provider = need["provider"]
             text = (
@@ -546,7 +551,9 @@ class ChatPane(Widget):
         if result.get("text"):
             await transcript.mount(SystemMessage(result["text"]))
         transcript.anchor()
-        if result.get("choice"):
+        if "pick_theme" in effects:
+            await self._pick_theme()
+        elif result.get("choice"):
             choice = result["choice"]
             options = [tuple(o) for o in choice["options"]]
             picked = await self._ask(ChoiceModal(choice["title"], options)).wait()
@@ -561,7 +568,6 @@ class ChatPane(Widget):
         elif result.get("prompt"):
             reload_after = bool(result.get("effects", {}).get("reload_after_turn"))
             await self._send(result["prompt"], echo=None, reload_after=reload_after)
-        effects = result.get("effects") or {}
         if effects.get("need_key"):
             await self._collect_key(effects["need_key"])
             return
@@ -569,6 +575,20 @@ class ChatPane(Widget):
             await self.refresh_state()
         if effects.get("session"):
             self.post_message(self.SwitchSession(effects["session"]))
+
+    async def _pick_theme(self) -> None:
+        """Theme modal with a live preview; Enter saves via ``/theme <id>``, Esc restores."""
+        from luna.ui.theme_picker import theme_options
+
+        app = self.app
+        modal = ThemeModal(
+            theme_options(app.dark_terminal),
+            current=app.theme_choice,
+            on_preview=app.apply_theme_choice,
+        )
+        picked = await self._ask(modal).wait()
+        if picked is not None:
+            await self._run_command(f"/theme {picked}")
 
     async def _collect_key(self, need: dict) -> None:
         """Ask for a missing key in a masked modal, store it, then redo the switch.

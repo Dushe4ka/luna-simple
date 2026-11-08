@@ -334,3 +334,84 @@ async def test_a_single_autocomplete_match_is_actually_visible():
         dropdown = chat.query_one("#autocomplete", ListView)
         # .size is the content box (border excluded)
         assert dropdown.size.height >= 1
+
+
+def _theme_app():
+    from luna.tui.app import LunaApp
+    from tests.tui_fakes import FakeLunaClient
+
+    client = FakeLunaClient()
+    client.command_results["/theme"] = _res(
+        notices=[{"level": "dim", "text": "тема: auto"}],
+        effects={"pick_theme": {"current": "auto"}},
+    )
+    client.command_results["/theme daymoon"] = _res(
+        notices=[{"level": "info", "text": "тема → Дневная луна"}],
+        effects={"theme": "daymoon"},
+    )
+    app = LunaApp(base_url="http://x", token="t", workdir="/w", thread_id="s1")
+    app.client = client
+    return app, client
+
+
+async def _open_theme_modal(app, pilot):
+    from luna.tui.pickers import ThemeModal
+
+    chat = app.query_one(ChatPane)
+    chat.query_one("#chat-input", Input).focus()
+    await pilot.press(*"/theme", "enter")
+    await pilot.pause(0.3)
+    assert isinstance(app.screen, ThemeModal)
+
+
+async def test_theme_modal_previews_live_and_esc_restores():
+    app, client = _theme_app()
+    async with app.run_test(size=(120, 36)) as pilot:
+        assert app.theme == "luna-moonlight"
+        await _open_theme_modal(app, pilot)
+        await pilot.press("down", "down")
+        await pilot.pause()
+        assert app.theme == "luna-daymoon"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.theme == "luna-moonlight"
+        assert app.theme_choice == "auto"
+    assert client.command_lines == ["/theme"]
+
+
+async def test_theme_modal_enter_saves_through_the_server():
+    app, client = _theme_app()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_theme_modal(app, pilot)
+        await pilot.press("down", "down", "enter")
+        await pilot.pause(0.3)
+        assert app.theme == "luna-daymoon"
+        assert app.theme_choice == "daymoon"
+    assert client.command_lines == ["/theme", "/theme daymoon"]
+
+
+async def test_theme_modal_starts_on_the_current_choice():
+    from textual.widgets import ListView
+
+    app, client = _theme_app()
+    client.command_results["/theme"]["effects"] = {"pick_theme": {"current": "daymoon"}}
+    app.apply_theme_choice("daymoon")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_theme_modal(app, pilot)
+        items = app.screen.query_one("#picker-list", ListView)
+        assert items.highlighted_child.data_value == "daymoon"
+        assert app.theme == "luna-daymoon"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.theme == "luna-daymoon"
+
+
+async def test_theme_effect_applies_the_theme_in_the_tui():
+    app, client = _theme_app()
+    async with app.run_test(size=(120, 36)) as pilot:
+        chat = app.query_one(ChatPane)
+        chat.query_one("#chat-input", Input).focus()
+        await pilot.press(*"/theme daymoon", "enter")
+        await pilot.pause(0.3)
+        assert app.theme == "luna-daymoon"
+        assert app.theme_choice == "daymoon"

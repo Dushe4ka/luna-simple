@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
@@ -12,11 +14,17 @@ class ChoiceModal(ModalScreen[str | None]):
     """Pick one option (↑↓ + Enter); Esc dismisses with ``None``."""
 
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
+    HINT = "↑↓ выбрать · Enter подтвердить · Esc отмена"
 
-    def __init__(self, title: str, options: list[tuple[str, str]]) -> None:
+    def __init__(
+        self, title: str, options: list[tuple[str, str]], *, initial: str | None = None
+    ) -> None:
         super().__init__()
         self._title = title
         self._options = options
+        values = [value for value, _ in options]
+        #: Row highlighted on open: the option whose value is ``initial`` (else the first).
+        self._initial_index = values.index(initial) if initial in values else 0
 
     def compose(self):
         """Render the title, the option list and a key hint."""
@@ -27,8 +35,8 @@ class ChoiceModal(ModalScreen[str | None]):
                 item = ListItem(Label(label, markup=False))
                 item.data_value = value
                 items.append(item)
-            yield ListView(*items, id="picker-list")
-            yield Static("↑↓ выбрать · Enter подтвердить · Esc отмена", classes="picker-hint")
+            yield ListView(*items, id="picker-list", initial_index=self._initial_index)
+            yield Static(self.HINT, classes="picker-hint")
 
     def on_mount(self) -> None:
         """Focus the list so arrows work immediately."""
@@ -40,6 +48,34 @@ class ChoiceModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Esc: dismiss without a choice."""
+        self.dismiss(None)
+
+
+class ThemeModal(ChoiceModal):
+    """Theme picker: the highlighted theme is applied live; Esc restores ``current``."""
+
+    HINT = "↑↓ просмотр · Enter сохранить · Esc — оставить"
+
+    def __init__(
+        self,
+        options: list[tuple[str, str]],
+        *,
+        current: str,
+        on_preview: Callable[[str], object],
+    ) -> None:
+        super().__init__("Тема оформления", options, initial=current)
+        self._current = current
+        self._on_preview = on_preview
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Preview the highlighted theme on the whole app."""
+        value = getattr(event.item, "data_value", None)
+        if value is not None:
+            self._on_preview(value)
+
+    def action_cancel(self) -> None:
+        """Esc: put the theme in use back, then dismiss without a choice."""
+        self._on_preview(self._current)
         self.dismiss(None)
 
 
