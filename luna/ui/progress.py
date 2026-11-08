@@ -20,10 +20,11 @@ from rich.live import Live
 from rich.style import Style
 from rich.text import Text
 
-from luna.ui.colors import _hex_to_rgb, _lerp_rgb, _rgb_to_hex
-from luna.ui.theme import PALETTE
+from luna.ui.motion import breath, motion_enabled
+from luna.ui.themes import active, rich_color
 
 _DOT = "●"
+_STATIC_DOT = "•"
 _PULSE_SPEED = 2.4
 _PULSE_DOT_OFFSET = 1.4
 _DESCRIPTION_MAX = 80
@@ -51,12 +52,14 @@ def _summarize_call(name: str, args: dict) -> str:
 
 
 def _pulse_color(clock_value: float, dot_index: int) -> str:
-    """Compute a blue->peri brightness pulse, phase-shifted per dot for a "breathing" look."""
+    """Breathe from ``muted`` to ``primary``, phase-shifted per dot.
+
+    Same brightness shape as ever (``0.35 + 0.65 * (0.5 + 0.5 * sin(phase))``),
+    with both ends read from the active theme; an ANSI theme stays on ``primary``.
+    """
+    tk = active().tokens
     phase = clock_value * _PULSE_SPEED + dot_index * _PULSE_DOT_OFFSET
-    brightness = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(phase))
-    return _rgb_to_hex(
-        _lerp_rgb(_hex_to_rgb(PALETTE["blue"]), _hex_to_rgb(PALETTE["peri"]), brightness)
-    )
+    return breath(phase, 2 * math.pi, tk["muted"], tk["primary"], floor=0.35)
 
 
 @dataclass
@@ -70,9 +73,16 @@ class _Pending:
 class ToolProgress:
     """Tracks in-flight tool calls for one turn and renders a live pulse indicator."""
 
-    def __init__(self, console: Console, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        console: Console,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        motion: bool = True,
+    ) -> None:
         self._console = console
         self._clock = clock
+        self._motion = motion_enabled(setting=motion)
         self._pending: dict[str, _Pending] = {}
         self._live: Live | None = None
 
@@ -111,13 +121,16 @@ class ToolProgress:
         elapsed = self._clock() - pending.started_at
         status = "done" if ok else "error"
         if pending.name == "task":
-            line = f"  ⎿ {pending.label} · {status} in {elapsed:.0f}s"
+            timing = f" in {elapsed:.0f}s"
         else:
-            line = f"  ⎿ {pending.label} · {status} · {elapsed:.1f}s"
-        if detail:
-            line += f" · {detail}"
-        style = PALETTE["blue"] if ok else PALETTE["mauve"]
-        self._console.print(Text(line, style=style))
+            timing = f" · {elapsed:.1f}s"
+        # status is told by a glyph and a word, never by color alone
+        line = Text("  ⎿ ", style="luna.muted")
+        line.append("✓ " if ok else "✗ ", style="luna.ok" if ok else "luna.error")
+        line.append(f"{pending.label} · ", style="luna.muted")
+        line.append(status, style="luna.ok" if ok else "luna.error")
+        line.append(timing + (f" · {detail}" if detail else ""), style="luna.muted")
+        self._console.print(line)
         if not self._pending:
             self._stop_live()
 
@@ -159,15 +172,20 @@ class ToolProgress:
                 out.append("\n")
             elapsed = now - pending.started_at
             out.append("⏺ ")
-            out.append(pending.label, style=PALETTE["accent"])
+            out.append(pending.label, style="luna.tool.name")
             out.append("  ")
-            for d in range(3):
-                out.append(_DOT, style=Style(color=_pulse_color(now, d)))
+            if self._motion:
+                for d in range(3):
+                    color = rich_color(_pulse_color(now, d))
+                    out.append(_DOT, style=Style(color=color))
+                    out.append(" ")
+            else:
+                out.append(_STATIC_DOT, style="luna.primary")
                 out.append(" ")
-            out.append(f" {elapsed:.0f}s", style=PALETTE["blue"])
+            out.append(f" {elapsed:.0f}s", style="luna.muted")
             if pending.detail:
                 out.append("\n    ")
-                out.append(pending.detail, style=PALETTE["blue"])
+                out.append(pending.detail, style="luna.muted")
         return out
 
     def _ensure_live(self) -> None:

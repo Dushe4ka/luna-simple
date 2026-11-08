@@ -83,3 +83,51 @@ def test_request_dict_carries_the_suggested_rules():
     r = ApprovalRequest("c", "execute", {"command": "a && b"}, "", "execute:a *", ("x", "y"))
     d = _request_dict(r)
     assert d["suggested_rule"] == "execute:a *" and d["suggested_rules"] == ["x", "y"]
+
+
+def _spans(text):
+    return {str(s.style) for s in text.spans}
+
+
+def test_edit_diff_uses_theme_styles():
+    from rich.text import Text
+
+    from luna.ui.approve import _panel
+
+    body = _panel(AR_EDIT).renderable
+    assert isinstance(body, Text)
+    assert "luna.diff.add" in _spans(body)
+    assert "luna.diff.del" in _spans(body)
+
+
+def test_panel_title_and_left_bar():
+    from luna.ui.approve import _panel
+
+    panel = _panel(AR_WRITE)
+    assert "luna.tool.name" in str(panel.title)
+    assert panel.border_style is not None
+    c = Console(file=io.StringIO(), width=40, record=True)
+    c.print(_panel({"action": "write_file", "args": {"file_path": "a.py", "content": "a\nb\nc"}}))
+    lines = c.export_text().splitlines()
+    assert not any(ch in "".join(lines) for ch in "╭╮╰╯─│")
+    body = [ln for ln in lines[1:-1]]
+    assert body and all(ln.startswith("┃") for ln in body)
+
+
+def test_execute_syntax_follows_theme_brightness():
+    from rich.syntax import Syntax
+
+    from luna.ui.approve import _panel
+    from luna.ui.themes import active, load_theme, set_active
+
+    before = active()
+    try:
+        set_active(load_theme("daymoon"))
+        body = _panel(AR_EXEC).renderable
+        assert isinstance(body, Syntax)
+        assert body._theme.style_map == Syntax.get_theme("ansi_light").style_map
+        set_active(load_theme("moonlight"))
+        dark = _panel(AR_EXEC).renderable._theme
+        assert dark.style_map == Syntax.get_theme("ansi_dark").style_map
+    finally:
+        set_active(before)

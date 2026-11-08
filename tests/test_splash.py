@@ -62,3 +62,27 @@ def test_wordmark_emits_truecolor_ansi_codes():
     render_splash(c, animate=False)
     out = c.file.getvalue()
     assert "\x1b[38;2;" in out  # a 24-bit truecolor foreground escape
+
+
+def test_ansi_theme_wordmark_is_solid_primary():
+    from luna.ui.themes import active, load_theme, set_active
+
+    before = active()
+    try:
+        set_active(load_theme("ansi-dark"))
+        c = Console(file=io.StringIO(), width=118, force_terminal=True, color_system="truecolor")
+        render_splash(c, animate=False)
+        out = c.file.getvalue()
+        assert "█" in out
+        assert "\x1b[38;2;" not in out  # no truecolor gradient on an ANSI theme
+    finally:
+        set_active(before)
+
+
+def test_wordmark_gradient_starts_at_primary():
+    from luna.ui.splash import _wordmark_lines
+    from luna.ui.themes import active
+
+    first = _wordmark_lines(118)[0]
+    colors = [s.style.color.name for s in first.spans if s.style.color]
+    assert colors[0] == active().tokens["primary"]

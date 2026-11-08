@@ -133,3 +133,59 @@ def test_render_pending_shows_the_label_and_a_second_line_for_task_description()
     assert "look around" in rendered
     progress.finish("1", True, "")
     progress.close()
+
+
+def test_done_line_marks_status_with_a_glyph_not_only_color():
+    console = _console()
+    progress = ToolProgress(console, clock=lambda: 0.0)
+    progress.start("1", "read_file", {"file_path": "/a.py"})
+    progress.finish("1", True, "")
+    progress.start("2", "execute", {"command": "false"})
+    progress.finish("2", False, "")
+    progress.close()
+    out = console.file.getvalue()
+    assert "⎿ ✓ read_file(/a.py) · done" in out
+    assert "⎿ ✗ execute(false) · error" in out
+
+
+def test_pulse_color_breathes_between_muted_and_primary():
+    import math
+
+    from luna.ui.themes import active
+
+    tk = active().tokens
+    # phase pi/2 is the crest: full primary
+    assert _pulse_color(math.pi / 2 / 2.4, 0) == tk["primary"]
+
+
+def test_pending_line_uses_theme_styles():
+    progress = ToolProgress(_console(), clock=lambda: 0.0)
+    progress.start("1", "read_file", {"file_path": "/a.py"})
+    styles = {str(s.style) for s in progress._render_pending().spans}
+    progress.close()
+    assert "luna.tool.name" in styles
+    assert "luna.muted" in styles
+
+
+def test_no_motion_shows_a_static_dot():
+    progress = ToolProgress(_console(), clock=lambda: 0.0, motion=False)
+    progress.start("1", "read_file", {"file_path": "/a.py"})
+    plain = progress._render_pending().plain
+    progress.close()
+    assert "•" in plain
+    assert "●" not in plain
+
+
+def test_pulse_on_an_ansi_theme_renders():
+    from luna.ui.themes import active, load_theme, set_active
+
+    before = active()
+    try:
+        set_active(load_theme("ansi-dark"))
+        console = Console(file=io.StringIO(), force_terminal=True)
+        progress = ToolProgress(console, clock=lambda: 0.0)
+        progress.start("1", "read_file", {"file_path": "/a.py"})
+        console.print(progress._render_pending())
+        progress.close()
+    finally:
+        set_active(before)

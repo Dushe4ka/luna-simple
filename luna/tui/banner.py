@@ -22,7 +22,7 @@ from textual.widgets import Static
 
 from luna import __version__
 from luna.ui.colors import _hex_to_rgb, _lerp_rgb, _rgb_to_hex
-from luna.ui.splash import _TAGLINE, _WORDMARK, _WORDMARK_GRADIENT, _gradient_stops
+from luna.ui.splash import _TAGLINE, _WORDMARK, _gradient_stops
 from luna.ui.theme import PALETTE
 
 # --- The moon ------------------------------------------------------------
@@ -93,7 +93,9 @@ def _moon_lines() -> list[Text]:
 
 def _wordmark_lines() -> list[Text]:
     """LUNA's block-letter wordmark, reusing the console splash's own art."""
-    stops = _gradient_stops(_WORDMARK_GRADIENT, len(_WORDMARK[0]))
+    # legacy palette until Task 5 moves the TUI onto theme tokens
+    gradient = [PALETTE["peri"], PALETTE["moon"], PALETTE["mauve"], PALETTE["accent"]]
+    stops = _gradient_stops(gradient, len(_WORDMARK[0]))
     lines = []
     for row in _WORDMARK:
         text = Text()

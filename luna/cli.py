@@ -257,7 +257,7 @@ async def _mcp_probe(name: str, spec: dict, console) -> list:
     """Connect to one MCP server, list its tools, disconnect."""
     from luna_core.mcp import MCPManager
 
-    manager = MCPManager({name: spec}, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+    manager = MCPManager({name: spec}, on_warn=lambda m: console.print(f"[luna.warn]{m}[/]"))
     try:
         return await manager.start()
     finally:
@@ -662,7 +662,7 @@ async def _init_core(config, console) -> int:
     from luna.extensions.initgen import init_prompt
 
     try:
-        bundle = await build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        bundle = await build_agent(config, on_warn=lambda m: console.print(f"[luna.warn]{m}[/]"))
     except LunaConfigError as exc:
         print(f"luna: {exc}", file=sys.stderr)
         return 2
@@ -753,7 +753,7 @@ def _main(raw: list[str]) -> int:
         if interactive:
             from luna.repl.setup_wizard import run_setup
 
-            console.print(f"[yellow]No API key for {config.provider}.[/] Let's set one up.")
+            console.print(f"[luna.warn]No API key for {config.provider}.[/] Let's set one up.")
             try:
                 run_setup(console)
             except (KeyboardInterrupt, EOFError):
@@ -768,7 +768,7 @@ def _main(raw: list[str]) -> int:
         _dirty = dirty_paths(config.workdir)
         if _dirty:
             console.print(
-                f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
+                f"[luna.warn]note:[/] working tree has {len(_dirty)} changed file(s); "
                 "Luna edits files in place"
             )
 
@@ -888,7 +888,7 @@ async def _run_core(args, config, console, prompt: str | None, interactive: bool
     async def rebuild():
         bundle = await build_agent(
             config,
-            on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
+            on_warn=lambda m: console.print(f"[luna.warn]{m}[/]"),
             plan_flag=lambda: plan_state[0],
             hooks=engine.make_hooks(lambda: hooks_state.get("state"), lambda: config),
         )

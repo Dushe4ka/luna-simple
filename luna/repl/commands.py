@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from luna_core.errors import LunaCoreError
 from luna_core.session import Session
 from rich.console import Console
+from rich.text import Text
 
 from luna.commands import REGISTRY, run_line
 from luna.config.config import LunaConfig
@@ -31,7 +32,6 @@ from luna.repl import usercmd
 from luna.repl.setup_wizard import choose_model
 from luna.turn.engine import Notice
 from luna.ui.interact import arrow_confirm, arrow_pick, in_thread
-from luna.ui.theme import PALETTE
 
 #: Built from the shared registry: one source for help text.
 HELP: dict[str, str] = {c.name: c.help for c in REGISTRY.values()}
@@ -85,7 +85,7 @@ def _session_rows(ctx: CommandContext) -> list:
 
 def _help(ctx: CommandContext, arg: str) -> None:
     for name, help_text in HELP.items():
-        ctx.console.print(f"  [bold {PALETTE['peri']}]{name}[/]  {help_text}")
+        ctx.console.print(f"  [luna.prompt]{name}[/]  {help_text}")
 
 
 def _clear(ctx: CommandContext, arg: str) -> None:
@@ -96,7 +96,7 @@ def _new(ctx: CommandContext, arg: str) -> None:
     workdir = _workdir(ctx)
     ctx.session = Session.create(ctx.log, workdir)
     ctx.state = SessionState(ctx.session.id, workdir)
-    ctx.console.print(f"[{PALETTE['blue']}]started a new session[/]")
+    ctx.console.print("[luna.muted]started a new session[/]")
 
 
 def _sessions(ctx: CommandContext, arg: str) -> None:
@@ -138,20 +138,20 @@ def _do_resume(ctx: CommandContext, target: str) -> None:
 
     info = ctx.log.info(target)
     if info is None:
-        ctx.console.print(f"no session {target!r}", style=PALETTE["mauve"], markup=False)
+        ctx.console.print(Text(f"no session {target!r}", style="luna.error"))
         return
     if info.workdir != _workdir(ctx):
-        ctx.console.print(f"[{PALETTE['mauve']}]session {target[:8]} belongs to another folder[/]")
+        ctx.console.print(f"[luna.error]session {target[:8]} belongs to another folder[/]")
         return
     try:
         session = Session.open(ctx.log, target)
     except LunaCoreError as exc:
-        ctx.console.print(str(exc), style=PALETTE["mauve"], markup=False)
+        ctx.console.print(Text(str(exc), style="luna.error"))
         return
     ctx.session = session
     ctx.state = SessionStateStore().load(session.id, session.workdir)
     print_recap(session, ctx.console)
-    ctx.console.print(f"[{PALETTE['blue']}]resumed session {target[:8]}[/]")
+    ctx.console.print(f"[luna.muted]resumed session {target[:8]}[/]")
 
 
 def _init(ctx: CommandContext, arg: str) -> DispatchResult:
@@ -172,11 +172,11 @@ _UI: dict[str, Callable] = {
 
 
 _STYLE = {
-    "dim": "dim",
-    "ok": "dim",
-    "info": PALETTE["blue"],
-    "warn": "yellow",
-    "error": PALETTE["mauve"],
+    "dim": "luna.muted",
+    "ok": "luna.muted",
+    "info": "luna.primary",
+    "warn": "luna.warn",
+    "error": "luna.error",
 }
 
 
@@ -269,9 +269,10 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
     if secret_fn is None:
         if not sys.stdin.isatty():
             ctx.console.print(
-                f"скрытый ввод недоступен (stdin не терминал) — luna config set-key {provider}",
-                style=_STYLE["warn"],
-                markup=False,
+                Text(
+                    f"скрытый ввод недоступен (stdin не терминал) — luna config set-key {provider}",
+                    style=_STYLE["warn"],
+                )
             )
             return DispatchResult()
         secret_fn = getpass.getpass
@@ -293,14 +294,14 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
         try:
             set_api_key(provider, key, registry=merge_providers(ctx.config.custom_providers))
         except LunaConfigError as exc:
-            ctx.console.print(str(exc), style=_STYLE["error"], markup=False)
+            ctx.console.print(Text(str(exc), style=_STYLE["error"]))
             return DispatchResult()
         except Exception:  # noqa: BLE001 - a traceback could show the key
-            ctx.console.print("не удалось сохранить ключ", style=_STYLE["error"], markup=False)
+            ctx.console.print(Text("не удалось сохранить ключ", style=_STYLE["error"]))
             return DispatchResult()
     finally:
         del key
-    ctx.console.print(f"ключ для {provider} сохранён", style=_STYLE["info"], markup=False)
+    ctx.console.print(Text(f"ключ для {provider} сохранён", style=_STYLE["info"]))
     return await dispatch(f"/provider {provider}", ctx)
 
 
@@ -312,7 +313,7 @@ async def _render(result, ctx: CommandContext) -> DispatchResult:
         text = f"нужен ключ для {provider} — введите его ниже (или: luna config set-key {provider})"
         notices = [Notice("dim", text)]
     for notice in notices:
-        ctx.console.print(notice.text, style=_STYLE.get(notice.level, ""), markup=False)
+        ctx.console.print(Text(notice.text, style=_STYLE.get(notice.level, "")))
     if result.text:
         ctx.console.print(result.text, markup=False)
     out = DispatchResult()

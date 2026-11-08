@@ -7,15 +7,20 @@ import os
 from collections.abc import Callable
 
 from luna_core.policy import suggest_rule
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from luna.ui.console import theme_style
+from luna.ui.diffview import render_diff
 from luna.ui.interact import arrow_pick
-from luna.ui.theme import PALETTE
+from luna.ui.themes import active
 
 _MAX_PREVIEW_LINES = 40
+#: No frame: blank top/bottom rows and a solid ``┃`` bar down the left side.
+LEFT_BAR = box.Box("    \n┃   \n┃   \n┃   \n┃   \n┃   \n┃   \n    \n")
 
 
 def _truncate(text: str, limit: int = _MAX_PREVIEW_LINES) -> str:
@@ -63,11 +68,18 @@ def describe_action(action_request: dict) -> str:
 def _panel(action_request: dict) -> Panel:
     action = action_request.get("action") or action_request.get("name") or "tool"
     body = describe_action(action_request)
-    lexer = "diff" if action == "edit_file" else "bash" if action == "execute" else "text"
+    if action == "edit_file":
+        content = render_diff(body)
+    else:
+        lexer = "bash" if action == "execute" else "text"
+        theme = "ansi_dark" if active().dark else "ansi_light"
+        content = Syntax(body, lexer, theme=theme, word_wrap=True)
     return Panel(
-        Syntax(body, lexer, theme="ansi_dark", word_wrap=True),
-        title=f"[bold {PALETTE['accent']}]{action}[/] wants to run",
-        border_style=PALETTE["mauve"],
+        content,
+        box=LEFT_BAR,
+        title=f"[luna.tool.name]{action}[/] wants to run",
+        title_align="left",
+        border_style=theme_style("luna.warn"),
     )
 
 
@@ -121,7 +133,7 @@ def prompt_decision(
             console.print(
                 Text(
                     "inline editing is not wired yet; approving as-is",
-                    style=PALETTE["mauve"],
+                    style="luna.warn",
                 )
             )
         return {"type": "approve"}
