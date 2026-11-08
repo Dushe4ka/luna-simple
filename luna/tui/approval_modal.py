@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from luna_core.policy import UnsafeRule, check_rule_safe, suggest_rule
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
@@ -66,13 +66,18 @@ class ApprovalModal(ModalScreen[dict]):
         """Render the pending action's description and the decision buttons."""
         with Vertical():
             # literal text: a command like ``echo "[/]"`` is not markup
-            yield Static(self._body(), markup=False)
-            yield Button("Разрешить", id="approve-button", variant="success")
-            yield Button("Разрешить всегда", id="always-button")
+            # a long diff scrolls here, so the buttons below stay on screen;
+            # wheel-only — no focus stop between the user and the buttons
+            with VerticalScroll(id="approval-scroll", can_focus=False):
+                yield Static(self._body(), id="approval-body", markup=False)
             yield Static(self._always_hint(), id="always-hint", classes="picker-hint", markup=False)
-            if self._tool == "execute":
-                yield Button("Изменить", id="edit-button")
-            yield Button("Отклонить", id="reject-button", variant="error")
+            # one compact row; DOM order is the Tab order (left to right)
+            with Horizontal(classes="decision-row"):
+                yield Button("Разрешить", id="approve-button", classes="accent-ok")
+                yield Button("Разрешить всегда", id="always-button")
+                if self._tool == "execute":
+                    yield Button("Изменить", id="edit-button")
+                yield Button("Отклонить", id="reject-button", classes="accent-err")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Dismiss with the decision dict matching the button pressed."""
@@ -89,13 +94,19 @@ class ApprovalModal(ModalScreen[dict]):
             self.dismiss({"type": "reject", "message": "rejected in TUI"})
 
     async def _start_edit(self) -> None:
+        box = self.query_one(Vertical)
+        box.styles.width = box.outer_size.width  # don't shrink once the buttons hide
         for button in self.query(Button):
             button.display = False
         # no select-all on focus: typing must edit the command, not replace it
         field = Input(
             value=str(self._args.get("command", "")), id="edit-command", select_on_focus=False
         )
-        hint = Static("Enter — выполнить изменённую команду · Esc — назад", classes="picker-hint")
+        hint = Static(
+            "Enter — выполнить изменённую команду · Esc — назад",
+            id="edit-hint",
+            classes="picker-hint",
+        )
         await self.query_one(Vertical).mount(field, hint)
         field.cursor_position = len(field.value)
         field.focus()
@@ -106,9 +117,10 @@ class ApprovalModal(ModalScreen[dict]):
             return
         event.stop()
         await self.query_one("#edit-command").remove()
-        await self.query(".picker-hint").remove()
+        await self.query_one("#edit-hint").remove()
         for button in self.query(Button):
             button.display = True
+        self.query_one(Vertical).styles.width = None  # back to the stylesheet's auto
         self.query_one("#approve-button").focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -118,7 +130,7 @@ class ApprovalModal(ModalScreen[dict]):
         event.stop()
         command = event.value.strip()
         if not command:
-            self.query_one(".picker-hint", Static).update(
+            self.query_one("#edit-hint", Static).update(
                 "Команда пуста — введите команду или Esc — назад"
             )
             return

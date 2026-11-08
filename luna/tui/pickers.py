@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, ListItem, ListView, Static
 
@@ -92,8 +92,9 @@ class ConfirmModal(ModalScreen[bool]):
         """Render the question and Yes/No buttons."""
         with Vertical():
             yield Static(self._question, classes="picker-title", markup=False)
-            yield Button("Да", id="confirm-yes", variant="warning")
-            yield Button("Нет", id="confirm-no")
+            with Horizontal(classes="decision-row"):
+                yield Button("Да", id="confirm-yes", classes="accent-warn")
+                yield Button("Нет", id="confirm-no")
 
     def on_mount(self) -> None:
         """Default to No, so a stray Enter never confirms."""

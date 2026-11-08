@@ -212,3 +212,14 @@ def test_active_roundtrip():
         assert active().id == "daymoon"
     finally:
         set_active(before)
+
+
+@pytest.mark.parametrize("theme_id", [t for t in BUILTIN_ORDER if not t.startswith("ansi")])
+def test_decision_button_contrast(theme_id):
+    """Approval/confirm buttons (``luna.tcss`` ``.decision-row``) stay readable."""
+    tk = load_theme(theme_id).tokens
+    assert contrast(tk["text"], tk["panel"]) >= 4.5  # resting
+    assert contrast(tk["text"], tk["border"]) >= 4.5  # hover
+    assert contrast(tk["on_primary"], tk["primary"]) >= 4.5  # focused
+    for bar in ("ok", "err", "warn"):  # accent bars are graphics: 3:1
+        assert contrast(tk[bar], tk["panel"]) >= 3, (theme_id, bar)

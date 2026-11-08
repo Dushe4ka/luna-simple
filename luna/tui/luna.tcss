@@ -252,7 +252,10 @@ ApprovalModal {
 }
 
 ApprovalModal > Vertical {
-    width: 80%;
+    /* content-driven: a short command doesn't leave an empty right half */
+    width: auto;
+    min-width: 50;
+    max-width: 80%;
     height: auto;
     max-height: 80%;
     background: $element;
@@ -261,14 +264,112 @@ ApprovalModal > Vertical {
     padding: 1 2;
 }
 
+ApprovalModal #approval-scroll {
+    width: auto;
+    height: auto;
+    max-height: 60vh;
+    background: $element;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: $element;
+    scrollbar-background-hover: $element;
+    scrollbar-background-active: $element;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $muted;
+    scrollbar-color-active: $primary;
+}
+
+ApprovalModal #approval-body {
+    width: auto;
+}
+
+/* --- Decision buttons (approval + confirm modals) ------------------------
+ * Compact one-row buttons on theme tokens: Textual's default Button is a
+ * 3-row block with tall borders, saturated variant fills and a reverse/tint
+ * focus plate. Every state below is overridden, so only Luna roles show.
+ * An accent (ok/err/warn) is a left bar; neutral buttons carry an invisible
+ * bar of their own background so labels stay aligned.
+ */
+
+.decision-row {
+    width: auto;
+    height: auto;
+    margin-top: 1;
+}
+
+.decision-row Button {
+    width: auto;
+    min-width: 0;
+    height: 1;
+    padding: 0 1;
+    line-pad: 1;  /* + padding = 2 columns around the label */
+    margin: 0 1 0 0;
+    border: none;
+    border-left: outer $panel;
+    background: $panel;
+    background-tint: $foreground 0%;
+    tint: transparent;
+    color: $foreground;
+    text-style: none;
+}
+
+.decision-row Button:last-child {
+    margin-right: 0;
+}
+
+.decision-row Button:hover {
+    background: $border;
+    border-left: outer $border;
+    color: $foreground;
+}
+
+.decision-row Button:focus {
+    background: $primary;
+    border-left: outer $primary;
+    color: $on-primary;
+    text-style: bold;
+    background-tint: $foreground 0%;
+}
+
+.decision-row Button.-active {
+    background: $primary;
+    border-left: outer $primary;
+    color: $on-primary;
+    tint: transparent;
+}
+
+/* after the states above: an accent bar stays in every state */
+.decision-row Button.accent-ok {
+    border-left: outer $ok;
+}
+
+.decision-row Button.accent-err {
+    border-left: outer $err;
+}
+
+.decision-row Button.accent-warn {
+    border-left: outer $warn;
+}
+
 /* --- Command pickers + notices ---------------------------------------- */
 
 ChoiceModal, ConfirmModal {
     align: center middle;
 }
 
-ChoiceModal > Vertical, ConfirmModal > Vertical {
+ChoiceModal > Vertical {
     width: 60%;
+    height: auto;
+    max-height: 70%;
+    background: $panel;
+    border: none;
+    border-left: outer $primary;
+    padding: 1 2;
+}
+
+ConfirmModal > Vertical {
+    width: auto;
+    min-width: 40;
+    max-width: 60%;
     height: auto;
     max-height: 70%;
     background: $panel;

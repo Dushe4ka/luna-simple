@@ -241,3 +241,29 @@ async def test_session_title_and_pickers_are_literal_not_markup():
         app.push_screen(ConfirmModal(title))
         await pilot.pause()
         assert title in [str(w.render()) for w in app.screen.query(".picker-title")]
+
+
+@pytest.mark.parametrize("theme_id", ["moonlight", "daymoon", "moonlight-cb", "daymoon-cb"])
+async def test_approval_buttons_use_theme_tokens(theme_id):
+    from luna.tui.approval_modal import ApprovalModal
+
+    tokens = themes.load_theme(theme_id).tokens
+    app = make_app(theme_choice=theme_id)
+    async with app.run_test(size=(130, 36)) as pilot:
+        modal = ApprovalModal({"name": "execute", "args": {"command": "ls"}})
+        app.push_screen(modal)
+        await pilot.pause()
+        focused = modal.query_one("#approve-button")
+        resting = modal.query_one("#always-button")
+        assert app.focused is focused
+        assert focused.styles.background == Color.parse(tokens["primary"])
+        assert focused.styles.color == Color.parse(tokens["on_primary"])
+        assert focused.styles.text_style.bold
+        assert not focused.styles.text_style.reverse
+        assert resting.styles.background == Color.parse(tokens["panel"])
+        assert resting.styles.color == Color.parse(tokens["text"])
+        assert not resting.styles.border.top[0]  # no 3-row tall border
+        ok_bar = modal.query_one("#approve-button").styles.border_left
+        err_bar = modal.query_one("#reject-button").styles.border_left
+        assert ok_bar[1] == Color.parse(tokens["ok"])
+        assert err_bar[1] == Color.parse(tokens["err"])
