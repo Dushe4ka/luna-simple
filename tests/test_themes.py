@@ -196,6 +196,15 @@ def test_textual_theme_ansi():
     assert t.background == "ansi_default"
 
 
+@pytest.mark.parametrize("theme_id", ["ansi-dark", "ansi-light"])
+def test_textual_ansi_theme_keeps_textuals_ansi_variables(theme_id):
+    # Textual's own CSS for ANSI screens references $ansi-background etc.:
+    # without them a TUI on an ANSI theme fails to parse its stylesheet.
+    t = textual_theme(load_theme(theme_id))
+    assert "ansi-background" in t.variables and "ansi-foreground" in t.variables
+    assert t.variables["primary"].startswith("ansi_")
+
+
 def test_active_roundtrip():
     before = active()
     try:

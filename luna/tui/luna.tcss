@@ -7,9 +7,13 @@
  * PyPI); for an application's own widgets, "it is best to keep your CSS in
  * an external file" — one place to see it all, live-editable, higher
  * cascade specificity than any widget-bundled CSS. Colors below ($bg,
- * $panel, $moon, ...) come from LunaApp.get_theme_variable_defaults()
- * (luna/tui/theme.py) and are already available here without any
- * per-file $var declaration.
+ * $panel, $foreground, $muted, $primary, ...) are variables of the active
+ * Textual theme, built from Luna's role tokens (luna/ui/themes/*.toml) and
+ * registered by LunaApp — switching the theme recolors everything here.
+ * No literal colors in this file.
+ *
+ * Blocks (user message, tool call, warning/error notice, modals) are a
+ * $panel/$element background plus a colored left bar, not a full border.
  */
 
 /* --- App shell: sidebars + chat column ---------------------------------- */
@@ -50,7 +54,7 @@ ChatPane {
     */
     height: 1;
     background: $panel;
-    color: $moon-dim;
+    color: $muted;
     padding: 0 1;
 }
 
@@ -61,26 +65,39 @@ ChatPane #transcript {
 }
 
 UserMessage {
-    color: $moon;
+    color: $foreground;
+    background: $panel;
+    border-left: outer $primary;
+    padding: 0 1;
     margin: 1 1 1 1;
-    padding: 0;
 }
 
 LunaMessage {
-    color: $moon;
+    color: $foreground;
     margin: 0 1 1 3;
     padding: 0;
 }
 
 SystemMessage {
-    color: $moon-dim;
+    color: $muted;
     margin: 0 1 1 3;
     padding: 0;
 }
 
 ToolRow {
     height: auto;
+    background: $panel;
+    border-left: outer $muted;
+    padding: 0 1;
     margin: 0 1 1 3;
+}
+
+ToolRow.-ok {
+    border-left: outer $ok;
+}
+
+ToolRow.-err {
+    border-left: outer $err;
 }
 
 ToolRow PulseGlyph {
@@ -88,7 +105,7 @@ ToolRow PulseGlyph {
 }
 
 ToolRow .tool-detail {
-    color: $moon-dim;
+    color: $muted;
 }
 
 LunaBanner {
@@ -109,7 +126,8 @@ ChatPane #autocomplete {
     */
     height: 10;
     background: $panel;
-    border: round $border;
+    border: none;
+    border-left: outer $border;
     padding: 0 1;
 }
 
@@ -118,7 +136,7 @@ ChatPane #chat-input {
 }
 
 ChatPane #chat-input:focus {
-    border: round $peri;
+    border: round $primary;
 }
 
 /* --- Shared pulsing indicator (chat "thinking" placeholder + tool rows) - */
@@ -126,8 +144,8 @@ ChatPane #chat-input:focus {
 PulseGlyph {
     height: 1;
     /* Fallback color for the `animation_level == "none"` static bullet —
-       the animated frame overrides this with an explicit Rich style. */
-    color: $peri;
+       the animated frame overrides it (primary -> accent breath). */
+    color: $primary;
     text-style: italic;
 }
 
@@ -143,7 +161,7 @@ ChatPane PulseGlyph.-with-thought {
 ChatPane .thought-line {
     height: 1;
     margin: 0 1 1 4;
-    color: $moon-dim;
+    color: $muted;
     text-style: italic;
     text-overflow: ellipsis;
     text-wrap: nowrap;
@@ -153,15 +171,14 @@ ChatPane .thought-line {
 
 SessionsSidebar .project-name {
     padding: 0 1;
-    color: $moon;
+    color: $foreground;
     text-style: bold;
 }
 
 SessionsSidebar .project-path {
-    /* $moon-dim, not $border: $border on $panel is 3.02:1, below the 4.5:1
-       minimum theme.py already sets for persistent secondary text. */
+    /* $muted, not $border: themes guarantee 4.5:1 only for text tokens. */
     padding: 0 1 1 1;
-    color: $moon-dim;
+    color: $muted;
 }
 
 SessionsSidebar #session-list {
@@ -177,23 +194,24 @@ SessionsSidebar ListItem {
 }
 
 SessionsSidebar ListItem.session-group {
-    /* Uppercase + $moon-dim (8.14:1) separates groups from $moon titles
+    /* Uppercase + $muted separates groups from $foreground titles
        without dropping below the contrast minimum like $border did. */
     margin-top: 1;
-    color: $moon-dim;
+    color: $muted;
     text-style: none;
 }
 
 SessionsSidebar ListItem.session-item.-current {
-    background: $peri;
+    background: $element;
+    border-left: outer $primary;
 }
 
 SessionsSidebar ListItem.session-item.-current Label {
-    color: $bg;
+    color: $foreground;
 }
 
 SessionsSidebar ListItem.new-session-item .session-title {
-    color: $peri;
+    color: $primary;
 }
 
 SessionsSidebar _SessionRow,
@@ -204,7 +222,7 @@ SessionsSidebar _NewSessionRow {
 
 SessionsSidebar .session-title {
     width: 1fr;
-    color: $moon;
+    color: $foreground;
     text-overflow: ellipsis;
     text-wrap: nowrap;
 }
@@ -212,19 +230,19 @@ SessionsSidebar .session-title {
 SessionsSidebar .session-time {
     width: auto;
     padding-left: 1;
-    color: $moon-dim;
+    color: $muted;
 }
 
 /* Run markers before a session title: ● a turn is running here, ◌ it runs
    in the background with no client attached. */
 SessionsSidebar .session-running {
     width: auto;
-    color: $peri;
+    color: $primary;
 }
 
 SessionsSidebar .session-background {
     width: auto;
-    color: $moon-dim;
+    color: $muted;
 }
 
 /* --- Approval modal ------------------------------------------------------ */
@@ -237,8 +255,9 @@ ApprovalModal > Vertical {
     width: 80%;
     height: auto;
     max-height: 80%;
-    background: $bg;
-    border: round $peri;
+    background: $element;
+    border: none;
+    border-left: outer $warn;
     padding: 1 2;
 }
 
@@ -252,15 +271,16 @@ ChoiceModal > Vertical, ConfirmModal > Vertical {
     width: 60%;
     height: auto;
     max-height: 70%;
-    background: $bg;
-    border: round $peri;
+    background: $panel;
+    border: none;
+    border-left: outer $primary;
     padding: 1 2;
 }
 
 ChoiceModal #picker-list {
     height: auto;
     max-height: 20;
-    background: $bg;
+    background: $panel;
 }
 
 KeyModal {
@@ -271,8 +291,9 @@ KeyModal > Vertical {
     width: 60%;
     height: auto;
     max-height: 70%;
-    background: $bg;
-    border: round $peri;
+    background: $panel;
+    border: none;
+    border-left: outer $primary;
     padding: 1 2;
 }
 
@@ -281,7 +302,7 @@ KeyModal #key-input {
 }
 
 KeyModal .key-hint {
-    color: $moon-dim;
+    color: $muted;
 }
 
 KeyModal #key-error {
@@ -295,7 +316,7 @@ KeyModal #key-error {
 }
 
 .picker-hint {
-    color: $moon-dim;
+    color: $muted;
     padding-top: 1;
 }
 
@@ -303,8 +324,28 @@ NoticeRow {
     margin: 0 1 1 3;
 }
 
+NoticeRow.-dim, NoticeRow.-ok {
+    color: $muted;
+}
+
+NoticeRow.-info {
+    color: $primary;
+}
+
+NoticeRow.-warn {
+    border-left: outer $warn;
+    color: $warn;
+    padding-left: 1;
+}
+
+NoticeRow.-error {
+    border-left: outer $err;
+    color: $err;
+    padding-left: 1;
+}
+
 /* Plan mode: writes are refused, so the input says so at a glance. */
 ChatPane.-plan #chat-input,
 ChatPane.-plan #chat-input:focus {
-    border: round $mauve;
+    border: round $accent;
 }

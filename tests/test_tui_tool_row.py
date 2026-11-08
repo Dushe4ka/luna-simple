@@ -26,7 +26,7 @@ async def test_running_row_pulses_then_shows_result_and_duration():
         assert row.is_finished
         assert len(row.query(PulseGlyph)) == 0
         text = _text(row)
-        assert "● web_search" in text and "«погода Орёл»" in text
+        assert "✓ web_search" in text and "«погода Орёл»" in text
         assert "└ 8 результатов · " in text and text.rstrip().endswith("s")
 
 

@@ -8,6 +8,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
 from luna.ui.approve import describe_action
+from luna.ui.diffview import render_diff
+from luna.ui.themes import active, rich_color
 
 
 class ApprovalModal(ModalScreen[dict]):
@@ -47,10 +49,23 @@ class ApprovalModal(ModalScreen[dict]):
             return "«Разрешить всегда»: правило не будет сохранено (небезопасно)"
         return "Будет сохранено: " + ", ".join(rules)
 
+    def _body(self):
+        """Describe the action; an ``edit_file`` diff gets the theme's diff colors.
+
+        The ``luna.diff.*`` rich styles exist only in the REPL console's theme,
+        so the TUI hands ``render_diff`` explicit colors from the active theme
+        (``LunaApp.apply_theme_choice`` keeps it in sync with the Textual theme).
+        """
+        body = describe_action(self._action_request)
+        if self._tool != "edit_file":
+            return body
+        palette = {name: rich_color(value) for name, value in active().tokens.items()}
+        return render_diff(body, palette=palette)
+
     def compose(self):
         """Render the pending action's description and the decision buttons."""
         with Vertical():
-            yield Static(describe_action(self._action_request))
+            yield Static(self._body())
             yield Button("Разрешить", id="approve-button", variant="success")
             yield Button("Разрешить всегда", id="always-button")
             yield Static(self._always_hint(), id="always-hint", classes="picker-hint", markup=False)

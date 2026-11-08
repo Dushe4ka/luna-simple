@@ -12,6 +12,7 @@ from rich.text import Text
 from textual import events, work
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -24,17 +25,13 @@ from luna.tui.errors import readable
 from luna.tui.key_modal import KeyModal
 from luna.tui.pickers import ChoiceModal, ConfirmModal
 from luna.tui.status_bar import StatusBar
-from luna.tui.theme import TUI_VARIABLES
 from luna.tui.tool_row import ToolRow
 from luna.tui.widgets import PulseGlyph
 
 
-def user_line(text: str) -> Text:
-    """Render the user's message as literal text behind a bold ``$peri`` "› " marker."""
-    line = Text()
-    line.append("› ", style=f"bold {TUI_VARIABLES['peri']}")
-    line.append(text)
-    return line
+def user_line(text: str) -> Content:
+    """Render the user's message as literal text behind a bold ``$primary`` "› " marker."""
+    return Content.from_markup("[bold $primary]› [/]") + Content(text)
 
 
 class UserMessage(Static):
@@ -58,20 +55,16 @@ class SystemMessage(Markdown):
     """Local-command output (help text, command results) — dim, unlabeled."""
 
 
-_NOTICE_COLOURS = {
-    "dim": TUI_VARIABLES["moon-dim"],
-    "ok": TUI_VARIABLES["moon-dim"],
-    "info": TUI_VARIABLES["peri"],
-    "warn": TUI_VARIABLES["warn"],
-    "error": TUI_VARIABLES["err"],
-}
-
-
 class NoticeRow(Static):
-    """A short status line (command result, verify, formatter, reload)."""
+    """A short status line (command result, verify, formatter, reload).
+
+    The level is a CSS class (``-dim``/``-ok``/``-info``/``-warn``/``-error``):
+    ``luna.tcss`` gives it the theme color and, for warnings and errors, a
+    left bar.
+    """
 
     def __init__(self, level: str, text: str) -> None:
-        super().__init__(Text(text, style=_NOTICE_COLOURS.get(level, "")))
+        super().__init__(Text(text), classes=f"-{level}")
         self.level = level
         self.text = text
 
@@ -416,9 +409,9 @@ class ChatPane(Widget):
         # content (see the DEFAULT_CSS comment on #autocomplete), so the
         # visible height is set here instead — one row per match, capped at
         # 10 so a broad prefix like "/" doesn't take over the screen. `height`
-        # is border-box, so the round border's 2 rows come on top — without
-        # them a single match (e.g. "/ex") rendered as an empty frame.
-        dropdown.styles.height = min(len(matches), 10) + 2
+        # is border-box; the dropdown has only a left bar (no top/bottom
+        # border rows), so the rows are the whole height.
+        dropdown.styles.height = min(len(matches), 10)
         for name, text in matches:
             # _CommandLabel IS a ListItem (see its definition below) — it
             # must be appended directly, NOT wrapped in another `ListItem(...)`.

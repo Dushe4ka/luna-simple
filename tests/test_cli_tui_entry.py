@@ -171,3 +171,48 @@ def test_tui_gets_an_absolute_workdir_even_when_launched_with_the_default(monkey
 
     assert cli_mod.main(["--no-splash"]) == 0
     assert launched["w"] == str(tmp_path.resolve())
+
+
+def test_run_tui_passes_theme_motion_and_terminal_background(monkeypatch, tmp_path):
+    import luna.cli as cli_mod
+    from luna.config.config import LunaConfig
+
+    built = {}
+
+    class _FakeApp:
+        def __init__(self, **kwargs):
+            built.update(kwargs)
+
+        def run(self):
+            built["ran"] = True
+
+    monkeypatch.setattr("luna.server.run.ensure_running", lambda workdir: {"port": 1, "token": "t"})
+    monkeypatch.setattr("luna.tui.app.LunaApp", _FakeApp)
+    monkeypatch.delenv("NO_MOTION", raising=False)
+    monkeypatch.delenv("TEXTUAL_ANIMATIONS", raising=False)
+    config = LunaConfig(theme="daymoon", motion=False)
+
+    assert cli_mod.run_tui(config, workdir=str(tmp_path), thread_id="t", dark_terminal=False) == 0
+    assert built["theme_choice"] == "daymoon"
+    assert built["motion"] is False
+    assert built["dark_terminal"] is False
+    assert built["ran"] is True
+
+
+def test_run_tui_defaults_to_a_dark_terminal(monkeypatch, tmp_path):
+    import luna.cli as cli_mod
+    from luna.config.config import LunaConfig
+
+    built = {}
+
+    class _FakeApp:
+        def __init__(self, **kwargs):
+            built.update(kwargs)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("luna.server.run.ensure_running", lambda workdir: {"port": 1, "token": "t"})
+    monkeypatch.setattr("luna.tui.app.LunaApp", _FakeApp)
+    cli_mod.run_tui(LunaConfig(), workdir=str(tmp_path), thread_id="t")
+    assert built["dark_terminal"] is True and built["theme_choice"] == "auto"

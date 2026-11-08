@@ -266,10 +266,15 @@ def _textual_color(value: str) -> str:
 
 def textual_theme(spec: ThemeSpec) -> TextualTheme:
     """Build a Textual theme; Textual is imported lazily (REPL must not load it)."""
+    from textual.theme import BUILTIN_THEMES
     from textual.theme import Theme as TextualTheme
 
     tk = {k: _textual_color(v) for k, v in spec.tokens.items()}
     variables = {k.replace("_", "-"): v for k, v in tk.items() if k != "text"}
+    if spec.ansi:
+        # Textual's own CSS for ANSI screens needs $ansi-background & co.
+        base = BUILTIN_THEMES["ansi-dark" if spec.dark else "ansi-light"].variables
+        variables = {**base, **variables}
     return TextualTheme(
         name=textual_name(spec),
         primary=tk["primary"],

@@ -310,10 +310,13 @@ class _StyledHost(_Host):
 
     CSS_PATH = str(Path(luna.tui.__file__).parent / "luna.tcss")
 
-    def get_theme_variable_defaults(self):
-        from luna.tui.theme import TUI_VARIABLES
+    def __init__(self, *args, **kwargs) -> None:
+        from luna.ui.themes import load_theme, textual_theme
 
-        return TUI_VARIABLES
+        super().__init__(*args, **kwargs)
+        theme = textual_theme(load_theme("moonlight"))
+        self.register_theme(theme)
+        self.theme = theme.name
 
 
 async def test_a_single_autocomplete_match_is_actually_visible():

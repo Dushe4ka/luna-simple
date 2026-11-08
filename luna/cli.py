@@ -23,10 +23,14 @@ _SUBCOMMANDS = {
 }
 
 
-def run_tui(config, *, workdir: str, thread_id: str) -> int:
-    """Launch the full-screen TUI, auto-starting the local server first."""
+def run_tui(config, *, workdir: str, thread_id: str, dark_terminal: bool = True) -> int:
+    """Launch the full-screen TUI, auto-starting the local server first.
+
+    ``dark_terminal`` picks the theme for ``ui.theme = "auto"``.
+    """
     from luna.server.run import ensure_running
     from luna.tui.app import LunaApp
+    from luna.ui.motion import motion_enabled
 
     info = ensure_running(workdir)
     app = LunaApp(
@@ -37,6 +41,9 @@ def run_tui(config, *, workdir: str, thread_id: str) -> int:
         provider=config.provider,
         model=config.model,
         pricing=config.pricing,
+        theme_choice=config.theme,
+        dark_terminal=dark_terminal,
+        motion=motion_enabled(setting=config.motion),
     )
     app.run()
     return 0

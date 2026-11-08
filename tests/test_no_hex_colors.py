@@ -6,25 +6,56 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1] / "luna"
-HEX = re.compile(r"[\"'\[ ]#[0-9a-fA-F]{6}\b")
-NAMED = re.compile(r"(\[|style=\"|[\"'])(bold )?(red|green|yellow)\b")
-#: Files still on the legacy palette, migrated in Task 5 (which empties this set).
-LEGACY = {
-    "ui/theme.py",
-    "tui/theme.py",
-    "tui/widgets.py",
-    "tui/banner.py",
-}
+#: ``#rgb`` / ``#rrggbb`` after a quote, bracket, space, paren, ``=`` or ``:``.
+HEX = re.compile(r"[\"'\[ (=:]#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
+#: A raw red/green/yellow style, with modifiers (``[dim red]``) or as a background (``on red``).
+NAMED = re.compile(
+    r"(?:\[|style=\"|[\"']|\bon )"
+    r"(?:(?:bold|dim|italic|underline|reverse|not) )*"
+    r"(?:bright_)?(?:red|green|yellow)\b"
+)
 
 
 def _sources():
     for path in ROOT.rglob("*.py"):
         if "themes" in path.parts:
             continue
-        rel = path.relative_to(ROOT).as_posix()
-        if rel in LEGACY:
-            continue
         yield path, path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        "style='#abc'",
+        "Style(color=#a1b2c3)",
+        "color:#a1b2c3",
+        '"[#a1b2c3]x"',
+        "x = (#fff)",
+    ],
+)
+def test_hex_pattern_catches(sample):
+    assert HEX.search(sample)
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        '"[dim red]x"',
+        "'bold red'",
+        '"white on red"',
+        '"bright_red"',
+        'style="bright_green"',
+        "'[italic bright_yellow]'",
+        '"green"',
+    ],
+)
+def test_named_pattern_catches(sample):
+    assert NAMED.search(sample)
+
+
+@pytest.mark.parametrize("sample", ["# 1. step", "see PR #12", "'redraw'", '"greenfield"'])
+def test_patterns_ignore_harmless_text(sample):
+    assert not HEX.search(sample) and not NAMED.search(sample)
 
 
 def test_no_hex_colors_outside_themes():
@@ -37,16 +68,20 @@ def test_no_raw_named_colors():
     assert not bad, bad
 
 
-def test_no_legacy_palette_outside_tui():
+def test_no_legacy_palette():
     bad = [
         str(p.relative_to(ROOT))
         for p, s in _sources()
-        if "tui" not in p.parts and re.search(r"\bPALETTE\b|luna\.ui\.theme import", s)
+        if re.search(r"\bPALETTE\b|\bTUI_VARIABLES\b|luna\.(?:ui|tui)\.theme import", s)
     ]
     assert not bad, bad
 
 
-@pytest.mark.xfail(strict=True, reason="Task 5")
+def test_legacy_palette_modules_are_gone():
+    assert not (ROOT / "ui" / "theme.py").exists()
+    assert not (ROOT / "tui" / "theme.py").exists()
+
+
 def test_tcss_uses_tokens_only():
     css = (ROOT / "tui" / "luna.tcss").read_text(encoding="utf-8")
     assert not re.search(r"#[0-9a-fA-F]{3,6}\b", css)
