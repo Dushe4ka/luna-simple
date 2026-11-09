@@ -43,11 +43,14 @@ def parse_colorfgbg(value: str | None) -> bool | None:
     return None
 
 
-def query_osc11(timeout: float = 0.2) -> str | None:
+def query_osc11(timeout: float = 1.0) -> str | None:
     """Ask the terminal for its background colour; None when impossible.
 
-    A DA1 request is sent right after OSC 11 and used as a sentinel, so a
-    slow reply is consumed here rather than leaking into later input.
+    A DA1 request is sent right after OSC 11 and used as a sentinel: nearly
+    every terminal answers it, so locally the wait is one round trip and the
+    generous ``timeout`` only matters over a slow link (SSH). Without the
+    sentinel the input queue is flushed, so a late reply cannot leak into
+    later input.
     """
     try:
         import termios
@@ -66,11 +69,13 @@ def query_osc11(timeout: float = 0.2) -> str | None:
         os.close(fd)
         return None
     buf = b""
+    complete = False
     try:
-        tty.setraw(fd)
+        # TCSANOW: the default TCSAFLUSH would discard the user's typeahead.
+        tty.setraw(fd, termios.TCSANOW)
         os.write(fd, b"\x1b]11;?\x07\x1b[c")
         deadline = time.monotonic() + timeout
-        while not _DA1_RE.search(buf):
+        while not (complete := bool(_DA1_RE.search(buf))):
             left = deadline - time.monotonic()
             if left <= 0:
                 break
@@ -84,6 +89,11 @@ def query_osc11(timeout: float = 0.2) -> str | None:
     except (OSError, termios.error):
         return None
     finally:
+        if not complete:
+            try:
+                termios.tcflush(fd, termios.TCIFLUSH)
+            except (OSError, termios.error):
+                pass
         try:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         except (OSError, termios.error):
@@ -92,7 +102,7 @@ def query_osc11(timeout: float = 0.2) -> str | None:
             os.close(fd)
         except OSError:
             pass
-    return buf.decode("latin-1") if buf else None
+    return buf.decode("latin-1") if complete else None
 
 
 def detect_dark(
