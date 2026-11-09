@@ -762,16 +762,17 @@ def _skip_theme() -> None:
     return None
 
 
-def _apply_theme(choice: str, dark: bool, console) -> None:
-    """Activate the chosen theme and print theme warnings (as plain text)."""
-    from rich.text import Text
+def _apply_theme(choice: str, dark: bool) -> None:
+    """Activate the chosen theme; warnings go to stderr as plain text.
 
+    Not stdout: ``luna -p … --output-format json | jq`` must stay parseable.
+    """
     from luna.ui.console import use_theme
     from luna.ui.themes import resolve, theme_warnings
 
     use_theme(resolve(choice, dark_terminal=dark))
     for warning in theme_warnings():
-        console.print(Text(f"luna: {warning}", style="luna.warn"))
+        print(f"luna: {warning}", file=sys.stderr)
 
 
 # --- main -------------------------------------------------------------------
@@ -850,7 +851,7 @@ def _main(raw: list[str]) -> int:
             print()
             return 130
         config = _with_theme(load_config(_overrides(args)), picked_theme)
-    _apply_theme(config.theme, dark, console)
+    _apply_theme(config.theme, dark)
 
     # Trust gate: only the TUI path asks. `-p` and a piped-stdin REPL are
     # scripted invocations, where the invocation itself is the consent.

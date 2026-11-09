@@ -688,7 +688,10 @@ def test_main_prints_theme_warnings_escaped(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("luna.core.session.run_once", _async(lambda *a, **k: "ok"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     assert main(["-p", "hi", "--no-splash", "--workdir", str(tmp_path)]) == 0
-    assert "[bold]nope" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    # stderr: stdout stays parseable for `-p … --output-format json | jq`
+    assert "luna: " in captured.err and "[bold]nope" in captured.err
+    assert "nope" not in captured.out
 
 
 def _interactive_tui(monkeypatch, seen):
