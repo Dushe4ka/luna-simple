@@ -212,7 +212,10 @@ async def test_failed_theme_switch_keeps_the_previous_choice():
 
     app = make_app(theme_choice="moonlight")
     async with app.run_test():
+        # apply_theme_choice (re-)registers the theme, so force the failure:
+        # registration is a no-op and the theme stays unknown to Textual.
         app.unregister_theme("luna-daymoon")
+        app.register_theme = lambda theme: None
         with pytest.raises(InvalidThemeError):
             app.apply_theme_choice("daymoon")
         assert app.theme_choice == "moonlight"
