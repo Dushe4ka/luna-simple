@@ -203,7 +203,7 @@ async def test_model_with_no_arg_falls_back_to_free_text_when_no_list(
 async def test_model_without_arg_and_no_terminal_does_not_hit_the_network(make_ctx, monkeypatch):
     from luna.commands import builtin
 
-    monkeypatch.setattr(builtin, "_models_for", lambda cfg: pytest.fail("network call"))
+    monkeypatch.setattr(builtin, "_model_groups", lambda cfg: pytest.fail("network call"))
     ctx = await make_ctx()
     await dispatch("/model", ctx)
     assert "model: m" in _out(ctx)

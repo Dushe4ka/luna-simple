@@ -8,7 +8,7 @@ from luna_core.errors import LunaCoreError, ProviderError
 from luna_core.events import Compacted
 from luna_core.loop import readable_error
 
-from luna.commands.base import Choice, CommandResult, Confirm
+from luna.commands.base import GROUP_HEADER, Choice, CommandResult, Confirm
 from luna.commands.registry import register, register_ui
 from luna.config.providers import LunaConfigError, key_hint, merge_providers, resolve_api_key
 from luna.turn.engine import Notice
@@ -19,13 +19,61 @@ def _api_key(provider: str, spec) -> str | None:
     return resolve_api_key(provider, spec)
 
 
-def _models_for(cfg) -> list[str]:
-    """Live model ids for the session's provider, else the bundled list."""
+def _model_groups(cfg) -> list[tuple[str, list[str]]]:
+    """Model ids of every connected provider, the session's provider first.
+
+    Connected means a saved key, or a keyless endpoint (Ollama, a local
+    custom provider) that answers right now. The lists are fetched in
+    parallel, so the picker waits for the slowest provider only (3 s cap
+    in ``list_models``). A keyed provider whose API fails falls back to the
+    bundled list; so does the session's own provider.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     from luna.config import model_discovery
 
-    spec = merge_providers(cfg.custom_providers)[cfg.provider]
-    models = model_discovery.list_models(cfg.provider, spec, api_key=_api_key(cfg.provider, spec))
-    return models if models is not None else model_discovery.known_models(cfg.provider)
+    registry = merge_providers(cfg.custom_providers)
+    current = cfg.provider
+    connected = [k for k, spec in registry.items() if not spec.env_var or _api_key(k, spec)]
+    keys = [current] + [k for k in connected if k != current]
+
+    def fetch(key: str) -> list[str]:
+        spec = registry[key]
+        live = model_discovery.list_models(key, spec, api_key=_api_key(key, spec))
+        if live is None and (key == current or spec.env_var):
+            return model_discovery.known_models(key)
+        return live or []
+
+    with ThreadPoolExecutor(max_workers=min(8, len(keys))) as pool:
+        lists = list(pool.map(fetch, keys))
+    return [(key, models) for key, models in zip(keys, lists, strict=True) if models]
+
+
+def _model_options(cfg, groups: list[tuple[str, list[str]]]) -> list[tuple[str, str]]:
+    """Picker rows: a header per provider, then ``"<provider> <model>"`` options."""
+    options: list[tuple[str, str]] = []
+    for provider, models in groups:
+        options.append((GROUP_HEADER, provider))
+        for model in models:
+            current = provider == cfg.provider and model == cfg.model
+            options.append((f"{provider} {model}", f"{model}  ✓ текущая" if current else model))
+    return options
+
+
+async def _remember(env, provider: str, model: str | None) -> list[Notice]:
+    """Save the switch as the default for the next start (warn if it cannot)."""
+    from luna.config import config as config_mod
+
+    spec = merge_providers(env.config.custom_providers).get(provider)
+    if spec is None or spec.project:
+        # a .luna.toml provider exists only in that folder: elsewhere the
+        # saved default would stop Luna from starting
+        return []
+    try:
+        await asyncio.to_thread(config_mod.remember_model, provider, model)
+    except (OSError, LunaConfigError) as exc:
+        return [Notice("warn", f"выбор не сохранён для следующего запуска: {exc}")]
+    return []
 
 
 def init_prompt(workdir):
@@ -384,26 +432,43 @@ def _init(env, arg):
     return CommandResult(prompt=init_prompt(env.workdir), effects={"reload_after_turn": True})
 
 
-@register("/model", "pick a model interactively, or /model <name> to switch directly", "mutate")
+@register(
+    "/model",
+    "pick a model of any connected provider, or /model [provider] <name>",
+    "mutate",
+)
 async def _model(env, arg):
+    cfg = env.config
     if not arg:
-        current = Notice("dim", f"model: {env.config.model or '(provider default)'}")
-        models = await asyncio.to_thread(_models_for, env.config)
-        if not models:
+        current = Notice("dim", f"model: {cfg.model or '(provider default)'} ({cfg.provider})")
+        groups = await asyncio.to_thread(_model_groups, cfg)
+        if not groups:
             return CommandResult(notices=[current])
         return CommandResult(
             notices=[current],
-            choice=Choice(
-                f"Модель ({env.config.provider})",
-                [(m, f"{m}  ✓ текущая" if m == env.config.model else m) for m in models],
-                "/model {value}",
-            ),
+            choice=Choice("Модель", _model_options(cfg, groups), "/model {value}"),
         )
+    registry = merge_providers(cfg.custom_providers)
+    first, _, rest = arg.partition(" ")
+    # "/model <provider> <model>" (what the picker sends); a lone word is a
+    # model of the current provider, as before
+    named = bool(rest.strip()) and first in registry
+    provider, model = (first, rest.strip()) if named else (cfg.provider, arg)
+    if provider != cfg.provider:
+        spec = registry[provider]
+        if spec.env_var and not _api_key(provider, spec):
+            return _need_key(provider, spec)
     try:
-        await env.switch_model(arg)
+        if provider == cfg.provider:
+            await env.switch_model(model)
+        else:
+            await env.switch(provider, model)
     except Exception as exc:  # noqa: BLE001 - a bad model must not kill the session
         return CommandResult(notices=[Notice("error", f"could not switch: {exc}")])
-    return CommandResult(notices=[Notice("info", f"model → {arg}")], effects={"model": arg})
+    text = f"model → {provider} · {model}" if named else f"model → {model}"
+    effects = {"model": model, **({"provider": provider} if named else {})}
+    notices = [Notice("info", text), *await _remember(env, provider, model)]
+    return CommandResult(notices=notices, effects=effects)
 
 
 def _host(url: str | None) -> str:
@@ -469,7 +534,8 @@ async def _provider(env, arg):
         await env.switch_provider(arg)
     except Exception as exc:  # noqa: BLE001 - a bad provider must not kill the session
         return CommandResult(notices=[Notice("error", f"could not switch: {exc}")])
-    return CommandResult(notices=[Notice("info", f"provider → {arg}")], effects={"provider": arg})
+    notices = [Notice("info", f"provider → {arg}"), *await _remember(env, arg, None)]
+    return CommandResult(notices=notices, effects={"provider": arg})
 
 
 @register("/reload", "rebuild the agent with the current config", "mutate")

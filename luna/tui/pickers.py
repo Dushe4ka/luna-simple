@@ -7,14 +7,27 @@ from collections.abc import Callable
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, ListItem, ListView, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static
+
+from luna.commands.base import FILTER_FROM, GROUP_HEADER
 
 
 class ChoiceModal(ModalScreen[str | None]):
-    """Pick one option (↑↓ + Enter); Esc dismisses with ``None``."""
+    """Pick one option (↑↓ + Enter); Esc dismisses with ``None``.
 
-    BINDINGS = [Binding("escape", "cancel", "Отмена")]
+    Options whose value is ``GROUP_HEADER`` are group headers: shown, never
+    highlighted or picked. A long list gets a filter input on top: typing
+    narrows the list (a header stays while its group has a match), ↑↓ still
+    move the highlight and Enter picks it.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Отмена"),
+        Binding("down", "cursor_down", show=False),
+        Binding("up", "cursor_up", show=False),
+    ]
     HINT = "↑↓ выбрать · Enter подтвердить · Esc отмена"
+    FILTER_HINT = "печатайте для фильтра · ↑↓ выбрать · Enter подтвердить · Esc отмена"
 
     def __init__(
         self, title: str, options: list[tuple[str, str]], *, initial: str | None = None
@@ -22,25 +35,84 @@ class ChoiceModal(ModalScreen[str | None]):
         super().__init__()
         self._title = title
         self._options = options
-        values = [value for value, _ in options]
-        #: Row highlighted on open: the option whose value is ``initial`` (else the first).
-        self._initial_index = values.index(initial) if initial in values else 0
+        self._initial = initial
+        pickable = sum(1 for value, _ in options if value != GROUP_HEADER)
+        self._filterable = pickable >= FILTER_FROM
+
+    def _items(self, needle: str = "") -> list[ListItem]:
+        """List rows matching ``needle`` (case-insensitive), headers kept for their groups."""
+        needle = needle.strip().lower()
+        items: list[ListItem] = []
+        header: str | None = None
+        for value, label in self._options:
+            if value == GROUP_HEADER:
+                header = label
+                continue
+            if needle and needle not in label.lower() and needle not in value.lower():
+                continue
+            if header is not None:
+                row = ListItem(Label(header, markup=False), classes="picker-group", disabled=True)
+                row.data_value = None
+                items.append(row)
+                header = None
+            item = ListItem(Label(label, markup=False))
+            item.data_value = value
+            items.append(item)
+        return items
+
+    @staticmethod
+    def _index_of(items: list[ListItem], value: str | None) -> int | None:
+        """Index of the row for ``value``, else of the first pickable row."""
+        pickable = [i for i, item in enumerate(items) if not item.disabled]
+        for i in pickable:
+            if items[i].data_value == value:
+                return i
+        return pickable[0] if pickable else None
 
     def compose(self):
-        """Render the title, the option list and a key hint."""
+        """Render the title, the filter (long lists), the option list and a key hint."""
+        items = self._items()
         with Vertical():
             yield Static(self._title, classes="picker-title", markup=False)
-            items = []
-            for value, label in self._options:
-                item = ListItem(Label(label, markup=False))
-                item.data_value = value
-                items.append(item)
-            yield ListView(*items, id="picker-list", initial_index=self._initial_index)
-            yield Static(self.HINT, classes="picker-hint")
+            if self._filterable:
+                yield Input(placeholder="фильтр…", id="picker-filter")
+            yield ListView(
+                *items, id="picker-list", initial_index=self._index_of(items, self._initial)
+            )
+            yield Static("ничего не найдено", id="picker-empty", classes="picker-hint")
+            yield Static(self.FILTER_HINT if self._filterable else self.HINT, classes="picker-hint")
 
     def on_mount(self) -> None:
-        """Focus the list so arrows work immediately."""
-        self.query_one("#picker-list", ListView).focus()
+        """Focus the filter (long lists) or the list, so typing/arrows work at once."""
+        self.query_one("#picker-empty").display = False
+        self.set_class(self._filterable, "-filterable")
+        target = "#picker-filter" if self._filterable else "#picker-list"
+        self.query_one(target).focus()
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        """Narrow the list to the rows matching the filter text."""
+        event.stop()
+        items = self._items(event.value)
+        listing = self.query_one("#picker-list", ListView)
+        await listing.clear()
+        await listing.extend(items)
+        listing.index = self._index_of(items, None)
+        self.query_one("#picker-empty").display = not items
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter in the filter picks the highlighted row (nothing when no row matches)."""
+        event.stop()
+        item = self.query_one("#picker-list", ListView).highlighted_child
+        if item is not None and not item.disabled:
+            self.dismiss(getattr(item, "data_value", None))
+
+    def action_cursor_down(self) -> None:
+        """↓ while typing in the filter moves the list highlight."""
+        self.query_one("#picker-list", ListView).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """↑ while typing in the filter moves the list highlight."""
+        self.query_one("#picker-list", ListView).action_cursor_up()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Dismiss with the picked option's value."""

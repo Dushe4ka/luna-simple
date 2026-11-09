@@ -58,7 +58,7 @@ def test_arrow_pick_passes_the_default_value_not_its_label(monkeypatch):
         def ask(self):
             return "a"
 
-    def _fake_select(message, choices, default=None):
+    def _fake_select(message, choices, default=None, **kwargs):
         captured["default"] = default
         return _FakeQuestion()
 

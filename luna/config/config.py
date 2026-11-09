@@ -357,25 +357,6 @@ def _coerce(value: str, kind: str) -> object:
     return value
 
 
-def _dump_toml(data: Mapping[str, Mapping[str, object]]) -> str:
-    lines: list[str] = []
-    for section, values in data.items():
-        if not values:
-            continue
-        lines.append(f"[{section}]")
-        for key, value in values.items():
-            if isinstance(value, bool):
-                rendered = "true" if value else "false"
-            elif isinstance(value, (int, float)):
-                rendered = repr(value)
-            else:
-                escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-                rendered = f'"{escaped}"'
-            lines.append(f"{key} = {rendered}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def set_config_values(
     updates: Mapping[str, str],
     *,
@@ -386,25 +367,74 @@ def set_config_values(
     Values arrive as strings (from the CLI) and are coerced to the type the
     key expects. Returns the path written.
     """
-    path = config_path(env)
-    data: dict[str, dict[str, object]] = {}
-    for section, values in _load_toml(path).items():
-        if isinstance(values, dict):
-            data[section] = dict(values)
-
+    values: dict[str, object] = {}
     for dotted, raw in updates.items():
         if dotted not in _SETTABLE:
             raise LunaConfigError(
                 f"Unknown setting {dotted!r}. Valid keys: {', '.join(_SETTABLE)}."
             )
-        section, key = dotted.split(".", 1)
         value = _coerce(raw, _SETTABLE[dotted])
-        if section == "model" and key == "provider" and value not in PROVIDERS:
+        if dotted == "model.provider" and value not in PROVIDERS:
             raise LunaConfigError(
                 f"Unknown provider {value!r}. Choose one of: {', '.join(PROVIDERS)}."
             )
-        data.setdefault(section, {})[key] = value
+        values[dotted] = value
+    return _write_user_config(values, env=env)
+
+
+def remember_model(
+    provider: str, model: str | None, *, env: Mapping[str, str] | None = None
+) -> Path:
+    """Save ``provider``/``model`` as the user's default for the next start.
+
+    ``model`` ``None`` removes ``model.name``: the provider's own default is
+    used then, never a stale model of the previous provider. The caller
+    passes a provider that already resolved (built-in or the user's own
+    ``[provider.custom.*]``).
+    """
+    updates: dict[str, object] = {"model.provider": provider}
+    if model:
+        updates["model.name"] = model
+    return _write_user_config(updates, unset=() if model else ("model.name",), env=env)
+
+
+def _write_user_config(
+    updates: Mapping[str, object],
+    *,
+    unset: tuple[str, ...] = (),
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """Edit the user ``config.toml`` in place, keeping everything else intact.
+
+    ``tomlkit`` keeps comments, nested tables (``[provider.custom.*]``) and
+    arrays of tables (``[[hooks]]``) exactly as written. The new text
+    replaces the file atomically, so a crash never leaves half a config.
+    """
+    import tomlkit
+    from tomlkit.exceptions import ParseError
+
+    path = config_path(env)
+    try:
+        text = path.read_text() if path.exists() else ""
+        doc = tomlkit.parse(text)
+    except (OSError, UnicodeDecodeError, ParseError) as exc:
+        raise LunaConfigError(f"Cannot read config {path}: {exc}") from exc
+
+    for dotted, value in updates.items():
+        section, key = dotted.split(".", 1)
+        if section not in doc:
+            doc[section] = tomlkit.table()
+        doc[section][key] = value
+    for dotted in unset:
+        section, key = dotted.split(".", 1)
+        if section in doc and key in doc[section]:
+            del doc[section][key]
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_dump_toml(data))
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(tomlkit.dumps(doc))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path

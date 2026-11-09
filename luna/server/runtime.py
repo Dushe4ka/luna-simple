@@ -134,6 +134,10 @@ class SessionRuntime:
         """Use ``provider`` (its default model) for this session only."""
         await self._switch(provider, None)
 
+    async def switch(self, provider: str, model: str | None) -> None:
+        """Use ``provider`` with ``model`` (one rebuild; both restored on failure)."""
+        await self._switch(provider, model)
+
     def set_plan(self, on: bool) -> None:
         """Toggle plan mode (read by the policy on every tool call)."""
         self.state.plan = on

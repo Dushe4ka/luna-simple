@@ -70,6 +70,10 @@ class _ServerEnv:
         await self._rt.switch_provider(provider)
         await self._after_rebuild()
 
+    async def switch(self, provider: str, model: str | None) -> None:
+        await self._rt.switch(provider, model)
+        await self._after_rebuild()
+
 
 async def _env_for(runtime, manager, name: str) -> _ServerEnv:
     """Build the command env; the agent is built only for commands that use it.
