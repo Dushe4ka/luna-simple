@@ -253,8 +253,8 @@ async def test_slash_dropdown_reserves_real_visible_height_for_every_match():
         from luna.tui.commands import FALLBACK_COMMANDS
 
         expected_rows = min(len(FALLBACK_COMMANDS), 10)
-        # border-box: the dropdown's 2-row round border comes on top of the rows
-        assert dropdown.region.height == expected_rows + 2
+        # border-box, but the dropdown has only a left bar: no extra rows
+        assert dropdown.region.height == expected_rows
 
 
 async def test_slash_dropdown_rows_are_individually_visible_not_zero_height():
@@ -688,12 +688,11 @@ async def test_approval_is_decided_on_the_session_the_turn_started_on():
     assert client.calls == [("send", "t1"), ("decide", "t1")]
 
 
-async def test_user_message_is_literal_text_with_a_peri_marker():
+async def test_user_message_is_literal_text_with_a_primary_marker():
     """Regression: user text went through Markdown, so `__init__` became a
-    bold "init" and `# x` a heading; the spec asks for a bold $peri "›"."""
+    bold "init" and `# x` a heading; the spec asks for a bold $primary "›"."""
 
     from luna.tui.chat import user_line
-    from luna.tui.theme import TUI_VARIABLES
 
     msg = UserMessage("fix __init__ and # header")
     assert not isinstance(msg, Markdown)
@@ -702,7 +701,7 @@ async def test_user_message_is_literal_text_with_a_peri_marker():
     assert line.plain == "› fix __init__"
     marker = line.spans[0]
     assert (marker.start, marker.end) == (0, 2)
-    assert TUI_VARIABLES["peri"] in str(marker.style) and "bold" in str(marker.style)
+    assert "$primary" in str(marker.style) and "bold" in str(marker.style)
 
 
 async def test_quit_alias_still_exits_although_it_is_not_listed():

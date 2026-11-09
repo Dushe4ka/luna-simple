@@ -22,8 +22,8 @@ from textual.widgets import Static
 
 from luna import __version__
 from luna.ui.colors import _hex_to_rgb, _lerp_rgb, _rgb_to_hex
-from luna.ui.splash import _TAGLINE, _WORDMARK, _WORDMARK_GRADIENT, _gradient_stops
-from luna.ui.theme import PALETTE
+from luna.ui.splash import _TAGLINE, _WORDMARK, _gradient_stops
+from luna.ui.themes import rich_color
 
 # --- The moon ------------------------------------------------------------
 #
@@ -40,12 +40,15 @@ _RADIUS = (_ROWS - 1) / 2
 _BANDS = ((-0.9, "█"), (-0.35, "▓"), (0.15, "▒"), (0.55, "░"))
 
 #: A light source from the upper-left, so the sphere reads as lit rather
-#: than flat — brighter toward `peri`/`moon` there, cooler toward `blue`
-#: on the shadowed lower-right, entirely via color (no cut-out shape).
+#: than flat — brighter toward the theme's ``strong`` there, toward its
+#: ``border`` on the shadowed lower-right, entirely via color (no cut-out
+#: shape). Colors are read from ``app.theme_variables`` at render time.
 _LIGHT = (-0.55, -0.85)
 _LIGHT_LEN = math.hypot(*_LIGHT)
-_LIT = PALETTE["moon"]
-_SHADOW = PALETTE["blue"]
+
+
+def _is_hex(value: str) -> bool:
+    return value.startswith("#") and len(value) == 7
 
 
 def _moon_glyph_at(dx: float, dy: float) -> str | None:
@@ -57,7 +60,7 @@ def _moon_glyph_at(dx: float, dy: float) -> str | None:
     return None
 
 
-def _moon_color_at(nx: float, ny: float) -> str:
+def _moon_color_at(nx: float, ny: float, lit: str, shadow: str) -> str:
     """Lighting-based color for one cell, ``nx``/``ny`` normalized to [-1, 1].
 
     A cell facing the same direction as ``_LIGHT`` (upper-left) gets a
@@ -68,10 +71,13 @@ def _moon_color_at(nx: float, ny: float) -> str:
     """
     brightness = 0.5 + 0.5 * ((nx * _LIGHT[0] + ny * _LIGHT[1]) / _LIGHT_LEN)
     brightness = max(0.0, min(1.0, brightness))
-    return _rgb_to_hex(_lerp_rgb(_hex_to_rgb(_SHADOW), _hex_to_rgb(_LIT), brightness))
+    if not (_is_hex(lit) and _is_hex(shadow)):
+        # ANSI colors cannot be blended: lit half / shadowed half.
+        return lit if brightness >= 0.5 else shadow
+    return _rgb_to_hex(_lerp_rgb(_hex_to_rgb(shadow), _hex_to_rgb(lit), brightness))
 
 
-def _moon_lines() -> list[Text]:
+def _moon_lines(lit: str, shadow: str) -> list[Text]:
     cx, cy = (_COLS - 1) / 2, (_ROWS - 1) / 2
     lines = []
     for y in range(_ROWS):
@@ -82,7 +88,7 @@ def _moon_lines() -> list[Text]:
             if glyph is None:
                 text.append(" ")
             else:
-                color = _moon_color_at(dx / _RADIUS, dy / _RADIUS)
+                color = _moon_color_at(dx / _RADIUS, dy / _RADIUS, lit, shadow)
                 text.append(glyph, style=Style(color=color))
         lines.append(text)
     return lines
@@ -91,9 +97,13 @@ def _moon_lines() -> list[Text]:
 # --- The wordmark ----------------------------------------------------------
 
 
-def _wordmark_lines() -> list[Text]:
+def _wordmark_lines(gradient: list[str]) -> list[Text]:
     """LUNA's block-letter wordmark, reusing the console splash's own art."""
-    stops = _gradient_stops(_WORDMARK_GRADIENT, len(_WORDMARK[0]))
+    width = len(_WORDMARK[0])
+    if all(_is_hex(color) for color in gradient):
+        stops = _gradient_stops(gradient, width)
+    else:
+        stops = [gradient[0]] * width
     lines = []
     for row in _WORDMARK:
         text = Text()
@@ -124,12 +134,20 @@ class LunaBanner(Static):
         forces each line to expand to the panel's actual width first, so
         every row centers against the same reference and lines up.
         """
+        variables = self.app.theme_variables
+
+        def color(name: str) -> str:
+            # a host app without Luna's themes still has $foreground
+            return rich_color(variables.get(name) or variables.get("foreground", "default"))
+
         lines = [
-            *_moon_lines(),
+            *_moon_lines(color("strong"), color("border")),
             Text(),
-            *_wordmark_lines(),
+            *_wordmark_lines(
+                [color("primary"), color("strong"), color("accent"), color("primary")]
+            ),
             Text(),
-            Text(f"v{__version__}  ·  AI AGENT HARNESS", style=PALETTE["peri"]),
-            Text(_TAGLINE, style=PALETTE["accent"]),
+            Text(f"v{__version__}  ·  AI AGENT HARNESS", style=color("primary")),
+            Text(_TAGLINE, style=color("accent")),
         ]
         return Group(*(Align.center(line) for line in lines))

@@ -12,29 +12,27 @@ from rich.text import Text
 from textual import events, work
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
+from textual.worker import WorkerCancelled
 
 from luna.tui.banner import LunaBanner
 from luna.tui.commands import FALLBACK_COMMANDS, filter_commands
 from luna.tui.errors import readable
 from luna.tui.key_modal import KeyModal
-from luna.tui.pickers import ChoiceModal, ConfirmModal
+from luna.tui.pickers import ChoiceModal, ConfirmModal, ThemeModal
 from luna.tui.status_bar import StatusBar
-from luna.tui.theme import TUI_VARIABLES
 from luna.tui.tool_row import ToolRow
 from luna.tui.widgets import PulseGlyph
 
 
-def user_line(text: str) -> Text:
-    """Render the user's message as literal text behind a bold ``$peri`` "› " marker."""
-    line = Text()
-    line.append("› ", style=f"bold {TUI_VARIABLES['peri']}")
-    line.append(text)
-    return line
+def user_line(text: str) -> Content:
+    """Render the user's message as literal text behind a bold ``$primary`` "› " marker."""
+    return Content.from_markup("[bold $primary]› [/]") + Content(text)
 
 
 class UserMessage(Static):
@@ -58,20 +56,16 @@ class SystemMessage(Markdown):
     """Local-command output (help text, command results) — dim, unlabeled."""
 
 
-_NOTICE_COLOURS = {
-    "dim": TUI_VARIABLES["moon-dim"],
-    "ok": TUI_VARIABLES["moon-dim"],
-    "info": TUI_VARIABLES["peri"],
-    "warn": TUI_VARIABLES["warn"],
-    "error": TUI_VARIABLES["err"],
-}
-
-
 class NoticeRow(Static):
-    """A short status line (command result, verify, formatter, reload)."""
+    """A short status line (command result, verify, formatter, reload).
+
+    The level is a CSS class (``-dim``/``-ok``/``-info``/``-warn``/``-error``):
+    ``luna.tcss`` gives it the theme color and, for warnings and errors, a
+    left bar.
+    """
 
     def __init__(self, level: str, text: str) -> None:
-        super().__init__(Text(text, style=_NOTICE_COLOURS.get(level, "")))
+        super().__init__(Text(text), classes=f"-{level}")
         self.level = level
         self.text = text
 
@@ -282,6 +276,8 @@ class ChatPane(Widget):
     ) -> None:
         super().__init__()
         self._workdir = workdir
+        #: Set when a ``theme`` effect was applied (``_pick_theme`` reverts otherwise).
+        self._theme_applied = False
         # Required, not defaulted: the pane must always open on a real
         # thread id resolved by the CLI. Leaving the reactive at its None
         # default made every fresh session address a graph thread literally
@@ -416,9 +412,9 @@ class ChatPane(Widget):
         # content (see the DEFAULT_CSS comment on #autocomplete), so the
         # visible height is set here instead — one row per match, capped at
         # 10 so a broad prefix like "/" doesn't take over the screen. `height`
-        # is border-box, so the round border's 2 rows come on top — without
-        # them a single match (e.g. "/ex") rendered as an empty frame.
-        dropdown.styles.height = min(len(matches), 10) + 2
+        # is border-box; the dropdown has only a left bar (no top/bottom
+        # border rows), so the rows are the whole height.
+        dropdown.styles.height = min(len(matches), 10)
         for name, text in matches:
             # _CommandLabel IS a ListItem (see its definition below) — it
             # must be appended directly, NOT wrapped in another `ListItem(...)`.
@@ -540,7 +536,13 @@ class ChatPane(Widget):
     async def _render_command_result(self, result: dict) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
         notices = result.get("notices", [])
-        need = (result.get("effects") or {}).get("need_key")
+        effects = result.get("effects") or {}
+        if "theme" in effects:
+            # the server saved it; this process paints it (its own terminal for "auto")
+            self.app.apply_theme_choice(effects["theme"])
+            self.app.theme_choice = effects["theme"]
+            self._theme_applied = True
+        need = effects.get("need_key")
         if need:
             provider = need["provider"]
             text = (
@@ -553,7 +555,9 @@ class ChatPane(Widget):
         if result.get("text"):
             await transcript.mount(SystemMessage(result["text"]))
         transcript.anchor()
-        if result.get("choice"):
+        if "pick_theme" in effects:
+            await self._pick_theme()
+        elif result.get("choice"):
             choice = result["choice"]
             options = [tuple(o) for o in choice["options"]]
             picked = await self._ask(ChoiceModal(choice["title"], options)).wait()
@@ -568,7 +572,6 @@ class ChatPane(Widget):
         elif result.get("prompt"):
             reload_after = bool(result.get("effects", {}).get("reload_after_turn"))
             await self._send(result["prompt"], echo=None, reload_after=reload_after)
-        effects = result.get("effects") or {}
         if effects.get("need_key"):
             await self._collect_key(effects["need_key"])
             return
@@ -576,6 +579,26 @@ class ChatPane(Widget):
             await self.refresh_state()
         if effects.get("session"):
             self.post_message(self.SwitchSession(effects["session"]))
+
+    async def _pick_theme(self) -> None:
+        """Theme modal with a live preview; Enter saves via ``/theme <id>``, Esc restores."""
+        from luna.ui.theme_picker import theme_options
+
+        app = self.app
+        original = app.theme_choice
+        modal = ThemeModal(
+            theme_options(app.dark_terminal),
+            current=original,
+            on_preview=app.apply_theme_choice,
+        )
+        picked = await self._ask(modal).wait()
+        if picked is None:
+            return
+        self._theme_applied = False
+        await self._run_command(f"/theme {picked}")
+        if not self._theme_applied:
+            # not saved (server error or a refusal): drop the preview
+            app.apply_theme_choice(original)
 
     async def _collect_key(self, need: dict) -> None:
         """Ask for a missing key in a masked modal, store it, then redo the switch.
@@ -663,7 +686,13 @@ class ChatPane(Widget):
         """Worker body: run the line, surface any unexpected error, release busy."""
         try:
             await self.submit(content, mid_turn=mid_turn)
+        except WorkerCancelled:
+            # a modal's worker was cancelled (the app quits with it open): not an
+            # error to show; asyncio.CancelledError is a BaseException and passes
+            return
         except Exception as exc:  # noqa: BLE001 - shown to the user instead of vanishing
+            if not self.is_mounted:
+                return  # torn down meanwhile: nowhere to show it
             transcript = self.query_one("#transcript", VerticalScroll)
             await transcript.mount(NoticeRow("error", f"{type(exc).__name__}: {exc}"))
             transcript.anchor()
@@ -936,4 +965,4 @@ class _CommandLabel(ListItem):
     def compose(self):
         from textual.widgets import Label
 
-        yield Label(f"{self._name}  {self._text}")
+        yield Label(f"{self._name}  {self._text}", markup=False)

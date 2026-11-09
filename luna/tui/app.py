@@ -11,7 +11,15 @@ from textual.widgets import Footer
 from luna.tui.chat import ChatPane
 from luna.tui.errors import readable
 from luna.tui.sidebar_sessions import SessionsSidebar
-from luna.tui.theme import TUI_VARIABLES
+from luna.tui.widgets import GLYPH_SECONDS, PulseGlyph
+from luna.ui.themes import (
+    ThemeSpec,
+    available_themes,
+    resolve,
+    set_active,
+    textual_name,
+    textual_theme,
+)
 
 
 class LunaApp(App):
@@ -51,8 +59,23 @@ class LunaApp(App):
         provider: str = "",
         model: str | None = None,
         pricing: dict | None = None,
+        theme_choice: str = "auto",
+        dark_terminal: bool = True,
+        motion: bool = True,
     ) -> None:
         super().__init__()
+        #: Whether the terminal background is dark (picks the ``auto`` theme).
+        self.dark_terminal = dark_terminal
+        #: The configured theme: ``auto`` or a theme id.
+        self.theme_choice = theme_choice
+        # Registered before the first stylesheet parse, so luna.tcss's
+        # $variables ($muted, $element, $ok, ...) resolve from the start.
+        for spec in available_themes():
+            self.register_theme(textual_theme(spec))
+        self.apply_theme_choice(theme_choice)
+        if not motion:
+            self.animation_level = "none"
+        self._pulse_timer = None
         self._workdir = workdir
         self._provider = provider
         self._model = model
@@ -84,15 +107,34 @@ class LunaApp(App):
         #: Poll on the next tick even if nothing looked live (a run was just started).
         self._poll_armed = True
 
-    def get_theme_variable_defaults(self) -> dict[str, str]:
-        """Make Luna's palette available as ``$bg``/``$peri``/etc. everywhere.
+    def apply_theme_choice(self, choice: str) -> ThemeSpec:
+        """Switch to the theme for ``choice`` (``auto`` follows the terminal background)."""
+        spec = resolve(choice, dark_terminal=self.dark_terminal)
+        name = textual_name(spec)
+        # Themes are re-read from disk on every resolve: (re-)register so a
+        # theme created or edited while the TUI runs is known with its tokens.
+        self.register_theme(textual_theme(spec))
+        if self.theme == name and self.is_running:
+            # Same name, new tokens: Textual only re-applies CSS on a change.
+            self.mutate_reactive(App.theme)
+        else:
+            self.theme = name
+        set_active(spec)
+        # recorded only once the switch has gone through
+        self.theme_choice = choice
+        return spec
 
-        Textual resolves these against *every* stylesheet the app loads —
-        ``luna.tcss`` here, but also any future widget-bundled
-        ``DEFAULT_CSS`` — without needing the declaration repeated in each
-        one, unlike the old ``$var: value;``-string-concatenation approach.
-        """
-        return TUI_VARIABLES
+    def _repaint_after_theme(self, _theme) -> None:
+        """Re-render every widget: Content/rich colors baked into a render cache."""
+        for screen in self.screen_stack:
+            for widget in screen.walk_children():
+                widget.refresh()
+
+    def _pulse(self) -> None:
+        """One shared animation tick for every ``PulseGlyph`` on screen."""
+        for screen in self.screen_stack:
+            for glyph in screen.query(PulseGlyph):
+                glyph.refresh()
 
     def compose(self) -> ComposeResult:
         """Build the layout: sessions sidebar, chat pane, footer."""
@@ -130,6 +172,9 @@ class LunaApp(App):
         Without this, every keystroke typed on launch lands in the session
         list instead of the input, silently doing nothing.
         """
+        self.theme_changed_signal.subscribe(self, self._repaint_after_theme)
+        if self.animation_level != "none":
+            self._pulse_timer = self.set_interval(GLYPH_SECONDS, self._pulse)
         await self.query_one(SessionsSidebar).refresh_sessions()
         self.query_one("#chat-input").focus()
         self.set_interval(3.0, self._tick)

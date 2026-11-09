@@ -2,6 +2,23 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def no_real_terminal(request, monkeypatch):
+    """Never query the real terminal or open the theme picker on real stdin."""
+    from luna.ui import termbg, theme_picker
+
+    termbg.reset_cache()
+    if not request.module.__name__.endswith("test_termbg"):
+        monkeypatch.setattr(termbg, "query_osc11", lambda *a, **k: None)
+
+    def refuse(**kw):
+        raise AssertionError("theme picker opened in a test without a stub")
+
+    monkeypatch.setattr(theme_picker, "pick_theme", refuse)
+    yield
+    termbg.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path_factory, monkeypatch):
     """Keep tests away from the real ~/.config/luna (env var and HOME)."""
     from luna.core import store

@@ -1,0 +1,11 @@
+title = "Дневная луна · для дальтоников"
+extends = "daymoon"
+
+[tokens]
+ok = "#0a62a3"
+add = "#0a62a3"
+err = "#9a4806"
+del = "#9a4806"
+warn = "#6f5c00"
+add_bg = "#dbe9f6"
+del_bg = "#f8e3d2"

@@ -605,3 +605,166 @@ def test_acp_closing_pipes_immediately_leaves_no_noise(tmp_path):
     out, err = proc.communicate(timeout=30)
     assert proc.returncode == 0
     assert "Traceback" not in err and "Exception ignored" not in err
+
+
+# --- first-run theme picker ------------------------------------------------
+
+
+def test_first_run_asks_once(monkeypatch):
+    import luna.cli as cli
+    from luna.config.config import user_setting
+
+    monkeypatch.delenv("LUNA_THEME", raising=False)
+    calls = []
+    monkeypatch.setattr(
+        "luna.ui.theme_picker.pick_theme", lambda **kw: calls.append(kw) or "daymoon"
+    )
+    cli._first_run_theme(console=None, dark=True)
+    assert user_setting("ui.theme") == "daymoon"
+    assert calls[0]["current"] == "auto" and calls[0]["dark_terminal"] is True
+    cli._first_run_theme(console=None, dark=True)
+    assert len(calls) == 1
+
+
+def test_first_run_skipped_with_env(monkeypatch):
+    import luna.cli as cli
+
+    monkeypatch.setenv("LUNA_THEME", "moonlight")
+    monkeypatch.setattr(
+        "luna.ui.theme_picker.pick_theme", lambda **kw: (_ for _ in ()).throw(AssertionError)
+    )
+    cli._first_run_theme(console=None, dark=True)
+
+
+def test_first_run_escape_saves_auto_and_says_how_to_change(monkeypatch):
+    import io
+
+    from rich.console import Console
+
+    import luna.cli as cli
+    from luna.config.config import user_setting
+
+    monkeypatch.delenv("LUNA_THEME", raising=False)
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", lambda **kw: "auto")
+    buf = io.StringIO()
+    cli._first_run_theme(Console(file=buf, width=80), dark=False)
+    assert user_setting("ui.theme") == "auto"
+    assert "тема: Авто · сменить — /theme" in buf.getvalue()
+
+
+def _no_terminal_probe(monkeypatch):
+    monkeypatch.setattr(
+        "luna.ui.termbg.detect_dark", lambda *a, **k: pytest.fail("no OSC query without a TTY")
+    )
+
+
+def test_one_shot_never_asks_for_a_theme(monkeypatch, tmp_path):
+    monkeypatch.delenv("LUNA_THEME", raising=False)
+    monkeypatch.setattr(
+        "luna.ui.theme_picker.pick_theme", lambda **kw: pytest.fail("no picker for -p")
+    )
+    _no_terminal_probe(monkeypatch)
+    monkeypatch.setattr("luna.core.agent.build_agent", _fake_build)
+    monkeypatch.setattr("luna.core.session.run_once", _async(lambda *a, **k: "ok"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert main(["-p", "hi", "--no-splash", "--workdir", str(tmp_path)]) == 0
+
+
+def test_main_applies_the_configured_theme(monkeypatch, tmp_path):
+    from luna.ui.themes import active
+
+    monkeypatch.setenv("LUNA_THEME", "daymoon")
+    _no_terminal_probe(monkeypatch)
+    monkeypatch.setattr("luna.core.agent.build_agent", _fake_build)
+    monkeypatch.setattr("luna.core.session.run_once", _async(lambda *a, **k: "ok"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert main(["-p", "hi", "--no-splash", "--workdir", str(tmp_path)]) == 0
+    assert active().id == "daymoon"
+
+
+def test_main_prints_theme_warnings_escaped(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LUNA_THEME", "[bold]nope")
+    monkeypatch.setattr("luna.core.agent.build_agent", _fake_build)
+    monkeypatch.setattr("luna.core.session.run_once", _async(lambda *a, **k: "ok"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert main(["-p", "hi", "--no-splash", "--workdir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    # stderr: stdout stays parseable for `-p … --output-format json | jq`
+    assert "luna: " in captured.err and "[bold]nope" in captured.err
+    assert "nope" not in captured.out
+
+
+def _interactive_tui(monkeypatch, seen):
+    import luna.cli as cli_mod
+
+    monkeypatch.delenv("LUNA_THEME", raising=False)
+    monkeypatch.setattr("luna.ui.trust.ensure_trusted", lambda *a, **k: True)
+    monkeypatch.setattr(cli_mod, "_has_api_key", lambda *a, **k: True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("luna.ui.console.Console.is_terminal", property(lambda self: True))
+    monkeypatch.setattr("luna.ui.termbg.detect_dark", lambda *a, **k: False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+    def fake_run_tui(config, *, workdir, thread_id, dark_terminal):
+        seen["theme"] = config.theme
+        seen["dark"] = dark_terminal
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_tui", fake_run_tui)
+    return cli_mod
+
+
+def test_first_tui_start_picks_a_theme_and_passes_the_background(monkeypatch, tmp_path):
+    from luna.ui.themes import active
+
+    seen = {}
+    cli_mod = _interactive_tui(monkeypatch, seen)
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", lambda **kw: "moonlight-cb")
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 0
+    assert seen == {"theme": "moonlight-cb", "dark": False}
+    assert active().id == "moonlight-cb"
+
+
+def test_ctrl_c_in_the_theme_picker_exits_130_without_saving(monkeypatch, tmp_path):
+    from luna.config.config import config_path
+
+    seen = {}
+    cli_mod = _interactive_tui(monkeypatch, seen)
+
+    def interrupt(**kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", interrupt)
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 130
+    assert not config_path().exists()
+    assert seen == {}
+
+
+def test_first_run_theme_unsaveable_config_still_applies_the_choice(monkeypatch, tmp_path, capsys):
+    from luna.ui.themes import active
+
+    seen = {}
+    cli_mod = _interactive_tui(monkeypatch, seen)
+    monkeypatch.setattr("luna.ui.theme_picker.pick_theme", lambda **kw: "daymoon")
+
+    def read_only(*a, **k):
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr("luna.config.config.set_config_values", read_only)
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 0
+    assert "не удалось сохранить тему: read-only file system" in capsys.readouterr().out
+    assert seen["theme"] == "daymoon"
+    assert active().id == "daymoon"
+
+
+def test_tui_start_measures_the_background_even_with_a_fixed_theme(monkeypatch, tmp_path):
+    # /theme in the TUI offers «Авто»: it must follow the real background,
+    # and Textual owns stdin once the TUI runs, so measure before it starts.
+    seen = {}
+    cli_mod = _interactive_tui(monkeypatch, seen)
+    monkeypatch.setenv("LUNA_THEME", "daymoon")
+    monkeypatch.setattr(
+        "luna.ui.theme_picker.pick_theme", lambda **kw: pytest.fail("not a first run")
+    )
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 0
+    assert seen == {"theme": "daymoon", "dark": False}

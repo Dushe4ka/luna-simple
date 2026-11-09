@@ -6,10 +6,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
+from rich.text import Text
 
 from luna.core.projects import ProjectIndex
 from luna.ui.interact import _real_terminal
-from luna.ui.theme import PALETTE
 
 REFUSED_MESSAGE = "Luna не запущена: папка не отмечена как доверенная."
 _YES = {"y", "yes", "д", "да"}
@@ -61,17 +61,19 @@ def confirm_trust(console: Console, workdir: str, input_fn: Callable[[str], str]
     # soft_wrap: the full path must be visible — never ellipsis-truncated.
     # Resolved: the CLI may pass a relative "." — the user must see the real folder.
     shown = str(Path(workdir).resolve())
-    console.print(shown, style=PALETTE["peri"], highlight=False, soft_wrap=True)
+    console.print(Text(shown, style="luna.primary"), soft_wrap=True)
     console.print()
     console.print(
-        "Luna сможет читать и изменять файлы в этой папке и запускать в ней\n"
-        "команды. Открывайте только проекты, которым доверяете.",
-        style=PALETTE["moon_dim"],
+        Text(
+            "Luna сможет читать и изменять файлы в этой папке и запускать в ней\n"
+            "команды. Открывайте только проекты, которым доверяете.",
+            style="luna.muted",
+        )
     )
     console.print()
     if not _real_terminal(console, input_fn):
         return input_fn("Доверяете? [y/N] ").strip().lower() in _YES
-    console.print("Enter — подтвердить · Esc — выйти", style=PALETTE["moon_dim"])
+    console.print(Text("Enter — подтвердить · Esc — выйти", style="luna.muted"))
     # unsafe_ask: let Ctrl+C / Esc propagate as KeyboardInterrupt without
     # questionary's own "Cancelled by user" line.
     return trust_question().unsafe_ask() == "yes"

@@ -16,7 +16,7 @@ from rich.text import Text
 
 from luna import __version__
 from luna.ui.colors import _hex_to_rgb, _lerp_rgb, _rgb_to_hex
-from luna.ui.theme import PALETTE
+from luna.ui.themes import active
 
 _DEFAULT_STEPS = [
     "loading modules ...",
@@ -37,7 +37,8 @@ _WORDMARK = [
     "█        █    █    █  █ █    █    █",
     "██████    ████     █   ██    █    █",
 ]
-_WORDMARK_GRADIENT = [PALETTE["peri"], PALETTE["moon"], PALETTE["mauve"], PALETTE["accent"]]
+#: Gradient stops of the wordmark, as theme token names.
+_WORDMARK_GRADIENT = ("primary", "strong", "accent", "primary")
 
 
 def _gradient_stops(colors: list[str], steps: int) -> list[str]:
@@ -66,8 +67,12 @@ def _wordmark_lines(width: int) -> list[Text]:
     """Render the block-letter "LUNA" logo, one gradient-colored row per line."""
     inner_width = min(width, _MAX_WIDTH)
     row_width = len(_WORDMARK[0])
-    stops = _gradient_stops(_WORDMARK_GRADIENT, row_width)
     pad = " " * max(0, (inner_width - row_width) // 2)
+    spec = active()
+    if spec.ansi:
+        # ANSI colors cannot be interpolated: a solid primary wordmark
+        return [Text(pad) + Text(row, style="luna.primary") for row in _WORDMARK]
+    stops = _gradient_stops([spec.tokens[t] for t in _WORDMARK_GRADIENT], row_width)
     lines: list[Text] = []
     for row in _WORDMARK:
         text = Text(pad)
@@ -113,14 +118,12 @@ def render_splash(
     for line in _wordmark_lines(width):
         console.print(prefix + line)
     console.print()
-    console.print(
-        prefix + _centered(width, f"v{__version__}  ·  AI AGENT HARNESS", PALETTE["peri"])
-    )
-    console.print(prefix + _centered(width, _TAGLINE, PALETTE["accent"]))
+    console.print(prefix + _centered(width, f"v{__version__}  ·  AI AGENT HARNESS", "luna.primary"))
+    console.print(prefix + _centered(width, _TAGLINE, "luna.strong"))
     console.print()
-    console.print(prefix + _centered(width, "INITIALIZING ...", PALETTE["accent"]))
+    console.print(prefix + _centered(width, "INITIALIZING ...", "luna.strong"))
     for step in steps:
-        console.print(prefix + _centered(width, f"> {step}", PALETTE["peri"]))
+        console.print(prefix + _centered(width, f"> {step}", "luna.primary"))
         if animate:
             time.sleep(0.12)
     console.print()

@@ -23,10 +23,14 @@ _SUBCOMMANDS = {
 }
 
 
-def run_tui(config, *, workdir: str, thread_id: str) -> int:
-    """Launch the full-screen TUI, auto-starting the local server first."""
+def run_tui(config, *, workdir: str, thread_id: str, dark_terminal: bool = True) -> int:
+    """Launch the full-screen TUI, auto-starting the local server first.
+
+    ``dark_terminal`` picks the theme for ``ui.theme = "auto"``.
+    """
     from luna.server.run import ensure_running
     from luna.tui.app import LunaApp
+    from luna.ui.motion import motion_enabled
 
     info = ensure_running(workdir)
     app = LunaApp(
@@ -37,6 +41,9 @@ def run_tui(config, *, workdir: str, thread_id: str) -> int:
         provider=config.provider,
         model=config.model,
         pricing=config.pricing,
+        theme_choice=config.theme,
+        dark_terminal=dark_terminal,
+        motion=motion_enabled(setting=config.motion),
     )
     app.run()
     return 0
@@ -257,7 +264,7 @@ async def _mcp_probe(name: str, spec: dict, console) -> list:
     """Connect to one MCP server, list its tools, disconnect."""
     from luna_core.mcp import MCPManager
 
-    manager = MCPManager({name: spec}, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+    manager = MCPManager({name: spec}, on_warn=lambda m: console.print(f"[luna.warn]{m}[/]"))
     try:
         return await manager.start()
     finally:
@@ -662,7 +669,7 @@ async def _init_core(config, console) -> int:
     from luna.extensions.initgen import init_prompt
 
     try:
-        bundle = await build_agent(config, on_warn=lambda m: console.print(f"[yellow]{m}[/]"))
+        bundle = await build_agent(config, on_warn=lambda m: console.print(f"[luna.warn]{m}[/]"))
     except LunaConfigError as exc:
         print(f"luna: {exc}", file=sys.stderr)
         return 2
@@ -673,6 +680,99 @@ async def _init_core(config, console) -> int:
     finally:
         await bundle.aclose()
     return 0
+
+
+# --- theme -----------------------------------------------------------------
+
+
+def _theme_unset() -> bool:
+    """Return True when neither ``LUNA_THEME`` nor the user config chooses a theme."""
+    import os
+
+    from luna.config.config import user_setting
+
+    return not os.environ.get("LUNA_THEME") and user_setting("ui.theme") is None
+
+
+def _terminal_is_dark(theme: str, *, probe: bool, tui: bool) -> bool:
+    """Background darkness, measured when ``auto`` or the TUI needs it.
+
+    The OSC 11 query runs only in an interactive terminal (``probe``); a
+    scripted run falls back to ``COLORFGBG``, and to dark without it. The
+    TUI is always measured (``tui``): its ``/theme`` offers «Авто», and the
+    background can no longer be queried once Textual owns stdin.
+    """
+    from luna.ui import termbg
+    from luna.ui.themes import AUTO
+
+    if theme != AUTO and not tui:
+        return True
+    if probe:
+        return termbg.detect_dark()
+    import os
+
+    return termbg.parse_colorfgbg(os.environ.get("COLORFGBG")) is not False
+
+
+def _first_run_theme(console, *, dark: bool) -> str | None:
+    """Ask for a theme once, when none is configured yet, and save the answer.
+
+    Skipped when ``ui.theme`` is already in the user config or ``LUNA_THEME``
+    is set. Returns the picked theme id (``None`` when nothing was asked), so
+    the caller applies it for this session even if saving failed.
+    ``KeyboardInterrupt`` from the picker propagates (nothing saved).
+    """
+    if not _theme_unset():
+        return None
+    from rich.text import Text
+
+    from luna.config.config import set_config_values
+    from luna.ui import theme_picker
+    from luna.ui.themes import AUTO, available_themes
+
+    choice = theme_picker.pick_theme(current=AUTO, dark_terminal=dark)
+    if choice is None:
+        return None
+    try:
+        set_config_values({"ui.theme": choice})
+    except OSError as exc:
+        if console is not None:
+            console.print(Text(f"не удалось сохранить тему: {exc}", style="luna.warn"))
+        return choice
+    if console is None:
+        return choice
+
+    titles = {t.id: t.title for t in available_themes()}
+    title = "Авто" if choice == AUTO else titles.get(choice, choice)
+    console.print(Text(f"тема: {title} · сменить — /theme", style="luna.muted"))
+    return choice
+
+
+def _with_theme(config, theme: str | None):
+    """Return ``config`` with ``theme`` applied for this session (``None`` keeps it)."""
+    if theme is None or config.theme == theme:
+        return config
+    import dataclasses
+
+    return dataclasses.replace(config, theme=theme)
+
+
+def _skip_theme() -> None:
+    """``run_setup`` theme step that asks nothing."""
+    return None
+
+
+def _apply_theme(choice: str, dark: bool) -> None:
+    """Activate the chosen theme; warnings go to stderr as plain text.
+
+    Not stdout: ``luna -p … --output-format json | jq`` must stay parseable.
+    """
+    from luna.ui.console import use_theme
+    from luna.ui.themes import resolve, theme_warnings
+
+    use_theme(resolve(choice, dark_terminal=dark))
+    for warning in theme_warnings():
+        print(f"luna: {warning}", file=sys.stderr)
 
 
 # --- main -------------------------------------------------------------------
@@ -740,6 +840,18 @@ def _main(raw: list[str]) -> int:
 
     prompt = args.prompt_pos or args.prompt
     interactive = console.is_terminal and sys.stdin.isatty() and not args.no_input
+    first_run = interactive and not prompt and _theme_unset()
+
+    dark = _terminal_is_dark(config.theme, probe=interactive, tui=interactive and not prompt)
+    picked_theme = None
+    if first_run:
+        try:
+            picked_theme = _first_run_theme(console, dark=dark)
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
+        config = _with_theme(load_config(_overrides(args)), picked_theme)
+    _apply_theme(config.theme, dark)
 
     # Trust gate: only the TUI path asks. `-p` and a piped-stdin REPL are
     # scripted invocations, where the invocation itself is the consent.
@@ -753,13 +865,14 @@ def _main(raw: list[str]) -> int:
         if interactive:
             from luna.repl.setup_wizard import run_setup
 
-            console.print(f"[yellow]No API key for {config.provider}.[/] Let's set one up.")
+            console.print(f"[luna.warn]No API key for {config.provider}.[/] Let's set one up.")
             try:
-                run_setup(console)
+                # the TUI start has just asked for the theme; don't ask twice
+                run_setup(console, theme_fn=None if prompt else _skip_theme)
             except (KeyboardInterrupt, EOFError):
                 print()
                 return 130
-            config = load_config(_overrides(args))
+            config = _with_theme(load_config(_overrides(args)), picked_theme)
         # non-interactive: fall through; build_agent raises the clean error.
 
     if interactive and not prompt:
@@ -768,7 +881,7 @@ def _main(raw: list[str]) -> int:
         _dirty = dirty_paths(config.workdir)
         if _dirty:
             console.print(
-                f"[yellow]note:[/] working tree has {len(_dirty)} changed file(s); "
+                f"[luna.warn]note:[/] working tree has {len(_dirty)} changed file(s); "
                 "Luna edits files in place"
             )
 
@@ -778,7 +891,7 @@ def _main(raw: list[str]) -> int:
         render_splash(console)
 
     if interactive and not prompt:
-        return _run_tui_path(args, config, console)
+        return _run_tui_path(args, config, console, dark)
     try:
         return asyncio.run(_run_core(args, config, console, prompt, interactive))
     except KeyboardInterrupt:
@@ -789,7 +902,7 @@ def _main(raw: list[str]) -> int:
         return 1
 
 
-def _run_tui_path(args, config, console) -> int:
+def _run_tui_path(args, config, console, dark: bool = True) -> int:
     """Launch the full-screen TUI (served by the local server on luna-core)."""
     import uuid
 
@@ -821,7 +934,7 @@ def _run_tui_path(args, config, console) -> int:
         # Absolute: the shared server would resolve a relative "." against
         # its own cwd, i.e. whichever project happened to start it.
         workdir = str(Path(config.workdir).resolve())
-        return run_tui(config, workdir=workdir, thread_id=start_thread)
+        return run_tui(config, workdir=workdir, thread_id=start_thread, dark_terminal=dark)
     except KeyboardInterrupt:
         console.print()
         return 130
@@ -888,7 +1001,7 @@ async def _run_core(args, config, console, prompt: str | None, interactive: bool
     async def rebuild():
         bundle = await build_agent(
             config,
-            on_warn=lambda m: console.print(f"[yellow]{m}[/]"),
+            on_warn=lambda m: console.print(f"[luna.warn]{m}[/]"),
             plan_flag=lambda: plan_state[0],
             hooks=engine.make_hooks(lambda: hooks_state.get("state"), lambda: config),
         )

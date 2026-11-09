@@ -97,7 +97,7 @@ async def test_render_turn_pauses_and_resumes_progress_around_an_approval(tmp_pa
     events: list[str] = []
 
     class _SpyProgress:
-        def __init__(self, console):
+        def __init__(self, console, motion=True):
             events.append("created")
 
         def start(self, *a, **k):

@@ -368,3 +368,21 @@ def test_global_provider_key_is_not_bound(tmp_path, monkeypatch):
     set_api_key("litellm", "sk-global", registry=reg)
     assert "base_url" not in load_credentials()["litellm"]
     assert resolve_api_key("litellm", reg["litellm"]) == "sk-global"
+
+
+def test_ui_theme_and_motion(tmp_path, monkeypatch):
+    from luna.config.config import load_config, set_config_values, user_setting
+
+    assert load_config().theme == "auto" and load_config().motion is True
+    assert user_setting("ui.theme") is None
+    set_config_values({"ui.theme": "daymoon", "ui.motion": "false"})
+    cfg = load_config()
+    assert cfg.theme == "daymoon" and cfg.motion is False
+    assert user_setting("ui.theme") == "daymoon"
+
+
+def test_luna_theme_env(monkeypatch):
+    from luna.config.config import load_config
+
+    monkeypatch.setenv("LUNA_THEME", "ansi-dark")
+    assert load_config().theme == "ansi-dark"

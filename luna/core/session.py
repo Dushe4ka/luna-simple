@@ -28,6 +28,7 @@ from luna_core.policy import Decision
 from luna_core.session import Session
 from luna_core.usage import Usage
 from rich.console import Console
+from rich.text import Text
 
 from luna.config.config import LunaConfig
 from luna.core.session_state import SessionState, SessionStateStore
@@ -41,17 +42,17 @@ from luna.ui.answer import AnswerRenderer
 from luna.ui.approve import prompt_decision
 from luna.ui.interact import in_thread
 from luna.ui.progress import ToolProgress
-from luna.ui.theme import PALETTE
+from luna.ui.themes import active, rich_theme
 from luna.ui.turn import close_turn, open_turn
 
 __all__ = ["SLASH_COMMANDS", "TurnSummary", "render_turn", "run_once", "run_repl"]
 
 _NOTICE_STYLE = {
-    "dim": "dim",
-    "ok": "dim",
-    "info": PALETTE["blue"],
-    "warn": "yellow",
-    "error": PALETTE["mauve"],
+    "dim": "luna.muted",
+    "ok": "luna.muted",
+    "info": "luna.primary",
+    "warn": "luna.warn",
+    "error": "luna.error",
 }
 _TODO_MARKS = {"completed": "✓", "in_progress": "▸", "pending": "·"}
 
@@ -112,11 +113,15 @@ async def render_turn(
     console: Console,
     input_fn: Callable[[str], str],
     images=(),
+    motion: bool = True,
 ) -> TurnSummary:
-    """Run one turn, rendering it to ``console``; Ctrl-C cancels the turn."""
+    """Run one turn, rendering it to ``console``; Ctrl-C cancels the turn.
+
+    ``motion=False`` (the ``ui.motion`` setting) keeps the tool indicator static.
+    """
     summary = TurnSummary()
     parts: list[str] = []
-    progress = ToolProgress(console)
+    progress = ToolProgress(console, motion=motion)
     answer = AnswerRenderer(console)
     calls = _Calls()
 
@@ -127,7 +132,7 @@ async def render_turn(
             # whatever it answers later (the call must not run)
             calls.interrupted = True
             answer.stop()
-            console.print("\nturn cancelled", style=PALETTE["mauve"])
+            console.print(Text("\nturn cancelled", style="luna.error"))
             calls.announced = True
 
     open_turn(console)
@@ -160,9 +165,7 @@ async def render_turn(
                             session.decide(event.request.call_id, Decision.from_dict(raw))
                         except LunaCoreError as exc:
                             console.print(
-                                f"approval not delivered: {exc}",
-                                style=PALETTE["mauve"],
-                                markup=False,
+                                Text(f"approval not delivered: {exc}", style="luna.error")
                             )
                         progress.resume()
     finally:
@@ -207,7 +210,7 @@ def _render_event(event, summary, parts, console, progress, answer, calls: _Call
     elif isinstance(event, Notice):
         answer.stop()
         level = engine.notice_level(event.text) if event.level == "info" else event.level
-        console.print(event.text, style=_NOTICE_STYLE.get(level, ""), markup=False)
+        console.print(Text(event.text, style=_NOTICE_STYLE.get(level, "")))
     elif isinstance(event, TodosUpdated):
         answer.stop()
         lines = (f"{_TODO_MARKS.get(t.get('status'), '·')} {t.get('content')}" for t in event.todos)
@@ -222,12 +225,12 @@ def _render_event(event, summary, parts, console, progress, answer, calls: _Call
     elif isinstance(event, TurnError):
         answer.stop()
         summary.error = event.message
-        console.print(f"turn failed: {event.message}", style=PALETTE["mauve"], markup=False)
+        console.print(Text(f"turn failed: {event.message}", style="luna.error"))
     elif isinstance(event, Cancelled):
         answer.stop()
         summary.cancelled = True
         if not calls.announced:
-            console.print("turn cancelled", style=PALETTE["mauve"])
+            console.print(Text("turn cancelled", style="luna.error"))
 
 
 async def run_once(
@@ -260,7 +263,8 @@ async def run_once(
     with contextlib.ExitStack() as stack:
         quiet = console
         if output_format == "json":
-            quiet = Console(file=stack.enter_context(open(os.devnull, "w")))  # noqa: SIM115
+            devnull = stack.enter_context(open(os.devnull, "w"))  # noqa: SIM115
+            quiet = Console(file=devnull, theme=rich_theme(active()))
         result = await render_turn(
             bundle.agent,
             session,
@@ -268,6 +272,7 @@ async def run_once(
             console=quiet,
             input_fn=input_fn,
             images=prepared.images,
+            motion=cfg.motion,
         )
     if output_format == "json":
         print(
@@ -299,7 +304,7 @@ def print_recap(session: Session, console: Console, keep: int = 6) -> None:
     messages = [m for m in session.messages() if m.text.strip()]
     if not messages:
         return
-    console.print(f"[{PALETTE['blue']}]— resuming, last {min(keep, len(messages))} messages —[/]")
+    console.print(f"[luna.muted]— resuming, last {min(keep, len(messages))} messages —[/]")
     for message in messages[-keep:]:
         console.print(f"[dim]{message.role}:[/] ", end="")
         console.print(message.text[:200], markup=False, highlight=False)
@@ -313,9 +318,9 @@ async def _rebuild_bundle(ctx: CommandContext, console: Console) -> None:
     try:
         await swap_bundle(ctx)
     except Exception as exc:  # noqa: BLE001 - a bad config must not kill the session
-        console.print(f"[{PALETTE['mauve']}]auto-reload failed: {exc}[/]")
+        console.print(Text(f"auto-reload failed: {exc}", style="luna.error"))
         return
-    console.print(f"[{PALETTE['blue']}]auto-reloaded — new capabilities are live[/]")
+    console.print("[luna.muted]auto-reloaded — new capabilities are live[/]")
 
 
 async def run_repl(
@@ -342,7 +347,7 @@ async def run_repl(
     store = SessionStateStore()
     state = store.load(session.id, session.workdir)
     hooks_state["state"] = state
-    console.print(f"[{PALETTE['peri']}]Luna is ready. Type /help for commands.[/]\n")
+    console.print("[luna.primary]Luna is ready. Type /help for commands.[/]\n")
     ctx = CommandContext(
         console=console,
         config=config,
@@ -389,9 +394,10 @@ async def run_repl(
                 console=console,
                 input_fn=input_fn,
                 images=prepared.images,
+                motion=config.motion,
             )
         except Exception as exc:  # noqa: BLE001 - an unexpected failure must not kill the session
-            console.print(f"turn failed: {exc}", style=PALETTE["mauve"], markup=False)
+            console.print(Text(f"turn failed: {exc}", style="luna.error"))
             continue
         finally:
             store.save(state)

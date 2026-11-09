@@ -107,3 +107,26 @@ class FakeLunaClient:
 
     async def aclose(self):
         pass
+
+
+def make_app(**kwargs):
+    """A ``LunaApp`` wired to an in-process server (no network) in a temp workdir."""
+    import tempfile
+
+    import httpx
+
+    from luna.tui.app import LunaApp
+    from tests.server_helpers import StreamingASGITransport
+    from tests.server_helpers import make_app as make_server
+
+    app = LunaApp(
+        base_url="http://test",
+        token="t",
+        workdir=tempfile.mkdtemp(prefix="luna-tui-"),
+        thread_id="t1",
+        **kwargs,
+    )
+    app.client._http = httpx.AsyncClient(
+        transport=StreamingASGITransport(make_server()), base_url="http://test"
+    )
+    return app

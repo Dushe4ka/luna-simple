@@ -1,0 +1,11 @@
+title = "Лунный свет · для дальтоников"
+extends = "moonlight"
+
+[tokens]
+ok = "#6cb8ee"
+add = "#6cb8ee"
+err = "#f08a4b"
+del = "#f08a4b"
+warn = "#e8d36a"
+add_bg = "#142536"
+del_bg = "#33200f"

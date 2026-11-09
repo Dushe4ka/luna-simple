@@ -9,13 +9,13 @@ RGB = tuple[int, int, int]
 
 
 def _hex_to_rgb(hexcolor: str) -> RGB:
-    """``"#aabbcc" -> (0xaa, 0xbb, 0xcc)``."""
+    """Hex string ``#aabbcc`` -> ``(0xaa, 0xbb, 0xcc)``."""
     h = hexcolor.lstrip("#")
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 def _rgb_to_hex(rgb: RGB) -> str:
-    """``(0xaa, 0xbb, 0xcc) -> "#aabbcc"``."""
+    """``(0xaa, 0xbb, 0xcc)`` -> hex string ``#aabbcc``."""
     r, g, b = (max(0, min(255, round(c))) for c in rgb)
     return f"#{r:02x}{g:02x}{b:02x}"
 

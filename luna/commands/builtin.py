@@ -486,6 +486,32 @@ async def _reload(env, arg):
     )
 
 
+@register("/theme", "pick the color theme, or /theme <id|auto> to switch directly", "mutate")
+async def _theme(env, arg):
+    # Runs where the config lives (the server for the TUI); the client applies
+    # the theme from the effect, with its own terminal background for "auto".
+    from luna.config import config as config_mod
+    from luna.ui.themes import AUTO, AUTO_TITLE, available_themes
+
+    current = env.config.theme
+    if not arg:
+        # no notice: the picker already shows the current choice (by title)
+        return CommandResult(effects={"pick_theme": {"current": current}})
+    titles = {AUTO: AUTO_TITLE}
+    titles.update({t.id: t.title for t in await asyncio.to_thread(available_themes)})
+    if arg not in titles:
+        return CommandResult(
+            notices=[Notice("error", f"нет темы {arg!r}; есть: {', '.join(titles)}")]
+        )
+    notices = [Notice("info", f"тема → {titles[arg]}")]
+    try:
+        await asyncio.to_thread(config_mod.set_config_values, {"ui.theme": arg})
+    except (OSError, LunaConfigError) as exc:
+        notices = [Notice("error", f"не удалось сохранить: {exc}"), *notices]
+    env.config.theme = arg
+    return CommandResult(notices=notices, effects={"theme": arg})
+
+
 register_ui("/new", "start a fresh conversation thread")
 
 

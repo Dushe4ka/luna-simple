@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from luna_core.errors import LunaCoreError
 from luna_core.session import Session
 from rich.console import Console
+from rich.text import Text
 
 from luna.commands import REGISTRY, run_line
 from luna.config.config import LunaConfig
@@ -30,8 +31,7 @@ from luna.core.store import conversations
 from luna.repl import usercmd
 from luna.repl.setup_wizard import choose_model
 from luna.turn.engine import Notice
-from luna.ui.interact import arrow_confirm, arrow_pick, in_thread
-from luna.ui.theme import PALETTE
+from luna.ui.interact import _real_terminal, arrow_confirm, arrow_pick, in_thread
 
 #: Built from the shared registry: one source for help text.
 HELP: dict[str, str] = {c.name: c.help for c in REGISTRY.values()}
@@ -85,7 +85,7 @@ def _session_rows(ctx: CommandContext) -> list:
 
 def _help(ctx: CommandContext, arg: str) -> None:
     for name, help_text in HELP.items():
-        ctx.console.print(f"  [bold {PALETTE['peri']}]{name}[/]  {help_text}")
+        ctx.console.print(f"  [luna.prompt]{name}[/]  {help_text}")
 
 
 def _clear(ctx: CommandContext, arg: str) -> None:
@@ -96,7 +96,7 @@ def _new(ctx: CommandContext, arg: str) -> None:
     workdir = _workdir(ctx)
     ctx.session = Session.create(ctx.log, workdir)
     ctx.state = SessionState(ctx.session.id, workdir)
-    ctx.console.print(f"[{PALETTE['blue']}]started a new session[/]")
+    ctx.console.print("[luna.muted]started a new session[/]")
 
 
 def _sessions(ctx: CommandContext, arg: str) -> None:
@@ -138,20 +138,20 @@ def _do_resume(ctx: CommandContext, target: str) -> None:
 
     info = ctx.log.info(target)
     if info is None:
-        ctx.console.print(f"no session {target!r}", style=PALETTE["mauve"], markup=False)
+        ctx.console.print(Text(f"no session {target!r}", style="luna.error"))
         return
     if info.workdir != _workdir(ctx):
-        ctx.console.print(f"[{PALETTE['mauve']}]session {target[:8]} belongs to another folder[/]")
+        ctx.console.print(f"[luna.error]session {target[:8]} belongs to another folder[/]")
         return
     try:
         session = Session.open(ctx.log, target)
     except LunaCoreError as exc:
-        ctx.console.print(str(exc), style=PALETTE["mauve"], markup=False)
+        ctx.console.print(Text(str(exc), style="luna.error"))
         return
     ctx.session = session
     ctx.state = SessionStateStore().load(session.id, session.workdir)
     print_recap(session, ctx.console)
-    ctx.console.print(f"[{PALETTE['blue']}]resumed session {target[:8]}[/]")
+    ctx.console.print(f"[luna.muted]resumed session {target[:8]}[/]")
 
 
 def _init(ctx: CommandContext, arg: str) -> DispatchResult:
@@ -172,11 +172,11 @@ _UI: dict[str, Callable] = {
 
 
 _STYLE = {
-    "dim": "dim",
-    "ok": "dim",
-    "info": PALETTE["blue"],
-    "warn": "yellow",
-    "error": PALETTE["mauve"],
+    "dim": "luna.muted",
+    "ok": "luna.muted",
+    "info": "luna.primary",
+    "warn": "luna.warn",
+    "error": "luna.error",
 }
 
 
@@ -269,9 +269,10 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
     if secret_fn is None:
         if not sys.stdin.isatty():
             ctx.console.print(
-                f"скрытый ввод недоступен (stdin не терминал) — luna config set-key {provider}",
-                style=_STYLE["warn"],
-                markup=False,
+                Text(
+                    f"скрытый ввод недоступен (stdin не терминал) — luna config set-key {provider}",
+                    style=_STYLE["warn"],
+                )
             )
             return DispatchResult()
         secret_fn = getpass.getpass
@@ -293,29 +294,85 @@ async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
         try:
             set_api_key(provider, key, registry=merge_providers(ctx.config.custom_providers))
         except LunaConfigError as exc:
-            ctx.console.print(str(exc), style=_STYLE["error"], markup=False)
+            ctx.console.print(Text(str(exc), style=_STYLE["error"]))
             return DispatchResult()
         except Exception:  # noqa: BLE001 - a traceback could show the key
-            ctx.console.print("не удалось сохранить ключ", style=_STYLE["error"], markup=False)
+            ctx.console.print(Text("не удалось сохранить ключ", style=_STYLE["error"]))
             return DispatchResult()
     finally:
         del key
-    ctx.console.print(f"ключ для {provider} сохранён", style=_STYLE["info"], markup=False)
+    ctx.console.print(Text(f"ключ для {provider} сохранён", style=_STYLE["info"]))
     return await dispatch(f"/provider {provider}", ctx)
 
 
+def _pick_theme(current: str) -> str | None:
+    """Arrow-pick a theme with a live preview; Esc keeps ``current``, Ctrl-C cancels."""
+    from luna.ui import theme_picker
+    from luna.ui.termbg import detect_dark
+
+    try:
+        return theme_picker.pick_theme(
+            current=current, dark_terminal=detect_dark(), escape_value=current
+        )
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+
+def _theme_title(choice: str) -> str:
+    """Return the display title of ``choice`` (``auto`` included), or the id if unknown."""
+    from luna.ui.themes import AUTO, AUTO_TITLE, available_themes
+
+    titles = {AUTO: AUTO_TITLE, **{t.id: t.title for t in available_themes()}}
+    return titles.get(choice, choice)
+
+
+def _theme_listing(choice: str) -> tuple[str, list[str]]:
+    """Return the title of ``choice`` and every valid theme id (``auto`` first)."""
+    from luna.ui.themes import AUTO, available_themes
+
+    return _theme_title(choice), [AUTO, *(t.id for t in available_themes())]
+
+
+def _apply_theme(choice: str) -> None:
+    """Restyle this process's console with ``choice`` (``auto`` follows the terminal)."""
+    from luna.ui.console import use_theme
+    from luna.ui.termbg import detect_dark
+    from luna.ui.themes import resolve
+
+    use_theme(resolve(choice, dark_terminal=detect_dark()))
+
+
 async def _render(result, ctx: CommandContext) -> DispatchResult:
-    need = result.effects.get("need_key")
+    effects = result.effects or {}
+    if "theme" in effects:
+        _apply_theme(effects["theme"])  # first, so the notice already shows it
+    need = effects.get("need_key")
     notices = result.notices
     if need and ctx.input_fn is not None:
         provider = need["provider"]
         text = f"нужен ключ для {provider} — введите его ниже (или: luna config set-key {provider})"
         notices = [Notice("dim", text)]
     for notice in notices:
-        ctx.console.print(notice.text, style=_STYLE.get(notice.level, ""), markup=False)
+        ctx.console.print(Text(notice.text, style=_STYLE.get(notice.level, "")))
     if result.text:
         ctx.console.print(result.text, markup=False)
     out = DispatchResult()
+    pick = effects.get("pick_theme")
+    if pick is not None and not (
+        ctx.input_fn is not None and _real_terminal(ctx.console, ctx.input_fn)
+    ):
+        # no terminal to pick in (a pipe would feed the picker the next line):
+        # name the current theme and how to change it
+        title, ids = await in_thread(_theme_listing, pick["current"])
+        ctx.console.print(Text(f"тема: {title} · сменить: /theme <id>", style=_STYLE["dim"]))
+        ctx.console.print(Text(f"темы: {', '.join(ids)}", style=_STYLE["dim"]))
+        return out
+    if pick is not None:
+        current = pick["current"]
+        picked = await in_thread(_pick_theme, current)
+        if picked is not None and picked != current:
+            return await dispatch(f"/theme {picked}", ctx)
+        return out
     if result.choice is not None and ctx.input_fn is not None:
         picked = await in_thread(
             arrow_pick, ctx.console, ctx.input_fn, result.choice.options, default=None
