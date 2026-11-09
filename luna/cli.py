@@ -694,16 +694,18 @@ def _theme_unset() -> bool:
     return not os.environ.get("LUNA_THEME") and user_setting("ui.theme") is None
 
 
-def _terminal_is_dark(theme: str, *, probe: bool, first_run: bool) -> bool:
-    """Background darkness, measured only when ``auto`` or the picker needs it.
+def _terminal_is_dark(theme: str, *, probe: bool, tui: bool) -> bool:
+    """Background darkness, measured when ``auto`` or the TUI needs it.
 
     The OSC 11 query runs only in an interactive terminal (``probe``); a
-    scripted run falls back to ``COLORFGBG``, and to dark without it.
+    scripted run falls back to ``COLORFGBG``, and to dark without it. The
+    TUI is always measured (``tui``): its ``/theme`` offers «Авто», and the
+    background can no longer be queried once Textual owns stdin.
     """
     from luna.ui import termbg
     from luna.ui.themes import AUTO
 
-    if theme != AUTO and not first_run:
+    if theme != AUTO and not tui:
         return True
     if probe:
         return termbg.detect_dark()
@@ -839,7 +841,7 @@ def _main(raw: list[str]) -> int:
     interactive = console.is_terminal and sys.stdin.isatty() and not args.no_input
     first_run = interactive and not prompt and _theme_unset()
 
-    dark = _terminal_is_dark(config.theme, probe=interactive, first_run=first_run)
+    dark = _terminal_is_dark(config.theme, probe=interactive, tui=interactive and not prompt)
     picked_theme = None
     if first_run:
         try:

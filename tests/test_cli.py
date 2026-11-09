@@ -752,3 +752,16 @@ def test_first_run_theme_unsaveable_config_still_applies_the_choice(monkeypatch,
     assert "не удалось сохранить тему: read-only file system" in capsys.readouterr().out
     assert seen["theme"] == "daymoon"
     assert active().id == "daymoon"
+
+
+def test_tui_start_measures_the_background_even_with_a_fixed_theme(monkeypatch, tmp_path):
+    # /theme in the TUI offers «Авто»: it must follow the real background,
+    # and Textual owns stdin once the TUI runs, so measure before it starts.
+    seen = {}
+    cli_mod = _interactive_tui(monkeypatch, seen)
+    monkeypatch.setenv("LUNA_THEME", "daymoon")
+    monkeypatch.setattr(
+        "luna.ui.theme_picker.pick_theme", lambda **kw: pytest.fail("not a first run")
+    )
+    assert cli_mod.main(["--no-splash", "--workdir", str(tmp_path)]) == 0
+    assert seen == {"theme": "daymoon", "dark": False}
