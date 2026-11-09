@@ -858,6 +858,7 @@ async def test_repl_theme_picks_with_the_arrow_picker_and_applies(
         return "daymoon"
 
     monkeypatch.setattr("luna.ui.theme_picker.pick_theme", fake_pick)
+    monkeypatch.setattr("luna.repl.commands._real_terminal", lambda *a: True)
     ctx = await make_ctx(input_fn=lambda _p: "")
     await dispatch("/theme", ctx)
     assert calls == [{"current": "auto", "dark_terminal": True, "escape_value": "auto"}]
@@ -871,6 +872,7 @@ async def test_repl_theme_esc_keeps_the_current_theme(make_ctx, monkeypatch, res
     from luna.config.config import user_setting
 
     monkeypatch.setattr("luna.ui.theme_picker.pick_theme", lambda **kw: kw["current"])
+    monkeypatch.setattr("luna.repl.commands._real_terminal", lambda *a: True)
     ctx = await make_ctx(input_fn=lambda _p: "")
     await dispatch("/theme", ctx)
     assert user_setting("ui.theme") is None
@@ -881,6 +883,17 @@ async def test_repl_theme_without_a_terminal_only_names_the_theme(make_ctx, rest
     ctx = await make_ctx(input_fn=None)
     await dispatch("/theme", ctx)  # the conftest guard fails if the picker opens
     assert "тема: Авто" in ctx.console.file.getvalue()  # the title, not the raw id
+
+
+async def test_repl_theme_on_a_pipe_does_not_open_the_picker(make_ctx, restore_theme):
+    # `printf '/theme\nfix bug\n' | luna`: input_fn is the real input(), but
+    # stdin is a pipe — the picker would read (and eat) the next line.
+    ctx = await make_ctx(input_fn=input, console=Console(file=io.StringIO(), width=200))
+    await dispatch("/theme", ctx)  # the conftest guard fails if the picker opens
+    out = ctx.console.file.getvalue()
+    assert "тема: Авто" in out
+    assert "сменить: /theme <id>" in out
+    assert "moonlight" in out and "daymoon-cb" in out
 
 
 async def test_repl_theme_with_an_id_applies_it(make_ctx, restore_theme):

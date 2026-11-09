@@ -31,7 +31,7 @@ from luna.core.store import conversations
 from luna.repl import usercmd
 from luna.repl.setup_wizard import choose_model
 from luna.turn.engine import Notice
-from luna.ui.interact import arrow_confirm, arrow_pick, in_thread
+from luna.ui.interact import _real_terminal, arrow_confirm, arrow_pick, in_thread
 
 #: Built from the shared registry: one source for help text.
 HELP: dict[str, str] = {c.name: c.help for c in REGISTRY.values()}
@@ -326,6 +326,13 @@ def _theme_title(choice: str) -> str:
     return titles.get(choice, choice)
 
 
+def _theme_listing(choice: str) -> tuple[str, list[str]]:
+    """Return the title of ``choice`` and every valid theme id (``auto`` first)."""
+    from luna.ui.themes import AUTO, available_themes
+
+    return _theme_title(choice), [AUTO, *(t.id for t in available_themes())]
+
+
 def _apply_theme(choice: str) -> None:
     """Restyle this process's console with ``choice`` (``auto`` follows the terminal)."""
     from luna.ui.console import use_theme
@@ -351,10 +358,14 @@ async def _render(result, ctx: CommandContext) -> DispatchResult:
         ctx.console.print(result.text, markup=False)
     out = DispatchResult()
     pick = effects.get("pick_theme")
-    if pick is not None and ctx.input_fn is None:
-        # no terminal to pick in: just name the current theme
-        title = await in_thread(_theme_title, pick["current"])
-        ctx.console.print(Text(f"тема: {title}", style=_STYLE["dim"]))
+    if pick is not None and not (
+        ctx.input_fn is not None and _real_terminal(ctx.console, ctx.input_fn)
+    ):
+        # no terminal to pick in (a pipe would feed the picker the next line):
+        # name the current theme and how to change it
+        title, ids = await in_thread(_theme_listing, pick["current"])
+        ctx.console.print(Text(f"тема: {title} · сменить: /theme <id>", style=_STYLE["dim"]))
+        ctx.console.print(Text(f"темы: {', '.join(ids)}", style=_STYLE["dim"]))
         return out
     if pick is not None:
         current = pick["current"]
