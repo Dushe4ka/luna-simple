@@ -295,6 +295,20 @@ answers `effects: {"session": "<new id>"}` — the client switches to it.
         "confirm": null, "prompt": null, "effects": {"plan": true}}
 ```
 
+#### `/model` and grouped choices
+
+`/model` without an argument returns one `choice` over the models of every
+connected provider (a key is set, or a keyless endpoint answers), the
+session's provider first. An option whose value is `""` is a **group
+header** (its label is the provider key): clients show it and never let it
+be picked. Every other value is `"<provider> <model>"`, re-sent as
+`/model <provider> <model>`, which switches provider and model in one
+rebuild (`effects: {"model": …, "provider": …}`); `/model <model>` alone
+keeps the provider. A switched-to provider without a key answers with
+`need_key` (below). A successful `/model` or `/provider` also saves the
+choice to the user `config.toml` (not for a project `.luna.toml` provider);
+a failed save adds a `warn` notice and the switch stays.
+
 #### The `need_key` effect
 
 `/provider` without an argument returns a `choice` listing **every**

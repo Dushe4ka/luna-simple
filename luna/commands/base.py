@@ -30,13 +30,21 @@ if TYPE_CHECKING:
 #: session; prompt = becomes a message to the agent.
 KINDS = ("ui", "read", "mutate", "prompt")
 
+#: ``Choice`` option value of a group header: shown, never picked.
+GROUP_HEADER = ""
+#: Pickers offer type-to-filter once a list has this many pickable options.
+FILTER_FROM = 12
+
 #: Commands that rewrite files and history: refused while background tasks run.
 HISTORY_COMMANDS = frozenset({"/undo", "/redo", "/rewind"})
 
 
 @dataclass(frozen=True)
 class Choice:
-    """Ask the user to pick one option, then re-send ``resubmit.format(value=...)``."""
+    """Ask the user to pick one option, then re-send ``resubmit.format(value=...)``.
+
+    An option whose value is ``GROUP_HEADER`` titles the options after it.
+    """
 
     title: str
     options: list[tuple[str, str]]
@@ -123,6 +131,9 @@ class CommandEnv(Protocol):
 
     async def switch_provider(self, provider: str) -> None:
         """Switch provider for this session; restores the old one and raises on failure."""
+
+    async def switch(self, provider: str, model: str | None) -> None:
+        """Switch provider and model together; restores both and raises on failure."""
 
 
 @dataclass(frozen=True)

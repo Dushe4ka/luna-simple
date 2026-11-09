@@ -37,6 +37,10 @@ def arrow_pick(
 ) -> str | None:
     """Arrow-key-select one of ``options`` (``(value, label)`` pairs).
 
+    An option whose value is ``GROUP_HEADER`` is a group title (a
+    separator), never picked; a list of ``FILTER_FROM`` options or more
+    can be narrowed by typing.
+
     Returns the chosen ``value``, or ``None`` when no real interactive
     terminal is present — the caller must fall back to its own existing
     prompt in that case, unchanged.
@@ -45,10 +49,20 @@ def arrow_pick(
         return None
     import questionary
 
+    from luna.commands.base import FILTER_FROM, GROUP_HEADER
+
+    choices = [
+        questionary.Separator(label) if value == GROUP_HEADER else questionary.Choice(label, value)
+        for value, label in options
+    ]
+    # a long list (every model of every provider) narrows as you type
+    search = sum(1 for value, _ in options if value != GROUP_HEADER) >= FILTER_FROM
     result = questionary.select(
         "",
-        choices=[questionary.Choice(label, value=value) for value, label in options],
+        choices=choices,
         default=default,
+        use_search_filter=search,
+        use_jk_keys=not search,
     ).ask()
     if result is None:
         raise KeyboardInterrupt

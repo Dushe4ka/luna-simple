@@ -378,10 +378,52 @@ ConfirmModal > Vertical {
     padding: 1 2;
 }
 
+ChoiceModal > Vertical {
+    /* the list is capped in vh below, so title + filter + list + hint
+       (about 11 rows besides the list) fit even on a 24-row terminal */
+    max-height: 90%;
+}
+
 ChoiceModal #picker-list {
     height: auto;
-    max-height: 20;
+    max-height: 40vh;
     background: $panel;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: $panel;
+    scrollbar-background-hover: $panel;
+    scrollbar-background-active: $panel;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $muted;
+    scrollbar-color-active: $primary;
+}
+
+/* A filterable list keeps one height while it narrows (no jumping box),
+   and a fixed child lets the box's auto height add up correctly. */
+ChoiceModal.-filterable #picker-list {
+    height: 40vh;
+}
+
+/* Group header (/model: one per provider). Disabled rows are dimmed by
+   Textual's own opacity; reset it, $muted + bold already sets it apart. */
+ChoiceModal ListItem.picker-group {
+    color: $muted;
+    text-style: bold;
+    opacity: 100%;
+    margin-top: 1;
+}
+
+ChoiceModal ListItem.picker-group:first-child {
+    margin-top: 0;
+}
+
+ChoiceModal #picker-filter {
+    margin-bottom: 1;
+    border: round $border;
+    background: $panel;
+}
+
+ChoiceModal #picker-filter:focus {
+    border: round $primary;
 }
 
 KeyModal {

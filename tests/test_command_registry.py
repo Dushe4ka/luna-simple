@@ -51,8 +51,11 @@ class FakeEnv:
             raise
 
     async def switch_provider(self, provider):
+        await self.switch(provider, None)
+
+    async def switch(self, provider, model):
         previous = (self.cfg.provider, self.cfg.model)
-        self.cfg.provider, self.cfg.model = provider, None
+        self.cfg.provider, self.cfg.model = provider, model
         try:
             await self.rebuild()
         except Exception:
@@ -164,20 +167,21 @@ async def test_model_with_arg_switches_and_failure_keeps_the_old_one():
 async def test_model_without_arg_offers_a_choice(monkeypatch):
     from luna.commands import builtin
 
-    monkeypatch.setattr(builtin, "_models_for", lambda cfg: ["a", "b"])
+    provider = LunaConfig().provider
+    monkeypatch.setattr(builtin, "_model_groups", lambda cfg: [(provider, ["a", "b"])])
     result = await run_line("/model", FakeEnv())
-    title = f"Модель ({LunaConfig().provider})"
-    assert result.choice == Choice(title, [("a", "a"), ("b", "b")], "/model {value}")
-    assert result.notices == [Notice("dim", "model: (provider default)")]
+    options = [("", provider), (f"{provider} a", "a"), (f"{provider} b", "b")]
+    assert result.choice == Choice("Модель", options, "/model {value}")
+    assert result.notices == [Notice("dim", f"model: (provider default) ({provider})")]
 
 
 async def test_model_without_arg_and_no_list_explains_usage(monkeypatch):
     from luna.commands import builtin
 
-    monkeypatch.setattr(builtin, "_models_for", lambda cfg: [])
+    monkeypatch.setattr(builtin, "_model_groups", lambda cfg: [])
     result = await run_line("/model", FakeEnv())
     assert result.choice is None
-    assert result.notices == [Notice("dim", "model: (provider default)")]
+    assert result.notices == [Notice("dim", f"model: (provider default) ({LunaConfig().provider})")]
 
 
 async def test_provider_unknown_and_missing_key(monkeypatch):
@@ -204,9 +208,19 @@ async def test_init_becomes_a_prompt_and_reloads_after(tmp_path, monkeypatch):
 async def test_model_picker_marks_the_current_model(monkeypatch):
     from luna.commands import builtin
 
-    monkeypatch.setattr(builtin, "_models_for", lambda cfg: ["a", "b"])
-    env = FakeEnv(cfg=LunaConfig(model="b"))
-    assert (await run_line("/model", env)).choice.options == [("a", "a"), ("b", "b  ✓ текущая")]
+    cfg = LunaConfig(model="b")
+    monkeypatch.setattr(
+        builtin, "_model_groups", lambda c: [(cfg.provider, ["a", "b"]), ("openai", ["b"])]
+    )
+    options = (await run_line("/model", FakeEnv(cfg=cfg))).choice.options
+    # only the session provider's "b" is current, not another provider's model of that name
+    assert options == [
+        ("", cfg.provider),
+        (f"{cfg.provider} a", "a"),
+        (f"{cfg.provider} b", "b  ✓ текущая"),
+        ("", "openai"),
+        ("openai b", "b"),
+    ]
 
 
 async def test_provider_picker_lists_providers_even_without_any_key(monkeypatch):

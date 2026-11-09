@@ -257,6 +257,9 @@ class _ReplEnv:
     async def switch_provider(self, provider: str) -> None:
         await self._switch(provider, None)
 
+    async def switch(self, provider: str, model: str | None) -> None:
+        await self._switch(provider, model)
+
 
 async def _collect_key(need: dict, ctx: CommandContext) -> DispatchResult:
     """Read a missing API key with hidden input, store it, then redo the switch.
@@ -418,7 +421,15 @@ async def dispatch(line: str, ctx: CommandContext) -> DispatchResult:
             f"model: {ctx.config.model or '(provider default)'}", markup=False, highlight=False
         )
         return DispatchResult()
-    if name == "/model" and not arg and ctx.input_fn is not None and ctx.rebuild is not None:
+    if (
+        name == "/model"
+        and not arg
+        and ctx.input_fn is not None
+        and ctx.rebuild is not None
+        and not _real_terminal(ctx.console, ctx.input_fn)
+    ):
+        # no arrow picker (scripted input): the numbered list of the current
+        # provider; a real terminal gets the shared all-providers picker
         registry = merge_providers(ctx.config.custom_providers)
         spec = registry[ctx.config.provider]
         api_key = resolve_api_key(ctx.config.provider, spec)
