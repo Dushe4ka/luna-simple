@@ -110,7 +110,15 @@ class LunaApp(App):
     def apply_theme_choice(self, choice: str) -> ThemeSpec:
         """Switch to the theme for ``choice`` (``auto`` follows the terminal background)."""
         spec = resolve(choice, dark_terminal=self.dark_terminal)
-        self.theme = textual_name(spec)
+        name = textual_name(spec)
+        # Themes are re-read from disk on every resolve: (re-)register so a
+        # theme created or edited while the TUI runs is known with its tokens.
+        self.register_theme(textual_theme(spec))
+        if self.theme == name and self.is_running:
+            # Same name, new tokens: Textual only re-applies CSS on a change.
+            self.mutate_reactive(App.theme)
+        else:
+            self.theme = name
         set_active(spec)
         # recorded only once the switch has gone through
         self.theme_choice = choice

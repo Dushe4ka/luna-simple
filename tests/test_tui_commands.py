@@ -459,3 +459,56 @@ async def test_a_theme_reply_without_the_effect_reverts_the_preview():
         await pilot.pause(0.3)
         assert app.theme == "luna-moonlight"
         assert app.theme_choice == "auto"
+
+
+def _write_user_theme(name: str, body: str) -> None:
+    from luna.config.config import config_dir
+
+    themes = config_dir() / "themes"
+    themes.mkdir(parents=True, exist_ok=True)
+    (themes / f"{name}.toml").write_text(body, encoding="utf-8")
+
+
+async def test_a_theme_created_while_running_can_be_previewed():
+    app, client = _theme_app()
+    async with app.run_test(size=(120, 36)) as pilot:
+        _write_user_theme("zzmine", 'title = "Моя"\nextends = "moonlight"\n')
+        await _open_theme_modal(app, pilot)
+        for _ in range(12):  # past the built-ins onto the new last entry
+            await pilot.press("down")
+            await pilot.pause()
+        assert app.is_running
+        assert app.theme == "luna-zzmine"
+
+
+async def test_an_edited_theme_takes_effect_in_textual():
+    _write_user_theme(
+        "zzmine",
+        'title = "Моя"\nextends = "moonlight"\n[tokens]\nprimary = "#ffaa00"\n',
+    )
+    app, client = _theme_app()
+    async with app.run_test(size=(120, 36)) as pilot:
+        _write_user_theme(
+            "zzmine",
+            'title = "Моя"\nextends = "moonlight"\n[tokens]\nprimary = "#00aaff"\n',
+        )
+        app.apply_theme_choice("zzmine")
+        await pilot.pause()
+        assert app.get_theme("luna-zzmine").primary.lower() == "#00aaff"
+
+
+async def test_re_applying_the_active_edited_theme_refreshes_css():
+    _write_user_theme(
+        "zzmine",
+        'title = "Моя"\nextends = "moonlight"\n[tokens]\nprimary = "#ffaa00"\n',
+    )
+    app, client = _theme_app()
+    app.apply_theme_choice("zzmine")
+    async with app.run_test(size=(120, 36)) as pilot:
+        _write_user_theme(
+            "zzmine",
+            'title = "Моя"\nextends = "moonlight"\n[tokens]\nprimary = "#00aaff"\n',
+        )
+        app.apply_theme_choice("zzmine")
+        await pilot.pause()
+        assert app.stylesheet._variables["primary"].lower() == "#00aaff"
