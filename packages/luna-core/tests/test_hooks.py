@@ -79,12 +79,12 @@ async def test_command_hook_exit_codes(tmp_path):
 
 
 async def test_command_hook_timeout_kills_whole_process_group(tmp_path):
-    marker = tmp_path / "marker"
+    marker = (tmp_path / "marker").as_posix()
     # The shell backgrounds a grandchild that would touch `marker` after ~2s, then the
     # shell itself sleeps for much longer. A timeout of 0.5s must kill the whole process
     # group (the backgrounded grandchild included), not just the shell, so the marker
     # must never appear.
-    hook = CommandHook(f"sh -c '(sleep 2; touch {marker}) & sleep 30'", cwd=tmp_path, timeout=0.5)
+    hook = CommandHook(f"sh -c '(sleep 2; touch '{marker}') & sleep 30'", cwd=tmp_path, timeout=0.5)
     loop = asyncio.get_event_loop()
     start = loop.time()
     result = await hook({"tool": "execute", "args": {}})
@@ -93,7 +93,9 @@ async def test_command_hook_timeout_kills_whole_process_group(tmp_path):
     assert result.notices and "timed out" in result.notices[0]
     assert elapsed < 2.5, f"hook took {elapsed:g}s to return, should return near the 0.5s timeout"
     await asyncio.sleep(2.5)
-    assert not marker.exists(), "grandchild survived the timeout and created the marker"
+    assert not (tmp_path / "marker").exists(), (
+        "grandchild survived the timeout and created the marker"
+    )
 
 
 async def test_load_command_hooks_from_config(tmp_path):
@@ -136,3 +138,14 @@ async def test_command_hook_with_null_match_matches_every_tool(tmp_path):
     )
     assert (await hooks.run("pre_tool", {"args": {}}, tool="execute")).block
     assert (await hooks.run("pre_tool", {"args": {}}, tool="ls")).block
+
+
+async def test_command_hook_without_a_shell_is_a_notice(tmp_path, monkeypatch):
+    from luna_core import shell
+
+    def missing(command):
+        raise shell.ShellNotFound("нужен Git Bash")
+
+    monkeypatch.setattr("luna_core.hooks.shell_argv", missing)
+    result = await CommandHook("echo hi", cwd=tmp_path, timeout=5)({"tool": "x", "args": {}})
+    assert not result.block and "нужен Git Bash" in result.notices[0]

@@ -6,6 +6,7 @@ import sys
 import time
 
 import pytest
+from luna_core import shell
 from luna_core.sandbox import DockerSandbox, LocalSandbox
 
 
@@ -44,12 +45,30 @@ async def test_local_runs_and_merges_output(tmp_path):
 
 
 async def test_local_timeout_kills_the_process_group(tmp_path):
-    marker = tmp_path / "late"
+    marker = (tmp_path / "late").as_posix()
     started = time.monotonic()
-    r = await LocalSandbox().run(f"(sleep 3; touch {marker}) & sleep 30", cwd=tmp_path, timeout=0.5)
+    r = await LocalSandbox().run(
+        f"(sleep 3; touch '{marker}') & sleep 30", cwd=tmp_path, timeout=0.5
+    )
     assert r.timed_out and time.monotonic() - started < 5
     await asyncio.sleep(3.5)
-    assert not marker.exists()  # the background child died with the group
+    assert not (tmp_path / "late").exists()  # the background child died with the group
+
+
+async def test_local_without_a_shell_reports_how_to_fix_it(tmp_path, monkeypatch):
+    def missing(command):
+        raise shell.ShellNotFound("нужен Git Bash: https://git-scm.com/download/win")
+
+    monkeypatch.setattr("luna_core.sandbox.shell_argv", missing)
+    r = await LocalSandbox().run("echo hi", cwd=tmp_path, timeout=10)
+    assert r.exit_code == 127 and "git-scm.com" in r.output
+
+
+async def test_local_cwd_with_spaces_and_cyrillic(tmp_path):
+    cwd = tmp_path / "Мой проект"
+    cwd.mkdir()
+    r = await LocalSandbox().run("echo привет && pwd", cwd=cwd, timeout=30)
+    assert r.exit_code == 0 and "привет" in r.output and "проект" in r.output
 
 
 async def test_local_cancel_event_stops_the_command(tmp_path):

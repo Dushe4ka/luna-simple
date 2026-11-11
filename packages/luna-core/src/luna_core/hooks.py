@@ -6,13 +6,13 @@ import asyncio
 import contextlib
 import json
 import os
-import signal
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
 from luna_core.sandbox import scrub_env
+from luna_core.shell import ShellNotFound, kill_tree, popen_kwargs, shell_argv
 
 POINTS = ("session_start", "pre_tool", "post_tool", "turn_end", "pre_compact")
 
@@ -130,14 +130,18 @@ class CommandHook:
         The process starts its own session so a timeout can kill the whole
         process group, never leaving orphaned children behind.
         """
-        proc = await asyncio.create_subprocess_shell(
-            self.command,
+        try:
+            argv = shell_argv(self.command)
+        except ShellNotFound as exc:
+            return HookResult(notices=(f"hook `{self.command}` not run: {exc}",))
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             cwd=self.cwd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
             env=scrub_env(os.environ, passthrough=self.env_passthrough),
+            **popen_kwargs(),
         )
         try:
             out, err = await asyncio.wait_for(
@@ -164,9 +168,8 @@ class CommandHook:
 
     @staticmethod
     def _kill_group(pid: int) -> None:
-        """Kill the whole process group rooted at ``pid`` (started via start_new_session)."""
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        """Kill ``pid`` and every process it started."""
+        kill_tree(pid)
 
 
 def load_command_hooks(

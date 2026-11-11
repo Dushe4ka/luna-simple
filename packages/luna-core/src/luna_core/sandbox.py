@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import signal
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Protocol
+
+from luna_core.shell import ShellNotFound, kill_tree, popen_kwargs, shell_argv
 
 #: Environment variable names never handed to ``execute`` commands by default.
 #: Commands run by the model can print their environment (``env``), and that
@@ -96,17 +97,16 @@ async def _run_process(
     cancel: asyncio.Event | None,
     limit: int,
 ) -> RunResult:
-    kwargs = dict(
+    argv = shell_argv(argv_or_cmd) if shell else list(argv_or_cmd)
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
+        stdin=asyncio.subprocess.DEVNULL,
         cwd=str(cwd) if cwd else None,
         env=env,
+        **popen_kwargs(),
     )
-    if shell:
-        proc = await asyncio.create_subprocess_shell(argv_or_cmd, **kwargs)
-    else:
-        proc = await asyncio.create_subprocess_exec(*argv_or_cmd, **kwargs)
     reader = asyncio.ensure_future(proc.stdout.read())
     cancel_wait = asyncio.ensure_future(cancel.wait()) if cancel else None
     waiters = {reader} | ({cancel_wait} if cancel_wait else set())
@@ -143,8 +143,7 @@ async def _run_process(
 
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(proc.pid, signal.SIGKILL)
+    kill_tree(proc.pid)
     with contextlib.suppress(ProcessLookupError):
         proc.kill()
 
@@ -169,17 +168,20 @@ class LocalSandbox:
         env: dict | None = None,
         cancel: asyncio.Event | None = None,
     ) -> RunResult:
-        """Run ``command`` with ``sh`` in ``cwd``."""
+        """Run ``command`` with this machine's shell (sh / Git Bash) in ``cwd``."""
         full_env = scrub_env({**os.environ, **(env or {})}, passthrough=self.env_passthrough)
-        return await _run_process(
-            command,
-            shell=True,
-            cwd=cwd,
-            timeout=timeout,
-            env=full_env,
-            cancel=cancel,
-            limit=self.max_output,
-        )
+        try:
+            return await _run_process(
+                command,
+                shell=True,
+                cwd=cwd,
+                timeout=timeout,
+                env=full_env,
+                cancel=cancel,
+                limit=self.max_output,
+            )
+        except ShellNotFound as exc:
+            return RunResult(127, str(exc))
 
     async def close(self) -> None:
         """Nothing to release."""
