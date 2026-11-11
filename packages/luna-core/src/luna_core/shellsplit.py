@@ -24,6 +24,8 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
+from luna_core import shell as _shell
+
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 # Words that may precede a command without being the program itself.
@@ -183,13 +185,42 @@ def _redirect_cuts(piece: str) -> tuple[list[str], bool]:
     return cuts, True
 
 
+_WIN_EXTENSIONS = frozenset({"exe", "cmd", "bat", "com"})
+
+
+def _strip_windows(name: str) -> str:
+    """Lower-case a Windows program name and drop a trailing ``.exe`` & co."""
+    name = name.lower()
+    stem, dot, ext = name.rpartition(".")
+    return stem if dot and stem and ext in _WIN_EXTENSIONS else name
+
+
+def program_name(word: str) -> str:
+    """Basename of a program word; on Windows also lower-cased without ``.exe`` & co.
+
+    Windows finds ``rm.exe`` for ``RM``, ``Rm.EXE`` or ``C:/Git/usr/bin/rm``, so a
+    deny rule on ``rm`` must see all of them as ``rm``.
+    """
+    name = word.rsplit("/", 1)[-1]
+    return _strip_windows(name) if _shell.IS_WINDOWS else name
+
+
+def allow_form(word: str) -> str:
+    """Program word as an allow rule sees it: path kept, Windows-normalised."""
+    if not _shell.IS_WINDOWS:
+        return word
+    head, sep, tail = word.rpartition("/")
+    return f"{head}{sep}{_strip_windows(tail)}"
+
+
 def _variants(words: list[str]) -> list[str]:
-    """Return the joined command, plus a form with the program path cut to its basename."""
+    """Return the joined command, plus a form with the program cut to :func:`program_name`."""
     if not words:
         return []
     out = [" ".join(words)]
-    if "/" in words[0]:
-        out.append(" ".join([words[0].rsplit("/", 1)[-1], *words[1:]]))
+    base = program_name(words[0])
+    if base != words[0]:
+        out.append(" ".join([base, *words[1:]]))
     return out
 
 
@@ -215,7 +246,7 @@ def _collect(
         if not words:
             continue
         payload = _payload(words)
-        normalised = " ".join(words)
+        normalised = " ".join([allow_form(words[0]), *words[1:]])
         for variant in _variants(words):
             if variant not in parts.subjects:
                 parts.subjects.append(variant)
@@ -253,8 +284,8 @@ def _normalise(words: list[str], flags: list[str] | None = None) -> list[str]:
             if not redirect.group(1) and words:
                 words.pop(0)
             changed = True
-        if words and words[0] in _PREFIXES:
-            prefix = words.pop(0)
+        if words and program_name(words[0]) in _PREFIXES:
+            prefix = program_name(words.pop(0))
             if prefix in _ELEVATING_PREFIXES:
                 flags.append(prefix)
             takes_value = _PREFIXES[prefix]
@@ -271,7 +302,7 @@ def _normalise(words: list[str], flags: list[str] | None = None) -> list[str]:
 
 def _payload(words: list[str]) -> str | None:
     """Return the command string run by ``bash -c '...'`` / ``eval ...``, else ``None``."""
-    program = words[0].rsplit("/", 1)[-1]
+    program = program_name(words[0])
     if program == "eval":
         return " ".join(words[1:])
     if program not in _SHELLS:

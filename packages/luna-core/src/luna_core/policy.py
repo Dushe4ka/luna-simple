@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
-from luna_core.shellsplit import rough_split, split_command
+from luna_core.shellsplit import program_name, rough_split, split_command
 from luna_core.tools.base import Tool, args_preview
 from luna_core.workspace import OutsideWorkspace, Workspace
 
@@ -253,6 +253,7 @@ RUNNER_PROGRAMS = frozenset(
         "eval", "exec", "source", ".", "env", "command", "builtin",
         "sudo", "doas", "su", "xargs", "find", "nohup", "nice", "timeout",
         "time", "stdbuf", "watch", "busybox", "parallel",
+        "cmd", "cmd.exe", "powershell", "pwsh", "wsl", "start", "cygstart", "winpty",
     }
 )  # fmt: skip
 
@@ -279,7 +280,7 @@ def check_rule_safe(rule: str) -> None:
     program = words[0] if words else ""
     if not _PLAIN_PROGRAM.match(program):
         raise UnsafeRule(f"refusing to save {rule!r}: {program!r} is not a plain program name")
-    if program.rsplit("/", 1)[-1] in RUNNER_PROGRAMS:
+    if program_name(program) in RUNNER_PROGRAMS:
         raise UnsafeRule(f"refusing to save {rule!r}: {program!r} can run any command")
 
 
