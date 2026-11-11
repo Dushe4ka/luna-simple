@@ -254,6 +254,29 @@ PowerShell как запасную оболочку (Claude Code, opencode) не
   TUI (`✳ ✦ ✧ ◐ ● ◌`) есть в Cascadia Mono, шрифте Windows Terminal по умолчанию. Проверить
   отрисовку в CI нельзя, это пункт ручной проверки (см. «Риски»).
 
+### 9. SDK (`luna-core`) на Windows
+
+Все изменения ядра (п. 1–7) действуют и для тех, кто собирает агента на SDK. Дополнительно:
+
+- **Установка SDK.** `pip install luna-core` не работает: на PyPI пакета нет. Рабочая
+  команда, проверена 2026-11-11:
+  `pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"`
+  (то же с `[mcp]`, `[acp]`). Ей заменяются все упоминания `pip install luna-core` в
+  `docs/sdk/*.md`, `packages/luna-core/README.md` и примерах.
+- **Раздел «Windows» в документации SDK** (`docs/sdk/README.ru.md`, `docs/sdk/tools.md`):
+  - `LocalSandbox` выполняет команды через Git Bash; поиск и `LUNA_GIT_BASH_PATH`;
+  - без Git Bash `execute` возвращает код 127 с подсказкой, а не исключение;
+  - `DockerSandbox` на Windows требует Docker Desktop;
+  - модуль `luna_core.shell` (`find_shell`, `run_sync`, `kill_tree`, `ShellNotFound`) — для
+    своих инструментов, которым нужна та же оболочка;
+  - конфиг-папка по умолчанию `%APPDATA%\luna` (`luna_core.paths.user_config_dir`).
+- `luna_core.shell`, `paths` и `fsperm` — документированные подмодули, в верхний
+  `luna_core.__all__` не выносятся (тест публичного API не меняется).
+- **Проверка «только SDK» в CI** на трёх ОС: в чистое окружение ставится только колесо
+  `luna-core` (без приложения), затем запускаются примеры SDK, которые не требуют
+  приложения, и одна команда через `LocalSandbox` с кириллицей. Так ловится случайная
+  зависимость ядра от приложения.
+
 ## Тесты и CI
 
 - `.github/workflows/ci.yml`: матрица `os: [ubuntu-latest, macos-latest, windows-latest]`.

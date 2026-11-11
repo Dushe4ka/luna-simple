@@ -2132,6 +2132,119 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
+### Task 12a: Документация SDK — установка и Windows
+
+**Files:**
+- Modify: `docs/sdk/README.ru.md` (раздел «Установка» ~55-63, раздел о песочнице ~465-510), `docs/sdk/quickstart.md:13-14`, `docs/sdk/mcp-and-acp.md:5,40`, `docs/sdk/tools.md:72-90`, `packages/luna-core/README.md`
+- Test: `tests/test_sdk_docs.py` (новый)
+
+**Interfaces:**
+- Consumes: `luna_core.shell` (Task 1), `luna_core.paths.user_config_dir` (Task 8).
+- Produces: только документация. `luna_core.__all__` не меняется.
+
+- [ ] **Step 1: Тест**
+
+```python
+# tests/test_sdk_docs.py
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DOCS = [*sorted((ROOT / "docs" / "sdk").glob("*.md")), ROOT / "packages" / "luna-core" / "README.md"]
+GIT_SPEC = "git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
+
+
+def test_no_doc_promises_a_pypi_install_that_does_not_exist():
+    bad = [
+        f"{p.relative_to(ROOT)}: {line.strip()}"
+        for p in DOCS
+        for line in p.read_text(encoding="utf-8").splitlines()
+        if re.search(r"pip install [\"']?luna-core(\[[a-z,]+\])?[\"']?(\s|$)", line)
+    ]
+    assert bad == []
+
+
+def test_install_section_uses_the_git_subdirectory():
+    text = (ROOT / "docs" / "sdk" / "README.ru.md").read_text(encoding="utf-8")
+    assert GIT_SPEC in text
+
+
+def test_windows_section_covers_the_shell():
+    text = (ROOT / "docs" / "sdk" / "README.ru.md").read_text(encoding="utf-8")
+    for needle in ("Windows", "Git Bash", "LUNA_GIT_BASH_PATH", "luna_core.shell", "127",
+                   "Docker Desktop", "%APPDATA%"):
+        assert needle in text, needle
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `uv run pytest tests/test_sdk_docs.py -q -o addopts=""`
+Expected: FAIL (в документации `pip install luna-core`, раздела Windows нет).
+
+- [ ] **Step 3: Документация**
+
+Установку везде заменить на:
+
+```bash
+pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
+pip install "luna-core[mcp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
+pip install "luna-core[acp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
+# или: uv add "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
+```
+
+Добавить фразу: «На PyPI пакета пока нет; ставится из GitHub, нужен `git`».
+
+В `docs/sdk/README.ru.md` после раздела о песочнице добавить:
+
+````markdown
+### Windows
+
+SDK работает на Windows 10+ так же, как на macOS и Linux. Отличается только оболочка.
+
+- `LocalSandbox` выполняет команды через **Git Bash**, потому что правила `execute`
+  разбирают команду по грамматике bash, а `cmd.exe` её не понимает. Git Bash ищется так:
+  `LUNA_GIT_BASH_PATH` → рядом с `git.exe` из `PATH` → `%ProgramFiles%\Git` →
+  `%LOCALAPPDATA%\Programs\Git` → `%LOCALAPPDATA%\luna\git` (PortableGit от установщика
+  Luna). `bash.exe` из `System32` и `WindowsApps` (это WSL) не используется.
+- Без Git Bash `execute` не падает: результат с кодом 127 и подсказкой, где взять Git.
+- В командах используйте прямые слеши: `cat src/main.py`, `C:/Users/...`.
+- `DockerSandbox` на Windows требует запущенного Docker Desktop.
+- Папка пользовательских файлов (токены MCP) — `%APPDATA%\luna`
+  (`luna_core.paths.user_config_dir()`); `XDG_CONFIG_HOME` по-прежнему главнее.
+- Своему инструменту, которому нужна та же оболочка, используйте `luna_core.shell`:
+
+```python
+from luna_core.shell import ShellNotFound, run_sync
+
+try:
+    proc = run_sync("git log -1 --format=%s", cwd=".", timeout=10)
+    print(proc.stdout)
+except ShellNotFound as exc:
+    print(exc)  # подсказка, как поставить Git Bash
+```
+
+`run_sync` возвращает `subprocess.CompletedProcess` с текстом в UTF-8, а при таймауте
+снимает всё дерево процессов и поднимает `subprocess.TimeoutExpired`.
+````
+
+В `docs/sdk/tools.md` в абзаце про `LocalSandbox` дописать: «На Windows — через Git Bash, см. README.ru.md → Windows».
+
+- [ ] **Step 4: Тесты**
+
+Run: `uv run pytest tests/test_sdk_docs.py packages/luna-core/tests/test_public_api.py -q -o addopts=""`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add docs/sdk packages/luna-core/README.md tests/test_sdk_docs.py
+git commit -m "docs(sdk): working install command and a Windows section
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 13: CI на трёх ОС + сквозной smoke через мок-LLM
 
 **Files:**
@@ -2331,6 +2444,58 @@ if __name__ == "__main__":
 
 Флаг `--no-splash` и порядок аргументов сверить с `luna --help`. Если `luna config path` печатает путь не так, как ожидает проверка, поправить проверку под реальный вывод.
 
+- [ ] **Step 2a: SDK-smoke (только `luna-core`)**
+
+```python
+# scripts/ci/sdk_smoke.py
+"""Run with a Python that has ONLY luna-core installed (no app): SDK examples + LocalSandbox."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+# examples that need only luna-core (approvals_web/acp_agent/remote_client need extras or the app)
+CASES = [
+    ("minimal_agent.py", "This folder is a project."),
+    ("custom_tool.py", "four words"),
+    ("custom_provider.py", "You said: hello from a custom provider"),
+]
+
+
+def main() -> None:
+    from luna_core import LocalSandbox
+
+    work = Path(tempfile.mkdtemp(prefix="luna-sdk-"))
+    for name, expected in CASES:
+        out = subprocess.run(
+            [sys.executable, str(EXAMPLES / name), "--fake", "--workdir", str(work)],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=120, cwd=work,
+        )
+        if out.returncode or expected not in out.stdout:
+            print(f"SDK SMOKE FAIL {name}:\n{out.stdout}\n{out.stderr}")
+            sys.exit(1)
+    cwd = work / "Мой проект"
+    cwd.mkdir()
+    result = asyncio.run(LocalSandbox().run("echo привет && pwd", cwd=cwd, timeout=60))
+    if result.exit_code or "привет" not in result.output:
+        print(f"SDK SMOKE FAIL LocalSandbox: {result}")
+        sys.exit(1)
+    print("SDK SMOKE OK")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Перед коммитом проверить, что три примера из `CASES` действительно не импортируют `luna`, `starlette`, `acp`: `grep -nE "^(from|import) (luna\b|luna\.|starlette|acp)" examples/minimal_agent.py examples/custom_tool.py examples/custom_provider.py`. Если какой-то импортирует, убрать его из `CASES` и указать причину в комментарии.
+
+Локально: `S=$(mktemp -d) && uv venv -q --python 3.12 "$S/v" && uv build -q --package luna-core --out-dir "$S/dist" && uv pip install -q --python "$S/v" "$S"/dist/luna_core-*.whl && "$S/v/bin/python" scripts/ci/sdk_smoke.py` → `SDK SMOKE OK`.
+
 - [ ] **Step 3: Локальный тест мока**
 
 ```python
@@ -2434,6 +2599,30 @@ jobs:
       - name: End-to-end turn through the real shell
         run: python scripts/ci/smoke.py
 
+  sdk-only:
+    # luna-core alone, without the app: catches an accidental core → app dependency
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build the core wheel
+        run: uv build --package luna-core --out-dir dist
+      - name: Clean venv with only luna-core
+        shell: bash
+        run: |
+          uv venv --python 3.12 sdk-env
+          uv pip install --python sdk-env $(ls dist/luna_core-*.whl)
+      - name: SDK examples and LocalSandbox
+        shell: bash
+        run: |
+          PY=$( [ "$RUNNER_OS" = "Windows" ] && echo sdk-env/Scripts/python.exe || echo sdk-env/bin/python )
+          "$PY" -c "import luna, sys" 2>/dev/null && { echo "the app leaked into the SDK env"; exit 1; }
+          "$PY" scripts/ci/sdk_smoke.py
+
   installer:
     strategy:
       fail-fast: false
@@ -2486,7 +2675,7 @@ Run: `uv run python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/
 Expected: без ошибок.
 
 ```bash
-git add scripts/ci tests/test_ci_scripts.py .github/workflows/ci.yml
+git add scripts/ci tests/test_ci_scripts.py .github/workflows/ci.yml  # includes scripts/ci/sdk_smoke.py
 git commit -m "ci: test on ubuntu/macos/windows, end-to-end smoke via mock LLM, installers
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2512,7 +2701,7 @@ Run: `git push -u origin feat/windows`
 - [ ] **Step 3: Дождаться CI**
 
 Run: `gh run watch --exit-status $(gh run list --branch feat/windows --limit 1 --json databaseId -q '.[0].databaseId')`
-Expected: зелёные `lint`, `test` ×4, `smoke` ×3, `installer` ×3, `installer-windows-no-git`.
+Expected: зелёные `lint`, `test` ×4, `smoke` ×3, `sdk-only` ×3, `installer` ×3, `installer-windows-no-git`.
 
 - [ ] **Step 4: На каждое падение — systematic-debugging**
 
