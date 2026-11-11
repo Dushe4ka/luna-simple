@@ -28,7 +28,12 @@ Linux. Это нужно и само по себе, и как основа бу�
 дерево процессов, правило `deny` нельзя обойти регистром, `.exe` или путём к программе,
 `edit_file` сохраняет переводы строк, кириллица не ломается.
 
-**Вне рамок:** десктоп-приложение, PowerShell как оболочка, системное хранилище ключей
+**Главное требование пользователя:** после установки на любой ОС достаточно набрать в
+терминале `luna`, и всё работает одинаково: TUI, REPL, одиночный запрос, команды агента.
+Дополнительный критерий: в CI на трёх ОС Luna ставится так же, как у пользователя, и
+проходит сквозной прогон (п. 8).
+
+**Вне рамок:** публикация на PyPI, десктоп-приложение, PowerShell как оболочка, системное хранилище ключей
 (Credential Manager / Keychain), опрос цвета фона терминала на Windows, сборка установщиков.
 
 ## Решения
@@ -60,6 +65,8 @@ def kill_tree(pid: int) -> None:
    (для `cmd/git.exe` и `mingw64/bin/git.exe`).
 3. `%ProgramFiles%\Git\bin\bash.exe`, `%ProgramFiles(x86)%\Git\bin\bash.exe`,
    `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`.
+4. `%LOCALAPPDATA%\luna\git\bin\bash.exe` — PortableGit, который ставит установщик Luna,
+   если Git в системе нет (п. 8).
 
 Путь внутри `%SystemRoot%\System32` (это WSL-лаунчер `bash.exe`) **никогда** не принимается.
 Результат кешируется на процесс, функция поиска чистая и принимает `env`, чтобы её можно было
@@ -165,6 +172,88 @@ def kill_tree(pid: int) -> None:
 - Для allow-правил то же сравнение без учёта регистра безопасно: это тот же файл.
 - Если не подтвердился, пишется только регрессионный тест.
 
+### 8. Установка и запуск командой `luna`
+
+Сейчас README предлагает `uv pip install luna-simple`, но на PyPI пакета нет, а установка в
+venv не кладёт `luna` в `PATH`. Проверено 2026-11-11: `uv tool install
+git+https://github.com/Dushe4ka/luna-simple` ставит `luna` и `luna-simple` с собственной
+(не editable) копией `luna-core`, `luna --version` работает.
+
+#### Что делают аналоги (изучено 2026-11-11)
+
+| | Установка | Python / рантайм | Git Bash на Windows |
+|---|---|---|---|
+| Claude Code | `curl …/install.sh \| bash`, `irm …/install.ps1 \| iex`, версия аргументом | свой бинарник в `~/.local/bin` | ищет Git Bash, без него PowerShell; путь можно задать в настройках |
+| opencode | `curl …/install \| bash`, `--version`, `--no-modify-path` | свой бинарник | порядок pwsh → powershell → Git Bash → cmd, Git Bash ищет рядом с `git` |
+| aider (Python) | `curl -LsSf …/install.sh \| sh`, `irm …/install.ps1 \| iex` — это установщик uv | `uv tool install --force --python 3.12 aider-chat` | — |
+| Hermes (Python) | `curl … \| bash`, `irm … \| iex`, ставит в `%LOCALAPPDATA%\hermes` | uv | **если Git нет, кладёт проверенный PortableGit в свою папку, системный Git не трогает** |
+| goose | `download_cli.sh` / `download_cli.ps1` в `~/.local/bin` | свой бинарник | — |
+| Codex | npm / brew | свой бинарник | PowerShell и отдельный парсер команд для правил |
+
+Общие практики, которые берём:
+
+- одна строка установки для каждой ОС (`curl | sh` и `irm | iex`), без прав администратора;
+- Python-агенты (aider, Hermes) не просят ставить Python, а используют uv: так и делаем;
+- команда в `~/.local/bin` (на Windows `%USERPROFILE%\.local\bin`), каталог добавляется в
+  пользовательский `PATH`; опция «не трогать PATH»;
+- установка конкретной версии;
+- внешние загрузки проверяются по SHA-256 (Hermes, t3code);
+- **как Hermes: если на Windows нет Git, установщик сам кладёт PortableGit** в папку Luna, и
+  `execute` работает сразу, без ручной установки Git. Системный Git не трогается;
+- диагностика установки (`claude doctor`) и обновление одной командой (Claude Code,
+  opencode, Hermes).
+
+PowerShell как запасную оболочку (Claude Code, opencode) не берём: с PortableGit Git Bash
+есть всегда, а вторая оболочка требует второго парсера правил (как у Codex).
+
+#### Установщик Luna
+
+Официальный способ — **`uv tool`** на всех ОС: Python ставить не нужно, uv скачает его сам.
+
+- `scripts/install.sh` (macOS/Linux):
+  `curl -LsSf https://raw.githubusercontent.com/Dushe4ka/luna-simple/main/scripts/install.sh | sh`
+- `scripts/install.ps1` (Windows):
+  `powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Dushe4ka/luna-simple/main/scripts/install.ps1 | iex"`
+
+Оба скрипта делают одно и то же:
+
+1. Если `uv` нет, ставят его официальным установщиком Astral (`astral.sh/uv/install.sh` /
+   `install.ps1`).
+2. `uv tool install --python 3.12 --force "luna-simple[all] @ git+https://github.com/Dushe4ka/luna-simple@<ref>"`.
+   `<ref>` по умолчанию `main`, задаётся `LUNA_REF` или параметром (`--ref` / `-Ref`).
+3. `uv tool update-shell`, чтобы каталог с `luna` попал в `PATH`; пропускается при
+   `--no-modify-path` / `-NoModifyPath`. Скрипт сообщает, что нужно открыть новый терминал.
+4. Только Windows: если Git Bash не найден тем же поиском, что в п. 1, скачивается
+   PortableGit (64-bit или arm64) с GitHub-релизов git-for-windows, конкретной версии с
+   зашитым SHA-256. Он распаковывается в `%LOCALAPPDATA%\luna\git`. При несовпадении хеша
+   установка Git прерывается с ошибкой, Luna остаётся установленной. Отказаться можно
+   параметром `-NoGit`.
+5. В конце запускают `luna doctor`.
+
+Новые подкоманды CLI, одинаковые на всех ОС:
+
+- `luna doctor`: версия Luna и Python, откуда запущена `luna` и есть ли она в `PATH`, папка
+  конфига, найденная оболочка (или почему не найдена), `git`, состояние фонового сервера.
+  Каждая строка — «ок» или «проблема и что сделать».
+- `luna update`: `uv tool upgrade luna-simple`. Если Luna установлена не через `uv tool`,
+  печатает, как обновиться, и ничего не делает.
+
+Удаление: `uv tool uninstall luna-simple` (PortableGit удаляется вместе с
+`%LOCALAPPDATA%\luna`). README переписывается под этот способ, установка для разработки
+остаётся отдельно.
+
+Одинаковое поведение после запуска:
+
+- `luna/cli.py::main` на Windows переключает `stdout`/`stderr` на UTF-8
+  (`reconfigure(encoding="utf-8", errors="replace")`). Иначе при выводе в файл или пайп
+  (`luna --json … > out.json`) кириллица падает с `UnicodeEncodeError`, потому что
+  перенаправленный вывод на Windows идёт в ANSI-кодировке.
+- Фоновый сервер, который запускает TUI, на Windows стартует без окна консоли и переживает
+  её закрытие (п. 2).
+- Поддерживаемые терминалы на Windows: Windows Terminal и консоль Windows 10+ с VT. Глифы
+  TUI (`✳ ✦ ✧ ◐ ● ◌`) есть в Cascadia Mono, шрифте Windows Terminal по умолчанию. Проверить
+  отрисовку в CI нельзя, это пункт ручной проверки (см. «Риски»).
+
 ## Тесты и CI
 
 - `.github/workflows/ci.yml`: матрица `os: [ubuntu-latest, macos-latest, windows-latest]`.
@@ -184,6 +273,27 @@ def kill_tree(pid: int) -> None:
   - регистр путей (п. 7).
 - На Windows-раннере GitHub Git Bash предустановлен, поэтому `execute`-тесты идут через
   настоящий bash.
+- **Сквозной smoke-job** на трёх ОС, отдельный от pytest. Он проверяет то, что получит
+  пользователь:
+  1. `uv build --all-packages`, затем `uv tool install luna-simple --find-links dist`: ставятся
+     собранные колёса, а не editable-исходники;
+  2. `luna --version`, `luna config path` (на Windows путь в `%APPDATA%`);
+  3. `scripts/ci/mock_llm.py` — крошечный OpenAI-совместимый сервер на `127.0.0.1`, который
+     стримит заготовленный ответ. Первый ход вызывает `execute` с `echo привет && pwd`,
+     второй ход даёт текст;
+  4. Luna настраивается на него через `[provider.custom.mock]` во временном
+     `XDG_CONFIG_HOME`, и запускается `luna --yolo --json "…"`. Проверяется, что вывод —
+     валидный JSON, в нём есть `привет`, и инструмент `execute` завершился успешно. На
+     Windows это значит, что сработал настоящий Git Bash;
+  5. `luna serve` + `GET /health` через `LunaClient`, затем остановка сервера.
+  Тестовых веток в продакшен-коде для этого не нужно: используется обычный кастомный
+  провайдер.
+- Скрипты установки проверяются в CI запуском с `LUNA_REF=<текущий sha>` на всех трёх ОС
+  (`install.sh` на Ubuntu/macOS, `install.ps1` на Windows), затем `luna doctor` из нового
+  shell-процесса.
+- Ветка установщика с PortableGit проверяется на Windows-раннере, где системный Git скрыт
+  из `PATH` на время шага. После установки `luna doctor` должен найти bash в
+  `%LOCALAPPDATA%\luna\git`.
 
 ## Риски
 
@@ -191,5 +301,10 @@ def kill_tree(pid: int) -> None:
   приемлемо и совпадает с текущим поведением на POSIX.
 - MSYS-bash переводит аргументы, похожие на пути (`/c/...`). Команды моделей обычно пишутся
   с прямыми слешами, но возможны редкие сюрпризы. Документируется в README.
+- Отрисовку TUI в Windows Terminal (глифы, цвета, ширина символов) CI не проверит. После
+  зелёного CI нужен один ручной прогон на любой Windows-машине: установка скриптом, `luna`,
+  один ход с `execute`, `/theme`.
+- Скрипт установки ставит пакет из ветки `main`, поэтому установщик заработает у
+  пользователей только после merge и push.
 - Если Windows-раннер покажет падения, которые не воспроизводятся локально, отлаживать
   придётся только через CI (локальной Windows нет).
