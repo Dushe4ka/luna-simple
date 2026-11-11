@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from luna_core.shell import ShellNotFound, run_sync
 
 from luna.config.config import config_dir
 
@@ -60,12 +63,10 @@ def load(workdir: str = ".", *, env: Mapping[str, str] | None = None) -> dict[st
     return commands
 
 
-def _run_shell(match: re.Match) -> str:
+def _run_shell(match: re.Match, workdir: str) -> str:
     try:
-        proc = subprocess.run(
-            match.group(1), shell=True, capture_output=True, text=True, timeout=_SHELL_TIMEOUT
-        )
-    except (OSError, subprocess.SubprocessError):
+        proc = run_sync(match.group(1), cwd=workdir, timeout=_SHELL_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, ShellNotFound):
         return ""
     return (proc.stdout or "").strip()[:_SHELL_CAP]
 
@@ -80,5 +81,5 @@ def expand(cmd: UserCommand, arg: str, workdir: str) -> str:
     expanded twice.
     """
     text = cmd.body.replace("$ARGUMENTS", arg)
-    text = _SHELL_RE.sub(_run_shell, text)
+    text = _SHELL_RE.sub(functools.partial(_run_shell, workdir=workdir), text)
     return text.strip()

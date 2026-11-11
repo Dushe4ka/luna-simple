@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Iterable
 
 from luna_core.sandbox import scrub_env
+from luna_core.shell import ShellNotFound, run_sync
 
 VERIFY_TAIL_LINES = 40
 _TIMEOUT = 300
@@ -24,17 +25,16 @@ def run_verify(command: str, workdir: str, *, pass_env: Iterable[str] = ()) -> t
     if not command.strip():
         return True, ""
     try:
-        proc = subprocess.run(
+        proc = run_sync(
             command,
-            shell=True,
             cwd=workdir,
-            capture_output=True,
-            text=True,
             timeout=_TIMEOUT,
             env=scrub_env(os.environ, passthrough=pass_env),
         )
     except subprocess.TimeoutExpired:
         return False, f"verify command timed out after {_TIMEOUT}s"
+    except ShellNotFound as exc:
+        return False, str(exc)
     except OSError as exc:
         return False, f"could not run verify command: {exc}"
     combined = (proc.stdout + proc.stderr).splitlines()
