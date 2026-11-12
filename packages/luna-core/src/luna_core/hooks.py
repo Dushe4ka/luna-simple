@@ -12,7 +12,14 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from luna_core.sandbox import scrub_env
-from luna_core.shell import ShellNotFound, kill_tree, popen_kwargs, shell_argv
+from luna_core.shell import (
+    ShellNotFound,
+    forget,
+    kill_tree,
+    popen_kwargs,
+    shell_argv,
+    track,
+)
 
 POINTS = ("session_start", "pre_tool", "post_tool", "turn_end", "pre_compact")
 
@@ -143,6 +150,7 @@ class CommandHook:
             env=scrub_env(os.environ, passthrough=self.env_passthrough),
             **popen_kwargs(),
         )
+        track(proc.pid)
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(json.dumps(payload, ensure_ascii=False).encode()),
@@ -155,6 +163,8 @@ class CommandHook:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), 5)
             return HookResult(notices=(f"hook `{self.command}` timed out after {self.timeout:g}s",))
+        finally:
+            forget(proc.pid)
         stdout = out.decode("utf-8", errors="replace")
         stderr = err.decode("utf-8", errors="replace")
         if proc.returncode == 0:

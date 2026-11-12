@@ -11,7 +11,14 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Protocol
 
-from luna_core.shell import ShellNotFound, kill_tree, popen_kwargs, shell_argv
+from luna_core.shell import (
+    ShellNotFound,
+    forget,
+    kill_tree,
+    popen_kwargs,
+    shell_argv,
+    track,
+)
 
 #: Environment variable names never handed to ``execute`` commands by default.
 #: Commands run by the model can print their environment (``env``), and that
@@ -107,6 +114,21 @@ async def _run_process(
         env=env,
         **popen_kwargs(),
     )
+    track(proc.pid)
+    try:
+        return await _collect(proc, timeout=timeout, cancel=cancel, limit=limit)
+    finally:
+        forget(proc.pid)
+
+
+async def _collect(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout: float,
+    cancel: asyncio.Event | None,
+    limit: int,
+) -> RunResult:
+    """Read ``proc``'s output until it exits, times out or is cancelled."""
     reader = asyncio.ensure_future(proc.stdout.read())
     cancel_wait = asyncio.ensure_future(cancel.wait()) if cancel else None
     waiters = {reader} | ({cancel_wait} if cancel_wait else set())

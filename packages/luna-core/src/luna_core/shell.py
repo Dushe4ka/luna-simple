@@ -14,6 +14,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path, PureWindowsPath
 
@@ -114,12 +115,95 @@ def popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+class _WinJobs:
+    """Windows Job Objects that hold each tracked child and everything it starts.
+
+    ``taskkill /T`` follows parent pids, and Git Bash breaks that chain: when bash
+    ``exec``s another MSYS program (``bash -c "sh -c '...'"``) the new process is
+    not a Windows child of the pid Luna holds, so it survived the kill. A job
+    contains every descendant regardless (children join their parent's job).
+    """
+
+    _SET_QUOTA_AND_TERMINATE = 0x0100 | 0x0001
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        k32.TerminateJobObject.restype = wintypes.BOOL
+        k32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self._k32 = k32
+        self._jobs: dict[int, int] = {}
+        self._lock = threading.Lock()
+
+    def track(self, pid: int) -> None:
+        job = self._k32.CreateJobObjectW(None, None)
+        if not job:
+            return
+        process = self._k32.OpenProcess(self._SET_QUOTA_AND_TERMINATE, False, pid)
+        assigned = bool(process) and bool(self._k32.AssignProcessToJobObject(job, process))
+        if process:
+            self._k32.CloseHandle(process)
+        if not assigned:
+            self._k32.CloseHandle(job)
+            return
+        with self._lock:
+            old = self._jobs.pop(pid, None)
+            self._jobs[pid] = job
+        if old:
+            self._k32.CloseHandle(old)
+
+    def forget(self, pid: int, *, kill: bool = False) -> None:
+        with self._lock:
+            job = self._jobs.pop(pid, None)
+        if job:
+            if kill:
+                self._k32.TerminateJobObject(job, 1)
+            self._k32.CloseHandle(job)
+
+
+@functools.cache
+def _win_jobs() -> _WinJobs | None:
+    try:
+        return _WinJobs()
+    except (OSError, AttributeError):
+        return None
+
+
+def track(pid: int) -> None:
+    """Remember a child started with :func:`popen_kwargs` so :func:`kill_tree` gets all of it.
+
+    On Windows the child goes into its own Job Object; elsewhere this does nothing
+    (the process group already holds the tree). Call :func:`forget` when it is done.
+    """
+    if IS_WINDOWS and (jobs := _win_jobs()) is not None:
+        jobs.track(pid)
+
+
+def forget(pid: int) -> None:
+    """Drop what :func:`track` kept for ``pid`` (its processes keep running)."""
+    if IS_WINDOWS and (jobs := _win_jobs()) is not None:
+        jobs.forget(pid)
+
+
 def kill_tree(pid: int) -> None:
     """Kill ``pid`` and everything it started; a process that is already gone is fine."""
     if IS_WINDOWS:
+        if (jobs := _win_jobs()) is not None:
+            jobs.forget(pid, kill=True)
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
                 check=False,
@@ -151,6 +235,7 @@ def run_sync(
         errors="replace",
         **popen_kwargs(),
     ) as proc:
+        track(proc.pid)
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -163,6 +248,8 @@ def run_sync(
                 # threads: closing them here would block on Windows until it exits.
                 proc.stdout = proc.stderr = None
             raise
+        finally:
+            forget(proc.pid)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 

@@ -122,6 +122,28 @@ def test_run_sync_timeout_kills_the_whole_tree(tmp_path):
     assert not marker.exists()
 
 
+def test_kill_tree_reaches_a_grandchild_behind_an_exec(tmp_path):
+    """bash ``exec``s a lone ``sh -c``; on Windows that hid sh from ``taskkill /T``."""
+    marker = (tmp_path / "late").as_posix()
+    command = f"sh -c \"(sleep 2; touch '{marker}') & sleep 30\""
+    proc = subprocess.Popen(
+        shell.shell_argv(command),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **shell.popen_kwargs(),
+    )
+    shell.track(proc.pid)
+    try:
+        time.sleep(0.5)
+        shell.kill_tree(proc.pid)
+        proc.wait(timeout=10)
+    finally:
+        shell.forget(proc.pid)
+    time.sleep(2.5)
+    assert not (tmp_path / "late").exists()
+
+
 def test_kill_tree_on_a_dead_pid_is_silent():
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
