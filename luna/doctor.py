@@ -118,6 +118,17 @@ def run_update(
     stop_server=None,
 ) -> int:
     """`luna update`: `uv tool upgrade luna-simple`, only for a `uv tool` install."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="luna update",
+        description="Обновить Luna: `uv tool upgrade luna-simple` (только для установки "
+        "через `uv tool`). На Windows фоновый сервер Luna сначала останавливается.",
+    )
+    try:
+        parser.parse_args(list(argv))
+    except SystemExit as exc:  # --help or a bad argument: never go on to upgrade
+        return exc.code if isinstance(exc.code, int) else 0
     windows = IS_WINDOWS if windows is None else windows
     uv = which("uv")
     if uv is None:

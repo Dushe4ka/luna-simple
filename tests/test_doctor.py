@@ -141,3 +141,20 @@ def test_doctor_survives_a_corrupt_server_json(content):
     path.write_bytes(content)
     check = next(c for c in doctor.collect() if c.name == "server")
     assert check.ok is False and "повреждён" in check.detail
+
+
+@pytest.mark.parametrize("argv", [["--help"], ["-h"]])
+def test_update_help_prints_help_and_upgrades_nothing(argv, capsys):
+    def never(*a, **k):
+        pytest.fail("--help must not run anything")
+
+    code = doctor.run_update(argv, which=never, run=never, popen=never, stop_server=never)
+    assert code == 0
+    assert "uv tool upgrade" in capsys.readouterr().out
+
+
+def test_update_rejects_unknown_arguments(capsys):
+    def never(*a, **k):
+        pytest.fail("a bad argument must not run anything")
+
+    assert doctor.run_update(["--bogus"], which=never, run=never, popen=never) == 2
