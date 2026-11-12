@@ -62,3 +62,12 @@ def test_readme_shows_how_to_pin_a_ref():
     text = (SCRIPTS.parent / "README.md").read_text(encoding="utf-8")
     assert "| LUNA_REF=" in text
     assert "$env:LUNA_REF" in text
+
+
+def test_ps1_is_ascii_only_so_windows_powershell_5_parses_it():
+    """Windows PowerShell 5.1 reads a BOM-less script file in the ANSI code page:
+    the UTF-8 bytes of ``—`` and ``ё`` decode to quote characters there and break
+    parsing (final review minor 7). ASCII also survives ``irm | iex`` unchanged."""
+    data = (SCRIPTS / "install.ps1").read_bytes()
+    bad = [n for n, line in enumerate(data.splitlines(), 1) if any(b > 0x7F for b in line)]
+    assert bad == []

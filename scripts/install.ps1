@@ -11,7 +11,7 @@ function Install-Luna {
   $WantGit = $env:LUNA_NO_GIT -ne '1'
 
   function Say([string]$Text) { Write-Host "luna-install: $Text" }
-  function Die([string]$Text) { throw "luna-install: ошибка: $Text" }
+  function Die([string]$Text) { throw "luna-install: error: $Text" }
 
   $GitPins = @{
     'X64'   = @{ Name = 'PortableGit-2.56.0.4-64-bit.7z.exe'
@@ -57,23 +57,23 @@ function Install-Luna {
   function Install-PortableGit {
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
     $pin = $GitPins[$arch]
-    if (-not $pin) { Die "PortableGit для архитектуры $arch нет — поставьте Git вручную: https://git-scm.com/download/win" }
+    if (-not $pin) { Die "no PortableGit for architecture $arch - install Git manually: https://git-scm.com/download/win" }
     $tmp = Join-Path ([IO.Path]::GetTempPath()) "luna-git-$PID"
     $staging = "$PortableRoot.staging-$PID"
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     try {
       $sfx = Join-Path $tmp $pin.Name
-      Say "скачиваю $($pin.Name)…"
+      Say "downloading $($pin.Name)..."
       Invoke-WebRequest -Uri "$GitRelease/$($pin.Name)" -OutFile $sfx -UseBasicParsing
       $digest = (Get-FileHash -Path $sfx -Algorithm SHA256).Hash.ToLowerInvariant()
-      if ($digest -ne $pin.Sha256) { Die "контрольная сумма PortableGit не совпала ($digest)" }
+      if ($digest -ne $pin.Sha256) { Die "PortableGit checksum mismatch ($digest)" }
       New-Item -ItemType Directory -Force -Path $staging | Out-Null
       Unblock-File -Path $sfx -ErrorAction SilentlyContinue
       # GUI self-extractor: Start + WaitForExit, `&` would not wait for it.
       $proc = [System.Diagnostics.Process]::Start($sfx, "-o`"$staging`" -y")
-      if (-not $proc.WaitForExit(600000)) { taskkill.exe /T /F /PID $proc.Id | Out-Null; Die 'распаковка PortableGit зависла' }
-      if ($proc.ExitCode) { Die "распаковка PortableGit завершилась с кодом $($proc.ExitCode)" }
-      if (-not (Test-Path (Join-Path $staging 'bin\bash.exe'))) { Die 'в архиве PortableGit нет bin\bash.exe' }
+      if (-not $proc.WaitForExit(600000)) { taskkill.exe /T /F /PID $proc.Id | Out-Null; Die 'PortableGit extraction hung' }
+      if ($proc.ExitCode) { Die "PortableGit extraction failed with code $($proc.ExitCode)" }
+      if (-not (Test-Path (Join-Path $staging 'bin\bash.exe'))) { Die 'the PortableGit archive has no bin\bash.exe' }
       if (Test-Path -LiteralPath $PortableRoot) {
         attrib.exe -R "$PortableRoot\*" /S /D | Out-Null
         Remove-Item -LiteralPath $PortableRoot -Recurse -Force
@@ -90,7 +90,7 @@ function Install-Luna {
 
   # 1. uv
   if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    Say 'ставлю uv (менеджер Python от Astral)…'
+    Say 'installing uv (the Python manager from Astral)...'
     $hadNoModify = Test-Path Env:UV_NO_MODIFY_PATH
     $oldNoModify = $env:UV_NO_MODIFY_PATH
     try {
@@ -100,7 +100,7 @@ function Install-Luna {
       if ($hadNoModify) { $env:UV_NO_MODIFY_PATH = $oldNoModify } else { Remove-Item Env:UV_NO_MODIFY_PATH -ErrorAction SilentlyContinue }
     }
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Die 'uv установлен, но не найден в PATH' }
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Die 'uv was installed but is not on PATH' }
   }
 
   # 2. Git Bash and git: `uv tool install git+...` needs git, Luna's execute/undo need Git Bash.
@@ -114,28 +114,28 @@ function Install-Luna {
   }
   if (-not $bash -or -not (Test-Git)) {
     if ($WantGit) {
-      Say 'Git не найден — ставлю PortableGit в папку Luna (системный Git не трогается)'
+      Say 'Git not found - installing PortableGit into the Luna folder (system Git is not touched)'
       Install-PortableGit
       $env:Path = "$(Join-Path $PortableRoot 'cmd');$env:Path"
     } elseif (-not (Test-Git)) {
-      Die 'нужен git: uv ставит Luna из GitHub. Поставьте Git for Windows (https://git-scm.com/download/win) или уберите LUNA_NO_GIT=1'
+      Die 'git is required: uv installs Luna from GitHub. Install Git for Windows (https://git-scm.com/download/win) or unset LUNA_NO_GIT=1'
     } else {
-      Say 'Git Bash не найден, LUNA_NO_GIT=1: команды агента работать не будут'
+      Say 'Git Bash not found and LUNA_NO_GIT=1: agent commands will not work'
     }
   }
 
   # 3. Luna
-  Say "ставлю Luna ($Ref)…"
+  Say "installing Luna ($Ref)..."
   uv tool install --python 3.12 --force "luna-simple[all] @ git+$Repo@$Ref"
-  if ($LASTEXITCODE) { Die 'uv tool install завершился с ошибкой' }
+  if ($LASTEXITCODE) { Die 'uv tool install failed' }
 
   if ($ModifyPath) { uv tool update-shell | Out-Null }
 
   $Bin = (uv tool dir --bin).Trim()
   $env:Path = "$Bin;$env:Path"
   & (Join-Path $Bin 'luna.exe') doctor
-  if ($LASTEXITCODE) { Say 'doctor нашёл проблемы — подсказки выше' }
-  Say 'готово. Откройте новый терминал и наберите: luna'
+  if ($LASTEXITCODE) { Say 'doctor found problems - see the hints above' }
+  Say 'done. Open a new terminal and type: luna'
 }
 
 try {

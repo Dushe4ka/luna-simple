@@ -102,6 +102,13 @@ jobs:
       - name: install.sh
         if: runner.os != 'Windows'
         run: sh scripts/install.sh
+      - name: install.ps1 parses under Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_ }; exit 1 }
       - name: install.ps1
         if: runner.os == 'Windows'
         shell: pwsh
