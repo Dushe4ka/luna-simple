@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shlex
 import shutil
 import stat
@@ -94,20 +95,38 @@ async def test_local_output_is_capped(tmp_path):
     assert len(r.output) < 1200 and "truncated" in r.output
 
 
+_FAKE_DOCKER = """\
+import subprocess, sys
+from luna_core.shell import shell_argv
+args = sys.argv[1:]
+with open(sys.argv[0] + ".log", "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\\n")
+if args[0] == "run":
+    print("cid123")
+elif args[0] == "exec":
+    command = args[args.index("cid123") + 1 :]
+    assert command[:2] == ["sh", "-lc"], command
+    sys.exit(subprocess.run(shell_argv(command[2])).returncode)
+"""
+
+
 @pytest.fixture
 def fake_docker(tmp_path):
-    log = tmp_path / "docker.log"
-    script = tmp_path / "docker"
-    script.write_text(
-        "#!/bin/sh\n"
-        f'echo "$@" >> {log}\n'
-        'case "$1" in\n'
-        "  run) echo cid123 ;;\n"
-        '  exec) shift; while [ "$1" != "cid123" ]; do shift; done; shift; "$@" ;;\n'
-        "esac\n"
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return script, log
+    """A ``docker`` stand-in: logs its arguments, runs ``exec`` commands with the host shell.
+
+    It is a Python script behind a launcher (a ``.cmd`` on Windows, which cannot
+    execute a shebang script) so the same fake runs on every OS.
+    """
+    fake = tmp_path / "fake_docker.py"
+    fake.write_text(_FAKE_DOCKER, encoding="utf-8")
+    if os.name == "nt":
+        script = tmp_path / "docker.cmd"
+        script.write_text(f'@"{sys.executable}" "{fake}" %*\r\n', encoding="utf-8")
+    else:
+        script = tmp_path / "docker"
+        script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n', encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script, Path(f"{fake}.log")
 
 
 async def test_docker_sandbox_lifecycle(tmp_path, fake_docker):
