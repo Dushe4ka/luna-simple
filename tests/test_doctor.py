@@ -67,12 +67,49 @@ def test_update_on_windows_hands_off_to_a_new_console(monkeypatch, tmp_path):
         run=_uv_dir(tools),
         popen=lambda argv, **kw: started.append((argv, kw)),
         windows=True,
+        stop_server=lambda: False,
     )
     assert code == 0
     cmd, kw = started[0]
     assert isinstance(cmd, str) and cmd.startswith('cmd /c "')
     assert f'"{UV_WIN}" tool upgrade luna-simple' in cmd
     assert kw["creationflags"] & 0x00000010  # NEW_CONSOLE
+
+
+def test_update_on_windows_stops_the_background_server_first(monkeypatch, tmp_path, capsys):
+    """The server's python.exe keeps the tool venv's .pyd files mapped: uv cannot
+    replace them ("Access is denied") while it runs (final review I2)."""
+    tools = tmp_path / "tools"
+    monkeypatch.setattr(sys, "prefix", str(tools / "luna-simple"))
+    order = []
+    code = doctor.run_update(
+        [],
+        which=lambda n: UV_WIN,
+        run=_uv_dir(tools),
+        popen=lambda argv, **kw: order.append("upgrade"),
+        windows=True,
+        stop_server=lambda: order.append("stop") or True,
+    )
+    assert code == 0 and order == ["stop", "upgrade"]
+    out = capsys.readouterr().out
+    assert "сервер" in out and "закройте" in out.lower()
+
+
+def test_update_on_posix_leaves_the_server_running(monkeypatch, tmp_path):
+    tools = tmp_path / "tools"
+    monkeypatch.setattr(sys, "prefix", str(tools / "luna-simple"))
+
+    def run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, f"{tools}\n" if "dir" in argv else "", "")
+
+    code = doctor.run_update(
+        [],
+        which=lambda n: "/bin/uv",
+        run=run,
+        windows=False,
+        stop_server=lambda: pytest.fail("POSIX can replace files in use"),
+    )
+    assert code == 0
 
 
 def test_update_reports_uv_tool_dir_failure(capsys):

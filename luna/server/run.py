@@ -227,6 +227,37 @@ def ensure_running(
     return data or {"port": port, "token": token, "pid": 0}
 
 
+def stop_server(
+    *,
+    _is_alive: Callable[[int], bool] = _default_is_alive,
+    _is_ours: Callable[[dict], bool] = _default_is_ours,
+    _kill: Callable[[int], None] = _default_kill,
+    timeout: float = 5.0,
+) -> bool:
+    """Stop the background server recorded in ``server.json``; True if one was stopped.
+
+    Used before ``luna update`` on Windows, where the running server keeps the
+    tool's files locked. The pid is killed only after :func:`_default_is_ours`
+    confirms it is our server; then this waits up to ``timeout`` seconds for it
+    to exit so its files are released.
+    """
+    try:
+        existing = read_token_file()
+        pid = existing["pid"] if isinstance(existing, dict) else None
+    except (KeyError, TypeError):
+        pid = None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if not _is_alive(pid) or not _is_ours(existing):
+        return False
+    _kill(pid)
+    deadline = time.monotonic() + timeout
+    while _is_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    token_path().unlink(missing_ok=True)
+    return True
+
+
 def make_session_build(*, provider_factory: Callable[[object], object] | None = None):
     """One agent bundle per session: its config, plan flag, pipeline hooks and background tasks.
 

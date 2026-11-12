@@ -446,3 +446,35 @@ def test_default_kill_on_posix_is_a_plain_sigterm_as_before(monkeypatch):
     )
     server_run._default_kill(999)
     assert sent == [(999, signal.SIGTERM)]
+
+
+def test_stop_server_stops_our_running_server_and_waits_for_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    write_token_file(port=12345, token="t", pid=999, fingerprint=1.0)
+    killed = []
+
+    stopped = server_run.stop_server(
+        _is_alive=lambda pid: pid not in killed,
+        _is_ours=lambda data: data["token"] == "t",
+        _kill=killed.append,
+    )
+
+    assert stopped is True and killed == [999]
+    assert not token_path().exists()
+
+
+def test_stop_server_leaves_a_foreign_pid_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    write_token_file(port=12345, token="t", pid=999)
+    killed = []
+
+    stopped = server_run.stop_server(
+        _is_alive=lambda pid: True, _is_ours=lambda data: False, _kill=killed.append
+    )
+
+    assert stopped is False and killed == []
+
+
+def test_stop_server_without_a_token_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    assert server_run.stop_server(_kill=lambda pid: pytest.fail("nothing to kill")) is False

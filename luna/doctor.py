@@ -115,6 +115,7 @@ def run_update(
     run=subprocess.run,
     popen=subprocess.Popen,
     windows: bool | None = None,
+    stop_server=None,
 ) -> int:
     """`luna update`: `uv tool upgrade luna-simple`, only for a `uv tool` install."""
     windows = IS_WINDOWS if windows is None else windows
@@ -139,6 +140,17 @@ def run_update(
         )
         return 1
     if windows:
+        # The background server's python.exe keeps the tool's .pyd files mapped, and
+        # Windows refuses to replace a file in use: stop it before uv runs.
+        if stop_server is None:
+            from luna.server.run import stop_server
+        if stop_server():
+            print("luna: фоновый сервер Luna остановлен")
+        print(
+            "luna: закройте другие окна Luna (TUI, REPL, luna acp в редакторе) — "
+            "пока они открыты, Windows не даст заменить файлы и uv ответит "
+            "«Отказано в доступе»"
+        )
         # Windows locks the running luna.exe: upgrade in a new console after we exit.
         # One verbatim string: cmd strips the outer quotes, the inner ones keep spaces safe.
         popen(
