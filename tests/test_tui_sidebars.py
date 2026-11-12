@@ -63,6 +63,19 @@ async def test_current_session_is_highlighted_and_follows_set_current(tmp_path):
         assert current == ["t2"]
 
 
+async def test_a_turn_finishing_while_the_app_closes_does_not_crash(tmp_path):
+    """Regression: TurnFinished handled after the sidebar (or its list) was torn down
+    on exit raised NoMatches and printed a traceback."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        sidebar = app.query_one(SessionsSidebar)
+        await sidebar.query_one("#session-list").remove()
+        await sidebar.refresh_sessions()
+        await sidebar.remove()
+        await app.on_chat_pane_turn_finished(ChatPane.TurnFinished())
+        await pilot.pause()
+
+
 async def test_ctrl_n_starts_a_fresh_session(tmp_path):
     app = _app(tmp_path, thread_id="t1")
     async with app.run_test() as pilot:

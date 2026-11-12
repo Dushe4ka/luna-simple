@@ -75,7 +75,9 @@ class SessionsSidebar(Widget):
             return
         #: True when some listed session is still running (the app polls then).
         self.any_running = any(s.get("running") for s in sessions)
-        list_view = self.query_one("#session-list", ListView)
+        list_view = next(iter(self.query("#session-list").results(ListView)), None)
+        if list_view is None:  # the app closed while the list was being fetched
+            return
         await list_view.clear()
         items: list[ListItem] = [ListItem(_NewSessionRow(), classes="new-session-item")]
         group = None
