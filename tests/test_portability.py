@@ -47,19 +47,47 @@ def test_no_text_io_without_encoding():
     assert offences == []
 
 
+def _is_subprocess_spawn(node) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "subprocess"
+        and node.attr in SUBPROCESS
+    )
+
+
+def _injected_runners(func: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Parameters that default to a ``subprocess`` spawn (``run=subprocess.run``)."""
+    args = func.args
+    positional = [*args.posonlyargs, *args.args]
+    with_defaults = positional[len(positional) - len(args.defaults) :]
+    pairs = list(zip(with_defaults, args.defaults, strict=True))
+    pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True) if d]
+    return {arg.arg for arg, default in pairs if _is_subprocess_spawn(default)}
+
+
 def _spawns_without_stdin(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     out = []
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        runners = _injected_runners(scope)
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in runners and _kw(node, "stdin") is None:
+                    where = f"{path.relative_to(ROOT)}:{node.lineno}"
+                    out.append(f"{where} injected {node.func.id}() without stdin")
     for node in ast.walk(tree):
         func = node.func if isinstance(node, ast.Call) else None
         if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
             continue
-        spawn = (func.value.id == "subprocess" and func.attr in SUBPROCESS) or (
+        spawn = _is_subprocess_spawn(func) or (
             func.value.id == "asyncio" and func.attr.startswith("create_subprocess_")
         )
         if spawn and _kw(node, "stdin") is None:
             out.append(f"{path.relative_to(ROOT)}:{node.lineno} {func.attr} without stdin")
-    return out
+    return sorted(set(out))
 
 
 def test_no_child_process_inherits_stdin():
@@ -75,3 +103,21 @@ def test_no_child_process_inherits_stdin():
         o for src in SOURCES for p in sorted(src.rglob("*.py")) for o in _spawns_without_stdin(p)
     ]
     assert offences == []
+
+
+def test_stdin_guard_sees_runners_injected_as_parameters(tmp_path):
+    """Final review minor 6: ``def install(..., run=subprocess.run)`` then ``run([...])``
+    was invisible to the guard; ``git clone`` in skills inherited stdin that way."""
+    sample = ROOT / "tests" / "_stdin_guard_sample.py"
+    sample.write_text(
+        "import subprocess\n"
+        "def f(run=subprocess.run, *, popen=subprocess.Popen):\n"
+        "    run(['git'])\n"
+        "    popen(['git'], stdin=None)\n",
+        encoding="utf-8",
+    )
+    try:
+        offences = _spawns_without_stdin(sample)
+    finally:
+        sample.unlink()
+    assert offences == ["tests/_stdin_guard_sample.py:3 injected run() without stdin"]

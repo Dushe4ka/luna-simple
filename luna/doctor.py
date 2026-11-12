@@ -124,7 +124,13 @@ def run_update(
         print(f"luna: uv не найден — переустановите Luna: {INSTALL_URL}", file=sys.stderr)
         return 1
     try:
-        proc = run([uv, "tool", "dir"], capture_output=True, text=True, encoding="utf-8")
+        proc = run(
+            [uv, "tool", "dir"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
         if proc.returncode != 0:
             raise OSError((proc.stderr or "").strip() or f"код {proc.returncode}")
         tool_dir = proc.stdout.strip()
@@ -156,7 +162,10 @@ def run_update(
         popen(
             f'cmd /c "timeout /t 2 >nul & "{uv}" tool upgrade luna-simple & pause"',
             creationflags=_CREATE_NEW_CONSOLE,
+            # no std handles passed on: the new console's own input serves `pause`
+            stdin=None,
         )
         print("luna: обновление запущено в новом окне")
         return 0
-    return run([uv, "tool", "upgrade", "luna-simple"]).returncode
+    # the user's terminal, as before: uv may print progress and ask nothing
+    return run([uv, "tool", "upgrade", "luna-simple"], stdin=None).returncode

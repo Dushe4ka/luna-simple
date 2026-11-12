@@ -187,3 +187,16 @@ def test_install_rejects_a_resolver_path_escaping_the_clone(tmp_path):
             )
     assert not (dest / "x").exists()
     assert "installed" in skills.install("owner/repo/good", dest, name="x", run=_fake_clone)
+
+
+def test_install_clone_never_inherits_stdin(tmp_path):
+    """Under ``luna acp`` stdin is the editor's pipe: an inheriting ``git clone`` hangs
+    on Windows (final review minor 6)."""
+    seen = {}
+
+    def clone(cmd, **kwargs):
+        seen.update(kwargs)
+        return _fake_clone(cmd, **kwargs)
+
+    skills.install("owner/repo/good", tmp_path / "dest", name="x", run=clone)
+    assert seen["stdin"] is subprocess.DEVNULL

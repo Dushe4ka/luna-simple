@@ -187,6 +187,7 @@ def install(
             run(
                 ["git", "clone", "--depth", "1", clone, str(tmp / "repo")],
                 check=True,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
