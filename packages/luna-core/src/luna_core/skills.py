@@ -120,7 +120,8 @@ def remove(name: str, dirs: list[tuple[str, Path]]) -> bool:
 def _source(source: str, resolve: Callable[[str], dict] | None) -> tuple[str, str | None, str]:
     src = source.rstrip("/")
     local = Path(src).expanduser()
-    if "://" in src or src.startswith(("/", "~", ".")):
+    # ``is_absolute()`` adds Windows drive paths; on POSIX they already start with ``/``.
+    if "://" in src or src.startswith(("/", "~", ".")) or local.is_absolute():
         if local.exists():
             probe = local if local.is_dir() else local.parent
             root = probe
