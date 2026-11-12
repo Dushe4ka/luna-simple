@@ -3,6 +3,7 @@
 import subprocess
 import sys
 
+import pytest
 from luna_core import shell
 
 from luna import doctor
@@ -26,6 +27,9 @@ def test_doctor_exit_code(monkeypatch, capsys):
     monkeypatch.setattr(doctor, "collect", lambda: [doctor.Check("x", False, "плохо", "сделай y")])
     assert doctor.run_doctor([]) == 1
     assert "сделай y" in capsys.readouterr().out
+
+
+UV_WIN = r"C:\Users\Имя Фамилия\.local\bin\uv.exe"
 
 
 def _uv_dir(prefix):
@@ -59,11 +63,44 @@ def test_update_on_windows_hands_off_to_a_new_console(monkeypatch, tmp_path):
     started = []
     code = doctor.run_update(
         [],
-        which=lambda n: r"C:\uv.exe",
+        which=lambda n: UV_WIN,
         run=_uv_dir(tools),
         popen=lambda argv, **kw: started.append((argv, kw)),
         windows=True,
     )
     assert code == 0
-    argv, kw = started[0]
-    assert "upgrade" in " ".join(argv) and kw["creationflags"] & 0x00000010  # NEW_CONSOLE
+    cmd, kw = started[0]
+    assert isinstance(cmd, str) and cmd.startswith('cmd /c "')
+    assert f'"{UV_WIN}" tool upgrade luna-simple' in cmd
+    assert kw["creationflags"] & 0x00000010  # NEW_CONSOLE
+
+
+def test_update_reports_uv_tool_dir_failure(capsys):
+    def run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 2, "", "boom")
+
+    assert doctor.run_update([], which=lambda n: "/bin/uv", run=run, windows=False) == 1
+    assert "не удалось определить каталог uv tool" in capsys.readouterr().err
+
+    def raising(argv, **kw):
+        raise OSError("нет uv")
+
+    assert doctor.run_update([], which=lambda n: "/bin/uv", run=raising, windows=False) == 1
+
+
+def test_update_refuses_another_uv_tool(monkeypatch, tmp_path, capsys):
+    tools = tmp_path / "tools"
+    monkeypatch.setattr(sys, "prefix", str(tools / "other-tool"))
+    code = doctor.run_update([], which=lambda n: "/bin/uv", run=_uv_dir(tools), windows=False)
+    assert code == 1 and "uv tool" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("content", [b"{}", b"[]", b'{"pid": "x"}', b"\xff\xfe\x00bad"])
+def test_doctor_survives_a_corrupt_server_json(content):
+    from luna.server.auth import token_path
+
+    path = token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    check = next(c for c in doctor.collect() if c.name == "server")
+    assert check.ok is False and "повреждён" in check.detail

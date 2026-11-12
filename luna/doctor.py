@@ -46,9 +46,12 @@ def collect() -> list[Check]:
             "" if on_path else "выполните `uv tool update-shell` и откройте новый терминал",
         )
     )
-    cfg = config_dir()
-    writable = os.access(cfg if cfg.exists() else cfg.parent, os.W_OK)
-    checks.append(Check("config", writable, str(cfg), "" if writable else "нет прав на запись"))
+    try:
+        cfg = config_dir()
+        writable = os.access(cfg if cfg.exists() else cfg.parent, os.W_OK)
+        checks.append(Check("config", writable, str(cfg), "" if writable else "нет прав на запись"))
+    except Exception as exc:  # noqa: BLE001 - the report must never crash
+        checks.append(Check("config", False, f"не удалось определить: {exc}"))
     try:
         find_shell()
         checks.append(Check("shell", True, describe_shell()))
@@ -63,11 +66,29 @@ def collect() -> list[Check]:
             "" if git else "нужен для /undo: https://git-scm.com/downloads",
         )
     )
-    token = read_token_file()
-    alive = bool(token and _default_is_alive(token["pid"]))
-    detail = f"работает (pid {token['pid']})" if alive else "не запущен"
-    checks.append(Check("server", True, detail))
+    checks.append(_server_check(read_token_file, _default_is_alive))
     return checks
+
+
+def _server_check(read_token, is_alive) -> Check:
+    """Server status; a corrupt ``server.json`` is a failed check, not a crash."""
+    from luna.server.auth import token_path
+
+    try:
+        token = read_token()
+        if token is None:
+            return Check("server", True, "не запущен")
+        pid = token["pid"]
+        if not isinstance(token, dict) or isinstance(pid, bool) or not isinstance(pid, int):
+            raise ValueError("bad token file")
+        if is_alive(pid):
+            return Check("server", True, f"работает (pid {pid})")
+        return Check("server", True, "не запущен")
+    except Exception:  # noqa: BLE001 - corrupt file of any shape
+        path = token_path()
+        return Check(
+            "server", False, "server.json повреждён", f"удалите {path} — Luna создаст его заново"
+        )
 
 
 def render(checks: list[Check]) -> str:
@@ -101,9 +122,16 @@ def run_update(
     if uv is None:
         print(f"luna: uv не найден — переустановите Luna: {INSTALL_URL}", file=sys.stderr)
         return 1
-    tool_dir = run([uv, "tool", "dir"], capture_output=True, text=True, encoding="utf-8").stdout
-    tool_dir = tool_dir.strip()
-    if not tool_dir or not Path(sys.prefix).resolve().is_relative_to(Path(tool_dir).resolve()):
+    try:
+        proc = run([uv, "tool", "dir"], capture_output=True, text=True, encoding="utf-8")
+        if proc.returncode != 0:
+            raise OSError((proc.stderr or "").strip() or f"код {proc.returncode}")
+        tool_dir = proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"luna: не удалось определить каталог uv tool ({exc})", file=sys.stderr)
+        return 1
+    ours = Path(tool_dir).resolve() / "luna-simple" if tool_dir else None
+    if ours is None or not Path(sys.prefix).resolve().is_relative_to(ours):
         print(
             "luna: эта Luna установлена не через `uv tool` — обновите её тем же способом, "
             "каким ставили",
@@ -112,8 +140,9 @@ def run_update(
         return 1
     if windows:
         # Windows locks the running luna.exe: upgrade in a new console after we exit.
+        # One verbatim string: cmd strips the outer quotes, the inner ones keep spaces safe.
         popen(
-            ["cmd", "/c", f'timeout /t 2 >nul & "{uv}" tool upgrade luna-simple & pause'],
+            f'cmd /c "timeout /t 2 >nul & "{uv}" tool upgrade luna-simple & pause"',
             creationflags=_CREATE_NEW_CONSOLE,
         )
         print("luna: обновление запущено в новом окне")
