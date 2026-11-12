@@ -1,6 +1,7 @@
 """Path rules ignore letter case on case-insensitive filesystems."""
 
 import os
+import unicodedata
 
 import pytest
 from luna_core.policy import Policy, Rules, case_insensitive_fs
@@ -53,3 +54,28 @@ def test_child_policy_keeps_folding(tmp_path):
         pytest.skip("this filesystem tells .ENV and .env apart")
     policy = Policy(Rules(deny=["read_file:.env"]), workspace=Workspace(tmp_path))
     assert policy.child().check(read_file, {"file_path": ".ENV"}).action == "deny"
+
+
+NFC_CAFE = unicodedata.normalize("NFC", "café")
+NFD_CAFE = unicodedata.normalize("NFD", "café")
+NFD_CAFE_UPPER = unicodedata.normalize("NFD", "CAFÉ")
+
+
+def test_fold_case_ignores_unicode_normalization_form():
+    rules = Rules(deny=[f"read_file:{NFC_CAFE}"], fold_case=True)
+    assert rules.match("read_file", {"file_path": NFD_CAFE}) == "deny"
+    assert rules.match("read_file", {"file_path": NFD_CAFE_UPPER}) == "deny"
+
+
+def test_without_fold_case_normalization_form_is_kept():
+    rules = Rules(deny=[f"read_file:{NFC_CAFE}"])
+    assert rules.match("read_file", {"file_path": NFD_CAFE}) is None
+
+
+def test_deny_holds_for_nfd_name_on_real_filesystem(tmp_path):
+    (tmp_path / NFC_CAFE).write_text("x", encoding="utf-8")
+    if not case_insensitive_fs(tmp_path) or not (tmp_path / NFD_CAFE).exists():
+        pytest.skip("this filesystem does not unify normalization forms")
+    policy = Policy(Rules(deny=[f"read_file:{NFC_CAFE}"]), workspace=Workspace(tmp_path))
+    assert policy.check(read_file, {"file_path": NFD_CAFE}).action == "deny"
+    assert policy.check(read_file, {"file_path": NFD_CAFE_UPPER}).action == "deny"

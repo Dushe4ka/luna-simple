@@ -7,6 +7,7 @@ import posixpath
 import re
 import tempfile
 import tomllib
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch, fnmatchcase
@@ -67,6 +68,11 @@ def _fold_program(pattern: str) -> str:
     return program_name(word) + sep + rest
 
 
+def _fold_path(text: str) -> str:
+    """Return ``text`` as a case-insensitive filesystem sees it (NFC, casefolded)."""
+    return unicodedata.normalize("NFC", text).casefold()
+
+
 def case_insensitive_fs(root: Path) -> bool:
     """Tell whether ``root``'s filesystem ignores letter case (macOS / Windows defaults).
 
@@ -101,7 +107,7 @@ class Rules:
             if tool != "execute":
                 pattern = _relpath(pattern)
                 if self.fold_case:
-                    if fnmatchcase(subject.casefold(), pattern.casefold()):
+                    if fnmatchcase(_fold_path(subject), _fold_path(pattern)):
                         return True
                     continue
             if fnmatch(subject, pattern):
