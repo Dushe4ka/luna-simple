@@ -74,7 +74,7 @@ uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"
 
 ## Luna как SDK
 
-Ядро — отдельный пакет [`luna-core`](packages/luna-core) (`pip install luna-core`):
+Ядро — отдельный пакет [`luna-core`](packages/luna-core) (`pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"`; на PyPI пакета пока нет):
 его можно встроить в своё приложение, не используя CLI.
 
 ```python
