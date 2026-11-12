@@ -29,17 +29,25 @@ _GROUPS = {
 
 
 def _relpath(raw: str) -> str:
-    """Project-relative POSIX form of ``raw``, with ``..``/``.``/``/`` collapsed.
+    r"""Project-relative POSIX form of ``raw``, with ``..``/``.``/``/`` collapsed.
 
     ``PurePosixPath.as_posix()`` alone does not collapse ``..`` segments (so
     ``src/../.env`` would stay distinct from ``.env``), which let a deny rule
     on ``.env`` be bypassed by a non-normalised path. ``posixpath.normpath``
     closes that gap for the no-workspace case; ``Policy.check`` additionally
     resolves file-tool paths through the real :class:`Workspace` first.
+
+    On Windows ``\`` is a path separator too, so it becomes ``/`` in subjects
+    and patterns alike: ``fnmatchcase`` (used when case folding is on, which it
+    always is on NTFS) would otherwise never match ``secrets\*.key`` against the
+    POSIX-form ``secrets/a.key`` the workspace hands out.
     """
     if not raw:
         return ""
-    posix = PurePosixPath(str(raw)).as_posix()
+    raw = str(raw)
+    if _shell.IS_WINDOWS:
+        raw = raw.replace("\\", "/")
+    posix = PurePosixPath(raw).as_posix()
     return posixpath.normpath(posix).lstrip("/")
 
 

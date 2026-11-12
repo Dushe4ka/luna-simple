@@ -90,3 +90,20 @@ def test_ask_pattern_with_exe_is_folded_on_windows(windows):
 
 def test_deny_pattern_with_exe_is_literal_on_posix(posix):
     assert Rules(deny=["execute:rm.exe *"]).match("execute", {"command": "rm x"}) is None
+
+
+@pytest.mark.parametrize("fold_case", [True, False])
+@pytest.mark.parametrize("subject", ["secrets/a.key", r"secrets\a.key", "SECRETS/A.KEY"])
+def test_backslash_path_rule_still_matches_with_case_folding(windows, fold_case, subject):
+    """Final review I4: on Windows ``fold_case`` is always on, and ``fnmatchcase``
+    does not treat ``\\`` as a separator, so ``read_file:secrets\\*.key`` stopped
+    matching the POSIX-form subjects the workspace hands out."""
+    rules = Rules(deny=[r"read_file:secrets\*.key"], fold_case=fold_case)
+    if not fold_case and subject.isupper():
+        pytest.skip("case-sensitive matching is not what this test is about")
+    assert rules.match("read_file", {"file_path": subject}) == "deny"
+
+
+def test_backslash_is_a_plain_character_on_posix(posix):
+    rules = Rules(deny=[r"read_file:secrets\*.key"], fold_case=True)
+    assert rules.match("read_file", {"file_path": "secrets/a.key"}) is None
