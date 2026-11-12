@@ -209,7 +209,7 @@ async def test_out_of_turn_approval_in_a_turn_stream_is_answered_and_stream_cont
         chat = app.query_one(ChatPane)
         chat.run_worker(chat.submit("go"))
         await click_when_shown(pilot, "#reject-button")
-        await settle(pilot, lambda: [w.source for w in app.query("LunaMessage")] == ["ab"])
+        await settle(pilot, lambda: not chat.busy)
         assert [w.source for w in app.query("LunaMessage")] == ["ab"]
     assert client.decisions == [("child:c9", {"type": "reject", "message": "rejected in TUI"})]
 
