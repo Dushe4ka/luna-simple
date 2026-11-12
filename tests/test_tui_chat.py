@@ -9,7 +9,7 @@ from textual.widgets.markdown import MarkdownStream
 from luna.tui.chat import ChatPane, LunaMessage, UserMessage, render_history
 from luna.tui.commands import filter_commands
 from luna.tui.status_bar import StatusBar
-from tests.tui_fakes import settle
+from tests.tui_fakes import click_when_shown, settle
 
 
 def transcript_text(transcript: VerticalScroll) -> str:
@@ -432,9 +432,8 @@ async def test_approval_needed_pushes_modal_and_the_same_stream_continues():
             inp = chat.query_one("#chat-input", Input)
             inp.value = "hello"
             task = asyncio.create_task(chat.submit("hello"))
-            await pilot.pause()
-            await pilot.click("#approve-button")
-            await asyncio.wait_for(task, timeout=5)
+            await click_when_shown(pilot, "#approve-button")
+            await asyncio.wait_for(task, timeout=10)
         finally:
             MarkdownStream.stop = original_stop
 
@@ -488,11 +487,10 @@ async def test_two_sequential_approvals_in_one_turn_both_get_answered():
             inp = chat.query_one("#chat-input", Input)
             inp.value = "hello"
             task = asyncio.create_task(chat.submit("hello"))
-            await pilot.pause()
-            await pilot.click("#approve-button")  # first approval
-            await pilot.pause()
-            await pilot.click("#approve-button")  # second approval
-            await asyncio.wait_for(task, timeout=5)
+            await click_when_shown(pilot, "#approve-button")  # first approval
+            await settle(pilot, lambda: len(client.decide_calls) == 1)
+            await click_when_shown(pilot, "#approve-button")  # second approval
+            await asyncio.wait_for(task, timeout=10)
         finally:
             MarkdownStream.stop = original_stop
             MarkdownStream.write = original_write

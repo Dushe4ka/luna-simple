@@ -5,7 +5,7 @@ from luna.tui.app import LunaApp
 from luna.tui.chat import ChatPane, NoticeRow
 from luna.tui.sidebar_sessions import SessionsSidebar
 from luna.tui.status_bar import StatusBar, format_status_line
-from tests.tui_fakes import FakeLunaClient, settle
+from tests.tui_fakes import FakeLunaClient, click_when_shown, settle
 
 DONE = {"event": "turn_done", "usage": {}, "cost": None, "stop_reason": "end"}
 
@@ -43,9 +43,8 @@ async def test_approval_answers_through_decide_and_stream_continues():
     async with app.run_test(size=(130, 36)) as pilot:
         await pilot.click("#chat-input")
         await pilot.press(*"run ls", "enter")
-        await pilot.pause(0.3)
-        await pilot.click("#approve-button")
-        await pilot.pause(0.3)
+        await click_when_shown(pilot, "#approve-button")
+        await settle(pilot, lambda: [w.source for w in app.query("LunaMessage")] == ["done"])
         text = [w.source for w in app.query("LunaMessage")]
         assert text == ["done"]
     assert client.decisions == [("c1", {"type": "approve"})]
@@ -209,9 +208,8 @@ async def test_out_of_turn_approval_in_a_turn_stream_is_answered_and_stream_cont
     async with app.run_test(size=(130, 36)) as pilot:
         chat = app.query_one(ChatPane)
         chat.run_worker(chat.submit("go"))
-        await pilot.pause(0.3)
-        await pilot.click("#reject-button")
-        await pilot.pause(0.3)
+        await click_when_shown(pilot, "#reject-button")
+        await settle(pilot, lambda: [w.source for w in app.query("LunaMessage")] == ["ab"])
         assert [w.source for w in app.query("LunaMessage")] == ["ab"]
     assert client.decisions == [("child:c9", {"type": "reject", "message": "rejected in TUI"})]
 
@@ -225,9 +223,8 @@ async def test_idle_out_of_turn_approval_is_picked_up_by_polling():
     async with app.run_test(size=(130, 36)) as pilot:
         await pilot.pause(0.2)
         await app.poll_agents()
-        await pilot.pause(0.6)
-        await pilot.click("#approve-button")
-        await pilot.pause(0.2)
+        await click_when_shown(pilot, "#approve-button")
+        await settle(pilot, lambda: bool(client.decisions))
     assert client.attached and client.attached[0][0] == "s1"
     assert client.decisions == [("child:c1", {"type": "approve"})]
 
@@ -243,9 +240,10 @@ async def test_an_already_answered_approval_in_the_replay_is_not_asked_again():
     app = make_app(client)
     async with app.run_test(size=(130, 36)) as pilot:
         await app.poll_agents()
-        await pilot.pause(0.6)
-        await pilot.click("#approve-button")
-        await pilot.pause(0.3)
+        await click_when_shown(pilot, "#approve-button")
+        await settle(
+            pilot, lambda: not any(type(s).__name__ == "ApprovalModal" for s in app.screen_stack)
+        )
         assert not any(type(s).__name__ == "ApprovalModal" for s in app.screen_stack)
     assert client.decisions == [("c2", {"type": "approve"})]
 
@@ -373,13 +371,11 @@ async def test_a_failed_decide_lets_the_same_approval_be_asked_again():
         chat = app.query_one(ChatPane)
         value = _approval("c1")["value"]
         chat.run_worker(chat._answer("s1", value))
-        await settle(pilot, lambda: bool(app.query("#approve-button")))
-        await pilot.click("#approve-button")
+        await click_when_shown(pilot, "#approve-button")
         await settle(pilot, lambda: "c1" not in chat._asked)
         assert "c1" not in chat._asked
         chat.run_worker(chat._answer("s1", value))
-        await settle(pilot, lambda: bool(app.query("#approve-button")))
-        await pilot.click("#approve-button")
+        await click_when_shown(pilot, "#approve-button")
         await settle(pilot, lambda: len(client.decisions) == 2)
     assert [d[0] for d in client.decisions] == ["c1", "c1"]
 

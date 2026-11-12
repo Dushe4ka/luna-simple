@@ -15,6 +15,12 @@ async def settle(pilot, condition, timeout: float = 10.0) -> None:
         await pilot.pause(0.05)
 
 
+async def click_when_shown(pilot, selector: str, timeout: float = 10.0) -> None:
+    """Click ``selector`` once it is on the active screen (e.g. an approval popping up)."""
+    await settle(pilot, lambda: bool(pilot.app.screen.query(selector)), timeout)
+    await pilot.click(selector)
+
+
 class FakeLunaClient:
     def __init__(self, turns=None, sessions=None, agents=None, attach_events=None):
         self.turns = list(turns or [])  # each: list of event dicts for one send()
