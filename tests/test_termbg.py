@@ -1,9 +1,16 @@
 """Tests for terminal background detection."""
 
+import os
 import sys
 import types
 
+import pytest
+
 from luna.ui import termbg
+
+# The OSC 11 query puts the tty in raw mode with termios, which Windows does not have;
+# there ``query`` returns None (see test_query_without_tty_returns_none).
+_POSIX_TTY = pytest.mark.skipif(os.name == "nt", reason="termios is POSIX-only")
 
 
 def test_parse_osc11_dark_and_light():
@@ -46,6 +53,16 @@ def test_query_without_tty_returns_none(monkeypatch):
     assert termbg.query_osc11() is None
 
 
+
+def test_query_without_termios_returns_none(monkeypatch):
+    """Windows has no termios: the query gives up even on a real terminal."""
+    tty = types.SimpleNamespace(isatty=lambda: True)
+    monkeypatch.setattr(sys, "stdin", tty)
+    monkeypatch.setattr(sys, "stdout", tty)
+    monkeypatch.setitem(sys.modules, "termios", None)
+    assert termbg.query_osc11(timeout=0.01) is None
+
+@_POSIX_TTY
 def test_query_reads_until_da1(monkeypatch):
     import os
     import select
@@ -107,6 +124,7 @@ def test_query_waits_long_enough_for_a_remote_terminal():
     assert timeout >= 1.0
 
 
+@_POSIX_TTY
 def test_query_raw_mode_keeps_typeahead(monkeypatch):
     import termios
 
@@ -117,6 +135,7 @@ def test_query_raw_mode_keeps_typeahead(monkeypatch):
     assert log["flushed"] == []
 
 
+@_POSIX_TTY
 def test_query_timeout_flushes_a_late_reply(monkeypatch):
     import select
     import termios
@@ -129,12 +148,14 @@ def test_query_timeout_flushes_a_late_reply(monkeypatch):
     assert log["restored"] and log["closed"] == [99]
 
 
+@_POSIX_TTY
 def test_query_eof_restores_the_terminal(monkeypatch):
     log = _fake_tty(monkeypatch, lambda fd, n: b"")
     assert termbg.query_osc11() is None
     assert log["restored"] and log["closed"] == [99]
 
 
+@_POSIX_TTY
 def test_query_read_error_restores_the_terminal(monkeypatch):
     def broken(fd, n):
         raise OSError("gone")
