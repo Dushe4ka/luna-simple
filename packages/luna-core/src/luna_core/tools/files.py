@@ -118,6 +118,21 @@ def _to_crlf(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\n", "\r\n")
 
 
+def _match_line_is_crlf(text: str, old: str) -> bool:
+    """Return True when the line holding the first match of ``old`` ends in CRLF.
+
+    Falls back to the preceding line break when the match is on the last line.
+    With ``replace_all`` the decision is made once, from the first match.
+    """
+    pos = text.find(old)
+    if pos < 0:
+        return False
+    after = text.find("\n", pos + len(old))
+    if after == -1:
+        after = text.rfind("\n", 0, pos)
+    return after > 0 and text[after - 1] == "\r"
+
+
 @tool(mutating=True)
 async def write_file(ctx: ToolContext, file_path: str, content: str) -> ToolOutput:
     """Create a file, or overwrite one you have already read.
@@ -172,8 +187,12 @@ async def edit_file(
     data = await asyncio.to_thread(target.read_bytes)
     text = data.decode("utf-8")
     old, new = old_string, new_string
-    if _uses_crlf(data) and "\n" in old_string and text.count(_to_crlf(old_string)):
-        old, new = _to_crlf(old_string), _to_crlf(new_string)
+    if _uses_crlf(data):
+        if "\n" in old_string:
+            if text.count(_to_crlf(old_string)):
+                old, new = _to_crlf(old_string), _to_crlf(new_string)
+        elif "\n" in new_string and _match_line_is_crlf(text, old_string):
+            new = _to_crlf(new_string)
     count = text.count(old) if old else 0
     if count == 0:
         return ToolOutput.error(f"old_string not found in {rel}")

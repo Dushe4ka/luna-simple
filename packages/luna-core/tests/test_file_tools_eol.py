@@ -61,3 +61,20 @@ async def test_cyrillic_round_trip(ctx, tmp_path):
     await call(write_file, ctx, file_path="r.txt", content="привет\n")
     await call(edit_file, ctx, file_path="r.txt", old_string="привет", new_string="мир")
     assert (tmp_path / "r.txt").read_bytes() == "мир\n".encode()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (b"a\r\nb\r\n", b"a\r\nx\r\ny\r\n"),
+        (b"a\r\nb\nc\n", b"a\r\nx\ny\nc\n"),
+        (b"a\r\nb", b"a\r\nx\r\ny"),
+        (b"a\nb\n", b"a\nx\ny\n"),
+    ],
+)
+async def test_single_line_to_multi_line_follows_match_line(ctx, tmp_path, raw, expected):
+    (tmp_path / "s.txt").write_bytes(raw)
+    await call(read_file, ctx, file_path="s.txt")
+    out = await call(edit_file, ctx, file_path="s.txt", old_string="b", new_string="x\ny")
+    assert not out.is_error
+    assert (tmp_path / "s.txt").read_bytes() == expected
