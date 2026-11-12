@@ -1,31 +1,130 @@
+# .github/workflows/ci.yml
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/**"]
   pull_request:
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12
+      - run: uv pip install -e packages/luna-core -e ".[dev,all]"
+      - name: No agent frameworks installed
+        shell: bash
+        run: |
+          if uv pip list | grep -Ei "langchain|langgraph|deepagents"; then exit 1; fi
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  test:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        include:
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: macos-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv venv --python ${{ matrix.python-version }}
-      - name: Install
-        run: uv pip install -e packages/luna-core -e ".[dev,all]"
-      - name: No agent frameworks installed
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python ${{ matrix.python }}
+      - run: uv pip install -e packages/luna-core -e ".[dev,all]"
+      - run: uv run pytest -q
+
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build wheels
+        run: uv build --all-packages --out-dir dist
+      - name: Install like a user (wheels, not editable)
+        run: uv tool install --python 3.12 "luna-simple[all]" --find-links dist
+      - name: Put uv tools on PATH
+        shell: bash
+        run: uv tool dir --bin >> "$GITHUB_PATH"
+      - name: luna doctor
+        run: luna doctor
+        continue-on-error: true
+      - name: End-to-end turn through the real shell
+        run: python scripts/ci/smoke.py
+
+  sdk-only:
+    # luna-core alone, without the app: catches an accidental core → app dependency
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build the core wheel
+        run: uv build --package luna-core --out-dir dist
+      - name: Clean venv with only luna-core
+        shell: bash
         run: |
-          if uv pip list | grep -Ei "langchain|langgraph|deepagents"; then exit 1; fi
-      - name: Lint
+          uv venv --python 3.12 sdk-env
+          uv pip install --python sdk-env $(ls dist/luna_core-*.whl)
+      - name: SDK examples and LocalSandbox
+        shell: bash
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
-      - name: Test
-        run: uv run pytest -q
+          PY=$( [ "$RUNNER_OS" = "Windows" ] && echo sdk-env/Scripts/python.exe || echo sdk-env/bin/python )
+          "$PY" -c "import luna, sys" 2>/dev/null && { echo "the app leaked into the SDK env"; exit 1; }
+          "$PY" scripts/ci/sdk_smoke.py
+
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      LUNA_REF: ${{ github.sha }}
+      LUNA_REPO: https://github.com/${{ github.repository }}
+      LUNA_NO_MODIFY_PATH: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: sh scripts/install.sh
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install.ps1
+      - name: luna from the uv tool dir
+        shell: bash
+        run: '"$(uv tool dir --bin)/luna" --version'
+
+  installer-windows-no-git:
+    runs-on: windows-latest
+    env:
+      LUNA_REF: ${{ github.sha }}
+      LUNA_REPO: https://github.com/${{ github.repository }}
+      LUNA_NO_MODIFY_PATH: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with Git hidden (PortableGit path)
+        shell: pwsh
+        run: |
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\Git\\' }) -join ';'
+          $env:ProgramFiles = 'C:\nope'
+          ${env:ProgramFiles(x86)} = 'C:\nope'
+          ./scripts/install.ps1
+          if (-not (Test-Path "$env:LOCALAPPDATA\luna\git\bin\bash.exe")) { throw 'PortableGit not installed' }
+          $luna = Join-Path (uv tool dir --bin).Trim() 'luna.exe'
+          & $luna doctor
+          if ($LASTEXITCODE -ne 0) { Write-Host 'doctor reported problems (path is expected off PATH)' }
+          $out = & $luna doctor | Out-String
+          if ($out -notmatch 'luna\\git\\bin\\bash.exe') { throw "doctor did not find PortableGit bash:`n$out" }
