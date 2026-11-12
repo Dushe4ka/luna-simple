@@ -8,13 +8,22 @@ from luna_core.policy import Policy, Rules, case_insensitive_fs
 from luna_core.tools.files import read_file
 from luna_core.workspace import Workspace
 
+# fnmatch folds case through os.path.normcase on Windows, so there every rule already
+# matches without case (the stricter side); program names are folded by IS_WINDOWS.
+_NT_FNMATCH = "fnmatch ignores case on Windows (os.path.normcase)"
+
 
 def test_fold_case_matches_paths_without_case():
     rules = Rules(deny=["read_file:.env"], fold_case=True)
     assert rules.match("read_file", {"file_path": ".ENV"}) == "deny"
+
+
+@pytest.mark.skipif(os.name == "nt", reason=_NT_FNMATCH)
+def test_without_fold_case_paths_keep_their_case():
     assert Rules(deny=["read_file:.env"]).match("read_file", {"file_path": ".ENV"}) is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason=_NT_FNMATCH)
 def test_fold_case_never_touches_execute():
     rules = Rules(deny=["execute:rm *"], fold_case=True)
     assert rules.match("execute", {"command": "RM x"}) is None  # Windows is handled elsewhere

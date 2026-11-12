@@ -11,6 +11,11 @@ def windows(monkeypatch):
     monkeypatch.setattr(shell, "IS_WINDOWS", True)
 
 
+@pytest.fixture
+def posix(monkeypatch):
+    monkeypatch.setattr(shell, "IS_WINDOWS", False)
+
+
 DENY_RM = Rules(deny=["execute:rm *"], allow=["execute:ls *", "execute:git *"])
 
 
@@ -36,7 +41,7 @@ def test_deny_rm_cannot_be_bypassed_on_windows(windows, command):
     assert DENY_RM.match("execute", {"command": command}) == "deny"
 
 
-def test_posix_keeps_case_sensitive_program_names():
+def test_posix_keeps_case_sensitive_program_names(posix):
     # on Linux/macOS `RM` is a different program; only the path is stripped there
     assert program_name("/usr/bin/rm") == "rm"
     assert program_name("RM") == "RM"
@@ -83,5 +88,5 @@ def test_ask_pattern_with_exe_is_folded_on_windows(windows):
     assert rules.match("execute", {"command": "git push"}) == "ask"
 
 
-def test_deny_pattern_with_exe_is_literal_on_posix():
+def test_deny_pattern_with_exe_is_literal_on_posix(posix):
     assert Rules(deny=["execute:rm.exe *"]).match("execute", {"command": "rm x"}) is None
