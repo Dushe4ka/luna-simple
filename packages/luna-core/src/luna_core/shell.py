@@ -156,8 +156,12 @@ def run_sync(
         except subprocess.TimeoutExpired:
             kill_tree(proc.pid)
             proc.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
+            try:
                 proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                # A survivor still holds the pipes. Leave them to communicate()'s reader
+                # threads: closing them here would block on Windows until it exits.
+                proc.stdout = proc.stderr = None
             raise
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
