@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import httpx
 from textual.widgets import Input, Label
@@ -27,7 +28,7 @@ def _age(thread_id: str, seconds: float) -> None:
 
 def test_short_path_uses_tilde_and_truncates_from_the_left(monkeypatch, tmp_path):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    assert short_path(str(tmp_path / "a" / "b"), 30) == "~/a/b"
+    assert short_path(str(tmp_path / "a" / "b"), 30) == str(Path("~", "a", "b"))  # native seps
     long = short_path(str(tmp_path / ("x" * 50)), 20)
     assert len(long) == 20 and long.startswith("…")
 
