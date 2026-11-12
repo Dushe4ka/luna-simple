@@ -135,6 +135,10 @@ class Rules:
                 return kind
         return None
 
+    @staticmethod
+    def _covers_execute(rules: list[str]) -> bool:
+        return any(_tool_matches(r.partition(":")[0], "execute") for r in rules)
+
     def _match_execute(self, command: str) -> str | None:
         """Match a shell line segment by segment (see :mod:`luna_core.shellsplit`).
 
@@ -144,13 +148,15 @@ class Rules:
         ``sh`` reading; a line that cannot be parsed is never allowed by a rule.
         When the rough net gives up (see :func:`luna_core.shellsplit.rough_split`)
         the line is denied if any deny rule covers ``execute``, else asked about.
+        On Windows a line that runs one of :data:`WINDOWS_RUNNERS` is asked about
+        whenever a deny rule covers ``execute``: their payloads are not parsed.
         """
         readings = [split_command(command)]
         if "$'" in command:
             readings.append(split_command(command, ansi_c=False))
         rough, complete = rough_split(command)
         if not complete:  # the safety net gave up: fail closed (yolo cannot skip "ask")
-            if any(_tool_matches(r.partition(":")[0], "execute") for r in self.deny):
+            if self._covers_execute(self.deny):
                 return "deny"
             return "ask"
         subjects = [command, *rough]
@@ -160,6 +166,12 @@ class Rules:
             rules = getattr(self, kind)
             if any(self._hit(rules, "execute", s, fold=True) for s in subjects):
                 return kind
+        if _shell.IS_WINDOWS and self._covers_execute(self.deny):
+            # Payloads of ``cmd /c``, ``wsl``, ``powershell -c`` ... are not parsed,
+            # so a deny rule cannot see inside them: ask (yolo cannot skip "ask").
+            programs = {program_name(s.split()[0]) for s in subjects if s.split()}
+            if programs & WINDOWS_RUNNERS:
+                return "ask"
         if any(parts is None for parts in readings):
             return None
         if any(parts.elevated for parts in readings):  # sudo/env/LD_PRELOAD=...: ask
@@ -309,6 +321,12 @@ RUNNER_PROGRAMS = frozenset(
         "cmd", "cmd.exe", "powershell", "pwsh", "wsl", "start", "cygstart", "winpty",
     }
 )  # fmt: skip
+
+
+#: Windows programs that run a command line Luna's parser does not read
+#: (``cmd /c``, ``wsl``, ``powershell -c`` ...): with any execute deny rule a line
+#: running one is asked about, since the deny rule cannot see its payload.
+WINDOWS_RUNNERS = frozenset({"cmd", "powershell", "pwsh", "wsl", "start", "cygstart", "winpty"})
 
 
 class UnsafeRule(ValueError):

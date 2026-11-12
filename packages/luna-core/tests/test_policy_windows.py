@@ -2,7 +2,7 @@
 
 import pytest
 from luna_core import shell
-from luna_core.policy import Rules, UnsafeRule, check_rule_safe, suggest_rules
+from luna_core.policy import Policy, Rules, UnsafeRule, check_rule_safe, suggest_rules
 from luna_core.shellsplit import program_name
 
 
@@ -107,3 +107,42 @@ def test_backslash_path_rule_still_matches_with_case_folding(windows, fold_case,
 def test_backslash_is_a_plain_character_on_posix(posix):
     rules = Rules(deny=[r"read_file:secrets\*.key"], fold_case=True)
     assert rules.match("read_file", {"file_path": "secrets/a.key"}) is None
+
+
+WINDOWS_RUNNER_LINES = [
+    "cmd //c rm -rf x",
+    "cmd.exe /c rm -rf x",
+    "CMD /K rm x",
+    "wsl rm -rf x",
+    "powershell -c 'rm -rf x'",
+    'pwsh.exe -Command "rm -rf x"',
+    "winpty rm -rf x",
+    "start rm -rf x",
+    "cygstart rm x",
+    "ls && cmd //c rm x",
+    "env cmd //c rm x",
+    '"C:/Windows/System32/cmd.exe" /c rm x',
+]
+
+
+@pytest.mark.parametrize("command", WINDOWS_RUNNER_LINES)
+def test_windows_runners_are_asked_about_when_execute_has_deny_rules(windows, command):
+    """Final review minor 1: deny rules do not look inside ``cmd /c`` / ``wsl`` /
+    ``powershell -c`` payloads, so with a deny rule these lines are always asked
+    about — never allowed by a rule or by yolo."""
+    assert DENY_RM.match("execute", {"command": command}) == "ask"
+
+
+def test_windows_runner_ask_holds_in_yolo(windows):
+    from luna_core.tools.shell import execute
+
+    policy = Policy(Rules(deny=["execute:rm *"]), yolo=True)
+    assert policy.check(execute, {"command": "cmd //c rm -rf x"}).action == "ask"
+
+
+def test_windows_runners_without_deny_rules_are_unchanged(windows):
+    assert Rules(allow=["execute:ls *"]).match("execute", {"command": "cmd //c dir"}) is None
+
+
+def test_windows_runner_rule_does_not_touch_posix(posix):
+    assert DENY_RM.match("execute", {"command": "wsl rm -rf x"}) is None
