@@ -3,7 +3,6 @@ import io
 import json
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 from luna_core.events import TextDelta
@@ -19,6 +18,7 @@ from luna.core.store import make_title, open_log
 from luna.repl.usercmd import expand as usercmd_expand
 from luna.repl.usercmd import load as load_user_commands
 from luna.turn import engine
+from tests.shellcmd import PY
 
 
 def console(**kw):
@@ -216,7 +216,7 @@ async def test_format_only_touches_files_the_turn_actually_changed(tmp_path, mon
         FakeProvider.call("write_file", {"file_path": "/b.txt", "content": "new\n"}),
         FakeProvider.text("wrote b.txt"),
     ]
-    cfg = _cfg(tmp_path, yolo=True, format_command=f'{sys.executable} -c "pass"')
+    cfg = _cfg(tmp_path, yolo=True, format_command=f'{PY} -c "pass"')
     await _repl(tmp_path, script, ["write b.txt", "/exit"], cfg=cfg, hooks=True)
     assert seen_paths == [["b.txt"]]  # neither a.txt nor Luna's own .luna/ state
 
@@ -244,7 +244,7 @@ async def test_format_is_never_run_whole_project_when_the_turn_touches_only_pre_
         FakeProvider.call("write_file", {"file_path": "/a.txt", "content": "edited too\n"}),
         FakeProvider.text("edited a.txt"),
     ]
-    cfg = _cfg(tmp_path, yolo=True, format_command=f'{sys.executable} -c "pass"')
+    cfg = _cfg(tmp_path, yolo=True, format_command=f'{PY} -c "pass"')
     await _repl(tmp_path, script, ["edit a.txt again", "/exit"], cfg=cfg, hooks=True)
     assert fmt_calls == []
 

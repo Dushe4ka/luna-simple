@@ -1,4 +1,4 @@
-import sys
+from tests.shellcmd import PY
 
 
 def test_detect_returns_empty_with_no_markers(tmp_path):
@@ -10,7 +10,7 @@ def test_detect_returns_empty_with_no_markers(tmp_path):
 def test_run_reports_command_output(tmp_path):
     from luna.turn.diagnose import run
 
-    cmd = f"{sys.executable} -c \"print('a.py:3: undefined name x')\""
+    cmd = f"{PY} -c \"print('a.py:3: undefined name x')\""
     text = run(cmd, str(tmp_path), ["a.py"])
     assert "a.py:3" in text
 
@@ -18,14 +18,14 @@ def test_run_reports_command_output(tmp_path):
 def test_run_clean_output_is_empty(tmp_path):
     from luna.turn.diagnose import run
 
-    cmd = f'{sys.executable} -c "pass"'
+    cmd = f'{PY} -c "pass"'
     assert run(cmd, str(tmp_path), ["a.py"]) == ""
 
 
 def test_run_caps_output_length(tmp_path):
     from luna.turn.diagnose import run
 
-    cmd = f'{sys.executable} -c "[print(i) for i in range(200)]"'
+    cmd = f'{PY} -c "[print(i) for i in range(200)]"'
     text = run(cmd, str(tmp_path), [])
     assert len(text.splitlines()) <= 40
 
