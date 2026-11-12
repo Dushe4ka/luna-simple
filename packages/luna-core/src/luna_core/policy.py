@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
+import tempfile
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path, PurePosixPath
 
 from luna_core import shell as _shell
@@ -66,6 +67,20 @@ def _fold_program(pattern: str) -> str:
     return program_name(word) + sep + rest
 
 
+def case_insensitive_fs(root: Path) -> bool:
+    """Tell whether ``root``'s filesystem ignores letter case (macOS / Windows defaults).
+
+    Probes with a temporary file; when the probe itself fails, answers True —
+    deny rules then match more, never less.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".luna-CaseProbe-", dir=root) as handle:
+            probe = Path(handle.name)
+            return (probe.parent / probe.name.swapcase()).exists()
+    except OSError:
+        return True
+
+
 @dataclass
 class Rules:
     """Allow / ask / deny rules of the form ``<tool or group>:<fnmatch pattern>``."""
@@ -73,6 +88,8 @@ class Rules:
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     ask: list[str] = field(default_factory=list)
+    #: compare file-path patterns without letter case (set for case-insensitive projects)
+    fold_case: bool = False
 
     def _hit(self, rules: list[str], tool: str, subject: str, fold: bool = False) -> bool:
         for rule in rules:
@@ -83,6 +100,10 @@ class Rules:
                 pattern = _fold_program(pattern)
             if tool != "execute":
                 pattern = _relpath(pattern)
+                if self.fold_case:
+                    if fnmatchcase(subject.casefold(), pattern.casefold()):
+                        return True
+                    continue
             if fnmatch(subject, pattern):
                 return True
             # ``execute:ls *`` also covers a bare ``ls``
@@ -503,6 +524,8 @@ class Policy:
         anchors: AnchorTracker | None = None,
     ) -> None:
         self.rules = rules or Rules()
+        if workspace is not None and not self.rules.fold_case:
+            self.rules.fold_case = case_insensitive_fs(workspace.root)
         self.approval_tools = frozenset(approval_tools)
         self.yolo = yolo
         self.plan_mode = plan_mode

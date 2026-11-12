@@ -1,0 +1,55 @@
+"""Path rules ignore letter case on case-insensitive filesystems."""
+
+import os
+
+import pytest
+from luna_core.policy import Policy, Rules, case_insensitive_fs
+from luna_core.tools.files import read_file
+from luna_core.workspace import Workspace
+
+
+def test_fold_case_matches_paths_without_case():
+    rules = Rules(deny=["read_file:.env"], fold_case=True)
+    assert rules.match("read_file", {"file_path": ".ENV"}) == "deny"
+    assert Rules(deny=["read_file:.env"]).match("read_file", {"file_path": ".ENV"}) is None
+
+
+def test_fold_case_never_touches_execute():
+    rules = Rules(deny=["execute:rm *"], fold_case=True)
+    assert rules.match("execute", {"command": "RM x"}) is None  # Windows is handled elsewhere
+
+
+def test_case_insensitive_fs_probe_is_consistent(tmp_path):
+    (tmp_path / "Probe.txt").write_text("x", encoding="utf-8")
+    assert case_insensitive_fs(tmp_path) == (tmp_path / "PROBE.TXT").exists()
+
+
+def test_probe_leaves_no_files_behind(tmp_path):
+    case_insensitive_fs(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod does not make a directory read-only here")
+def test_unwritable_root_fails_closed(tmp_path):
+    tmp_path.chmod(0o500)
+    try:
+        if os.access(tmp_path, os.W_OK):
+            pytest.skip("running as a user that ignores directory permissions")
+        assert case_insensitive_fs(tmp_path) is True
+    finally:
+        tmp_path.chmod(0o700)
+
+
+def test_deny_on_dot_env_holds_on_a_case_insensitive_project(tmp_path):
+    if not case_insensitive_fs(tmp_path):
+        pytest.skip("this filesystem tells .ENV and .env apart")
+    (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+    policy = Policy(Rules(deny=["read_file:.env"]), workspace=Workspace(tmp_path))
+    assert policy.check(read_file, {"file_path": ".ENV"}).action == "deny"
+
+
+def test_child_policy_keeps_folding(tmp_path):
+    if not case_insensitive_fs(tmp_path):
+        pytest.skip("this filesystem tells .ENV and .env apart")
+    policy = Policy(Rules(deny=["read_file:.env"]), workspace=Workspace(tmp_path))
+    assert policy.child().check(read_file, {"file_path": ".ENV"}).action == "deny"
