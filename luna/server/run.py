@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -111,8 +113,41 @@ def _code_fingerprint() -> float:
     return max((p.stat().st_mtime for p in root.rglob("*.py")), default=0.0)
 
 
+def _default_is_ours(data: dict) -> bool:
+    """Tell whether ``data``'s port answers ``/health`` with ``data``'s token.
+
+    ``server.json`` outlives a reboot or a crash, and its pid may by then belong
+    to any process. Only our server knows the token, so a successful
+    authenticated ``/health`` is the identity check that must pass before a pid
+    from the file is ever killed.
+    """
+    import http.client
+    import json
+
+    port, token = data.get("port"), data.get("token")
+    if not isinstance(port, int) or isinstance(port, bool) or not isinstance(token, str):
+        return False
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+    try:
+        conn.request("GET", "/health", headers={"Authorization": f"Bearer {token}"})
+        response = conn.getresponse()
+        if response.status != 200:
+            return False
+        body = json.loads(response.read(4096).decode("utf-8", errors="replace"))
+        return isinstance(body, dict) and body.get("ok") is True and "protocol" in body
+    except (OSError, http.client.HTTPException, ValueError):
+        return False
+    finally:
+        conn.close()
+
+
 def _default_kill(pid: int) -> None:
-    _shell.kill_tree(pid)
+    """Stop our (identity-checked) server: SIGTERM on POSIX, the whole tree on Windows."""
+    if _shell.IS_WINDOWS:
+        _shell.kill_tree(pid)
+        return
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
 
 
 def ensure_running(
@@ -123,6 +158,7 @@ def ensure_running(
     _spawn: Callable[[int, str], None] | None = None,
     _fingerprint: Callable[[], float] | None = None,
     _kill: Callable[[int], None] | None = None,
+    _is_ours: Callable[[dict], bool] | None = None,
 ) -> dict:
     """Return the running server's token-file dict, starting one if needed.
 
@@ -133,6 +169,10 @@ def ensure_running(
     one — restarted, not reused — so local edits actually take effect
     instead of running invisibly against a stale, already-imported copy of
     the code until someone finds and kills the old process by hand.
+
+    The recorded pid is killed only after ``_is_ours`` confirms the recorded
+    port still answers with the recorded token (see :func:`_default_is_ours`):
+    a stale file's pid may be an unrelated process by now.
     """
     fingerprint = (_fingerprint or _code_fingerprint)()
     existing = read_token_file()
@@ -140,7 +180,8 @@ def ensure_running(
         if existing.get("fingerprint") == fingerprint:
             return existing
         on_warn("Luna server code changed since it started — restarting the background server")
-        (_kill or _default_kill)(existing["pid"])
+        if (_is_ours or _default_is_ours)(existing):
+            (_kill or _default_kill)(existing["pid"])
 
     if existing is not None:
         # Stale (dead, or just killed above for being outdated) — remove it

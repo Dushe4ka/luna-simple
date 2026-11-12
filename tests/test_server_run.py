@@ -52,6 +52,7 @@ def test_ensure_running_restarts_a_live_server_whose_code_is_stale(tmp_path, mon
         _spawn=fake_spawn,
         _fingerprint=lambda: 2.0,  # code on disk now differs from the recorded 1.0
         _kill=lambda pid: kill_calls.append(pid),
+        _is_ours=lambda data: True,
     )
 
     assert kill_calls == [999]
@@ -81,6 +82,7 @@ def test_ensure_running_never_treats_a_missing_fingerprint_as_a_match(tmp_path, 
         _spawn=fake_spawn,
         _fingerprint=lambda: 2.0,
         _kill=lambda pid: None,
+        _is_ours=lambda data: True,
     )
 
     assert len(spawn_calls) == 1
@@ -353,3 +355,94 @@ def test_spawn_kwargs_give_the_server_a_hidden_console_for_its_children(monkeypa
     monkeypatch.setattr(shell, "IS_WINDOWS", True)
     flags = server_run._spawn_kwargs()["creationflags"]
     assert not flags & 0x00000008  # DETACHED_PROCESS would cancel CREATE_NO_WINDOW
+
+
+def test_ensure_running_never_kills_a_pid_that_is_not_our_server(tmp_path, monkeypatch):
+    """After a reboot ``server.json`` survives and its pid may now be the user's editor.
+
+    Final review I3: the stale pid used to be force-killed (with its whole tree)
+    whenever the code fingerprint differed, which it always does after an update.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    write_token_file(port=12345, token="old", pid=999, fingerprint=1.0)
+    kill_calls = []
+
+    def fake_spawn(port, token):
+        write_token_file(port=port, token=token, pid=4242, fingerprint=2.0)
+
+    result = ensure_running(
+        str(tmp_path),
+        on_warn=lambda m: None,
+        _is_alive=lambda pid: True,  # the pid exists — but it is someone else's process
+        _spawn=fake_spawn,
+        _fingerprint=lambda: 2.0,
+        _kill=kill_calls.append,
+        _is_ours=lambda data: False,
+    )
+
+    assert kill_calls == []
+    assert result["pid"] == 4242
+
+
+class _HealthHandler:
+    """Minimal stand-in for the server's authenticated ``/health``."""
+
+    @staticmethod
+    def make(token):
+        from http.server import BaseHTTPRequestHandler
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server API
+                ok = self.path == "/health" and self.headers.get("Authorization") == (
+                    f"Bearer {token}"
+                )
+                body = b'{"ok": true, "protocol": 1}' if ok else b'{"error": "unauthorized"}'
+                self.send_response(200 if ok else 401)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        return Handler
+
+
+@pytest.fixture
+def health_server():
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthHandler.make("right"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server.server_address[1]
+    server.shutdown()
+    server.server_close()
+
+
+def test_is_our_server_only_with_our_token(health_server):
+    assert server_run._default_is_ours({"port": health_server, "token": "right"})
+    assert not server_run._default_is_ours({"port": health_server, "token": "wrong"})
+
+
+def test_is_our_server_false_when_nothing_listens():
+    port = server_run._free_port()
+    assert not server_run._default_is_ours({"port": port, "token": "t"})
+    assert not server_run._default_is_ours({"token": "t"})  # corrupt file: no port
+
+
+def test_default_kill_on_posix_is_a_plain_sigterm_as_before(monkeypatch):
+    """No more aggressive than before the Windows branch: SIGTERM to the pid only."""
+    import signal
+
+    from luna_core import shell
+
+    monkeypatch.setattr(shell, "IS_WINDOWS", False)
+    sent = []
+    monkeypatch.setattr(server_run.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(
+        server_run.os, "killpg", lambda *a: pytest.fail("no group kill"), raising=False
+    )
+    server_run._default_kill(999)
+    assert sent == [(999, signal.SIGTERM)]
