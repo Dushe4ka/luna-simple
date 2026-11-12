@@ -16,8 +16,17 @@ async def settle(pilot, condition, timeout: float = 10.0) -> None:
 
 
 async def click_when_shown(pilot, selector: str, timeout: float = 10.0) -> None:
-    """Click ``selector`` once it is on the active screen (e.g. an approval popping up)."""
-    await settle(pilot, lambda: bool(pilot.app.screen.query(selector)), timeout)
+    """Click ``selector`` once it is laid out on the active screen (e.g. an approval popping up).
+
+    Being in the DOM is not enough: before the first layout its region is empty and
+    the click lands nowhere.
+    """
+
+    def shown() -> bool:
+        found = pilot.app.screen.query(selector)
+        return bool(found) and all(w.region.width and w.region.height for w in found)
+
+    await settle(pilot, shown, timeout)
     await pilot.click(selector)
 
 
