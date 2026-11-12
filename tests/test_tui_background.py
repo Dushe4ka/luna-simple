@@ -5,7 +5,7 @@ from luna.tui.app import LunaApp
 from luna.tui.chat import ChatPane, NoticeRow
 from luna.tui.sidebar_sessions import SessionsSidebar
 from luna.tui.status_bar import StatusBar, format_status_line
-from tests.tui_fakes import FakeLunaClient
+from tests.tui_fakes import FakeLunaClient, settle
 
 DONE = {"event": "turn_done", "usage": {}, "cost": None, "stop_reason": "end"}
 
@@ -373,14 +373,14 @@ async def test_a_failed_decide_lets_the_same_approval_be_asked_again():
         chat = app.query_one(ChatPane)
         value = _approval("c1")["value"]
         chat.run_worker(chat._answer("s1", value))
-        await pilot.pause(0.2)
+        await settle(pilot, lambda: bool(app.query("#approve-button")))
         await pilot.click("#approve-button")
-        await pilot.pause(0.2)
+        await settle(pilot, lambda: "c1" not in chat._asked)
         assert "c1" not in chat._asked
         chat.run_worker(chat._answer("s1", value))
-        await pilot.pause(0.2)
+        await settle(pilot, lambda: bool(app.query("#approve-button")))
         await pilot.click("#approve-button")
-        await pilot.pause(0.2)
+        await settle(pilot, lambda: len(client.decisions) == 2)
     assert [d[0] for d in client.decisions] == ["c1", "c1"]
 
 

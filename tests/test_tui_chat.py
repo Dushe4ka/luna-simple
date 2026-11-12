@@ -9,6 +9,7 @@ from textual.widgets.markdown import MarkdownStream
 from luna.tui.chat import ChatPane, LunaMessage, UserMessage, render_history
 from luna.tui.commands import filter_commands
 from luna.tui.status_bar import StatusBar
+from tests.tui_fakes import settle
 
 
 def transcript_text(transcript: VerticalScroll) -> str:
@@ -279,6 +280,13 @@ async def test_slash_dropdown_rows_are_individually_visible_not_zero_height():
         await pilot.press("/")
 
         dropdown = chat.query_one("#autocomplete", ListView)
+        await settle(
+            pilot,
+            lambda: (
+                bool(dropdown.children)
+                and all(r.region.height > 0 for r in list(dropdown.children)[:5])
+            ),
+        )
         rows = list(dropdown.children)
         assert rows, "the dropdown must actually contain rows to check"
         for row in rows[:5]:

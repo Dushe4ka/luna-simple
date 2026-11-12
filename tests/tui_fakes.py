@@ -1,6 +1,18 @@
 """A scripted stand-in for luna_core.client.LunaClient in TUI tests."""
 
 import asyncio
+import time
+
+
+async def settle(pilot, condition, timeout: float = 10.0) -> None:
+    """Pause until ``condition()`` holds or ``timeout`` passes (the caller then asserts).
+
+    A fixed ``pilot.pause()`` is enough on a fast machine but not on a slow CI
+    runner (Windows), where a handler awaiting the server is still running.
+    """
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        await pilot.pause(0.05)
 
 
 class FakeLunaClient:

@@ -3,6 +3,7 @@ import httpx
 from luna.tui.app import LunaApp
 from luna.tui.chat import ChatPane
 from tests.server_helpers import StreamingASGITransport, make_app, seed
+from tests.tui_fakes import settle
 
 
 def _tui(tmp_path, *, server=None, thread_id="t1", **kwargs) -> LunaApp:
@@ -150,7 +151,8 @@ async def test_switching_sessions_reloads_that_threads_history(tmp_path):
 
         sidebar = app.query_one(SessionsSidebar)
         sidebar.post_message(SessionsSidebar.SessionSelected("t2"))
-        await pilot.pause()
+        # the switch ends with the sidebar highlight; leaving earlier tears the app down mid-way
+        await settle(pilot, lambda: sidebar.current_thread_id == "t2")
 
         assert app.query_one(ChatPane).thread_id == "t2"
         text = transcript_text(transcript)

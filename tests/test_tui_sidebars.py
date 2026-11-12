@@ -9,6 +9,7 @@ from luna.tui.app import LunaApp
 from luna.tui.chat import ChatPane
 from luna.tui.sidebar_sessions import SessionsSidebar, short_path
 from tests.server_helpers import StreamingASGITransport, make_app, seed
+from tests.tui_fakes import settle
 
 
 def _app(tmp_path, thread_id="t1") -> LunaApp:
@@ -78,9 +79,13 @@ async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path):
         chat = app.query_one(ChatPane)
         chat.query_one("#chat-input", Input)
         await chat.submit("hello")
-        await pilot.pause()
-        ids = [i.data_thread_id for i in app.query_one(SessionsSidebar).query(".session-item")]
-        assert "t-new" in ids
+        sidebar = app.query_one(SessionsSidebar)
+
+        def ids():
+            return [i.data_thread_id for i in sidebar.query(".session-item")]
+
+        await settle(pilot, lambda: "t-new" in ids())
+        assert "t-new" in ids()
 
 
 async def test_header_shows_the_real_folder_name_for_a_relative_workdir(tmp_path, monkeypatch):
