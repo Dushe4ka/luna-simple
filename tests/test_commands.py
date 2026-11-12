@@ -46,7 +46,11 @@ async def make_ctx(tmp_path):
             return _Stub("rebuilt")
 
         base = dict(
-            console=Console(file=io.StringIO(), force_terminal=True, highlight=False),
+            # legacy_windows=False: without a real console rich would assume the old Windows
+            # console on a Windows runner and wrap one column early
+            console=Console(
+                file=io.StringIO(), force_terminal=True, highlight=False, legacy_windows=False
+            ),
             config=cfg,
             bundle=bundle,
             rebuild=rebuild,
@@ -687,6 +691,7 @@ async def test_provider_without_key_asks_the_client_for_one(make_ctx, tmp_path, 
     assert need["env_var"] == "ANTHROPIC_API_KEY"
     assert "console.anthropic.com" in need["hint"]
     assert need["path"].endswith("credentials.toml")
+    assert not ("/" in need["path"] and "\\" in need["path"])  # one separator style
     assert ctx.config.provider == "ollama"
     assert "provider" not in result.effects
     assert result.to_json()["effects"]["need_key"] == need
