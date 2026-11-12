@@ -108,6 +108,16 @@ async def read_file(
     return ToolOutput.text("\n".join(out), f"{rel} {start + 1}-{end}")
 
 
+def _uses_crlf(data: bytes) -> bool:
+    """Return True when the file uses Windows-style line breaks."""
+    return b"\r\n" in data
+
+
+def _to_crlf(text: str) -> str:
+    """Normalize every line break in ``text`` to CRLF."""
+    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
 @tool(mutating=True)
 async def write_file(ctx: ToolContext, file_path: str, content: str) -> ToolOutput:
     """Create a file, or overwrite one you have already read.
@@ -129,7 +139,10 @@ async def write_file(ctx: ToolContext, file_path: str, content: str) -> ToolOutp
 
     def run() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        body = content
+        if target.is_file() and _uses_crlf(target.read_bytes()):
+            body = _to_crlf(content)
+        target.write_bytes(body.encode("utf-8"))
 
     await asyncio.to_thread(run)
     _seen(ctx).add(rel)
@@ -156,8 +169,12 @@ async def edit_file(
         return ToolOutput.error(f"file not found: {rel}")
     if old_string == new_string:
         return ToolOutput.error("old_string and new_string are identical")
-    text = await asyncio.to_thread(target.read_text, encoding="utf-8")
-    count = text.count(old_string) if old_string else 0
+    data = await asyncio.to_thread(target.read_bytes)
+    text = data.decode("utf-8")
+    old, new = old_string, new_string
+    if _uses_crlf(data) and "\n" in old_string and text.count(_to_crlf(old_string)):
+        old, new = _to_crlf(old_string), _to_crlf(new_string)
+    count = text.count(old) if old else 0
     if count == 0:
         return ToolOutput.error(f"old_string not found in {rel}")
     if count > 1 and not replace_all:
@@ -165,12 +182,8 @@ async def edit_file(
             f"old_string occurs {count} times in {rel}; "
             "add context to make it unique or set replace_all"
         )
-    updated = (
-        text.replace(old_string, new_string)
-        if replace_all
-        else text.replace(old_string, new_string, 1)
-    )
-    await asyncio.to_thread(target.write_text, updated, encoding="utf-8")
+    updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+    await asyncio.to_thread(target.write_bytes, updated.encode("utf-8"))
     _seen(ctx).add(rel)
     n = count if replace_all else 1
     return ToolOutput.text(f"edited {rel} ({n} replacement{'s' if n > 1 else ''})", f"edited {rel}")
