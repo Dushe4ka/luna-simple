@@ -592,3 +592,5 @@ def gc(
             _git(Path(root), ["update-ref", "-d", f"refs/luna/undo/{d.name}"])
         finally:
             lock.release()
+        # Windows cannot delete the lock file (so the folder) while it is held open.
+        shutil.rmtree(d, ignore_errors=True)
