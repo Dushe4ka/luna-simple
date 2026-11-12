@@ -20,6 +20,16 @@
   - `session.py` — потоковый REPL / режим одного запроса, подтверждения, `/reload`, `compact_thread`
   - `store.py` — журнал событий сессий ядра (`sessions.db`), `conversations`, `descendants`
   - `acp_app.py` — `luna acp`: ACP-агент для редакторов
+- `luna/doctor.py` — `luna doctor` (проверка установки: Python, Git Bash, PATH, сервер) и `luna update`
+- `packages/luna-core/src/luna_core/` — переносимость между ОС
+  - `shell.py` — единый запуск командной строки: `sh` на POSIX, Git Bash на Windows
+    (`find_shell`, `run_sync`, `kill_tree`, `ensure_git_on_path`); `LUNA_GIT_BASH_PATH`
+  - `paths.py` — `user_config_dir()`: `XDG_CONFIG_HOME` → `%APPDATA%\luna` → `~/.config/luna`
+  - `fsperm.py` — `restrict(fd)`: права 0600 на POSIX, на Windows ничего не делает
+- `scripts/` — установщики и CI
+  - `install.sh` / `install.ps1` — установка одной строкой (uv + `uv tool install`);
+    на Windows без Git ставят PortableGit с проверкой SHA-256 в `%LOCALAPPDATA%\luna\git`
+  - `ci/` — вспомогательные скрипты CI (матрица ОС)
 - `luna/repl/` — интерактивный слой поверх core
   - `commands.py` — диспетчер slash-команд
   - `setup_wizard.py` — интерактивный мастер `luna setup`

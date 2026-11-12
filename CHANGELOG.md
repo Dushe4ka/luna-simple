@@ -4,6 +4,22 @@
 [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — по
 [семантическому версионированию](https://semver.org/lang/ru/).
 
+## Unreleased
+
+### Добавлено
+
+- Windows: команды агента выполняются через Git Bash (`luna_core.shell`), PortableGit
+  ставится установщиком в `%LOCALAPPDATA%\luna\git` (версия закреплена, SHA-256).
+- Установщики одной строкой: `scripts/install.sh` (macOS/Linux) и `scripts/install.ps1`
+  (Windows); переменные `LUNA_REF`, `LUNA_REPO`, `LUNA_NO_MODIFY_PATH`, `LUNA_NO_GIT`.
+- Команды `luna doctor` (проверка установки) и `luna update`.
+- `edit_file` / `write_file` сохраняют переводы строк CRLF.
+
+### Изменено
+
+- Правила `execute` устойчивы к суффиксу `.exe` и регистру имени программы.
+- Правила путей не различают регистр на macOS и Windows.
+
 ## [0.4.0] — luna-core
 
 ### Ядро luna-core (пакет `packages/luna-core`, версия 0.1.0)

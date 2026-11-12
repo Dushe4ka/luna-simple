@@ -121,6 +121,8 @@ def kill_tree(pid: int) -> None:
 - `cmd`, `cmd.exe`, `powershell`, `pwsh`, `wsl`, `start`, `cygstart`, `winpty` добавляются к
   «запускателям» (как `bash`, `sudo`, `xargs`): для них `suggest_rules` не предлагает `allow`,
   `check_rule_safe` запрещает такие allow-правила, автоматического разрешения нет.
+- Реализация (Задача 4): шаблоны deny/ask на Windows тоже нормализуются (например,
+  `execute:rm.exe *` ловит `rm`), а обратные слеши в путях приводятся к прямым.
 
 ### 4. Файлы пользователя: переводы строк и кодировка
 
@@ -137,7 +139,8 @@ def kill_tree(pid: int) -> None:
 
 - все `read_text`/`write_text`/`open` в `luna/` и `luna_core/` получают `encoding="utf-8"`;
 - все `subprocess.run(..., text=True)` получают `encoding="utf-8", errors="replace"`;
-- в `ruff.toml` включается `PLW1514` (preview-правило, через `explicit-preview-rules = true`).
+- вместо ruff `PLW1514` — AST-страж `tests/test_portability.py`, потому что `PLW1514` не ловит
+  `Path.read_text`/`write_text` (проверено).
 
 ### 5. Конфиг и права на файлы
 
@@ -170,6 +173,8 @@ def kill_tree(pid: int) -> None:
   не различает (безопасная сторона: deny срабатывает шире). На `Path.resolve()` не
   опираемся: на macOS он не возвращает фактический регистр имени.
 - Для allow-правил то же сравнение без учёта регистра безопасно: это тот же файл.
+- Реализация (Задача 5): путь и шаблон сворачиваются через NFC + `casefold()` (macOS
+  хранит имена в NFD).
 - Если не подтвердился, пишется только регрессионный тест.
 
 ### 8. Установка и запуск командой `luna`
@@ -178,6 +183,13 @@ def kill_tree(pid: int) -> None:
 venv не кладёт `luna` в `PATH`. Проверено 2026-11-11: `uv tool install
 git+https://github.com/Dushe4ka/luna-simple` ставит `luna` и `luna-simple` с собственной
 (не editable) копией `luna-core`, `luna --version` работает.
+
+**Решения при реализации.** PortableGit ставится до `uv tool install` (uv клонирует
+git-репозиторий системным `git`); Luna сама добавляет `%LOCALAPPDATA%\luna\git\cmd` в `PATH`
+процесса при старте (`shell.ensure_git_on_path`). Закреплена версия `v2.56.0.windows.4`
+(SHA-256 в `scripts/install.ps1`). Поиск Git Bash в PowerShell повторяет
+`luna_core.shell.git_bash_candidates` и отвергает всё под `%SystemRoot%` и `\WindowsApps\`.
+`luna update` на Windows передаёт управление одной строкой `cmd /c "..."` (Задача 11).
 
 #### Что делают аналоги (изучено 2026-11-11)
 

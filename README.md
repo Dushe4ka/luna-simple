@@ -35,20 +35,37 @@ Luna — это **CLI-агент для кода** на собственном �
 
 ## Установка
 
+macOS и Linux:
+
 ```bash
-# со всеми необязательными возможностями: MCP, ACP, LSP, веб-поиск
-uv pip install "luna-simple[all]"
-
-# или только база (все провайдеры встроены)
-uv pip install luna-simple
-
-# по отдельности: luna-simple[mcp], [acp], [lsp], [websearch]
-
-# из клона репозитория
-uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"
+curl -LsSf https://raw.githubusercontent.com/Dushe4ka/luna-simple/main/scripts/install.sh | sh
 ```
 
-Требуется Python **3.11+**.
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Dushe4ka/luna-simple/main/scripts/install.ps1 | iex"
+```
+
+Установщик ставит [uv](https://docs.astral.sh/uv/) (он сам скачает Python 3.12), затем Luna
+командой `uv tool install`. На Windows без Git он кладёт PortableGit в
+`%LOCALAPPDATA%\luna\git`: Luna выполняет команды через Git Bash. После установки откройте
+новый терминал и наберите `luna`.
+
+- Проверка установки: `luna doctor`
+- Обновление: `luna update`
+- Удаление: `uv tool uninstall luna-simple`
+- Конкретная версия: `LUNA_REF=<ветка|тег> …` перед командой установки
+- Свой путь к Git Bash: переменная `LUNA_GIT_BASH_PATH`
+- Терминалы на Windows: Windows Terminal или консоль Windows 10+
+
+Требуется Python **3.11+** (установщик берёт 3.12).
+
+## Разработка
+
+```bash
+uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"
+```
 
 ## Luna как SDK
 
