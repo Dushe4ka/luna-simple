@@ -1,9 +1,11 @@
 import asyncio
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from luna_core import shell
@@ -83,8 +85,11 @@ async def test_local_cancel_event_stops_the_command(tmp_path):
 
 
 async def test_local_output_is_capped(tmp_path):
+    py = shlex.quote(Path(sys.executable).as_posix())  # backslashes would not survive sh
     r = await LocalSandbox(max_output=1000).run(
-        f"{sys.executable} -c \"print('x' * 50000)\"", cwd=tmp_path, timeout=10
+        f"{py} -c \"print('x' * 50000)\"",
+        cwd=tmp_path,
+        timeout=10,
     )
     assert len(r.output) < 1200 and "truncated" in r.output
 
