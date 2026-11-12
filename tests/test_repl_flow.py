@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -375,7 +374,7 @@ class _HangingProvider:
         self.calls += 1
         if self.calls == 1:
             yield TextDelta("working")
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
             await asyncio.sleep(30)
         async for event in FakeProvider([FakeProvider.text("second answer")]).stream(request):
             yield event
@@ -426,7 +425,7 @@ async def test_ctrl_c_at_an_approval_prompt_never_runs_the_tool(tmp_path):
 
     def input_fn(prompt):
         if "approve" in prompt or "›" not in prompt:  # the approval prompt
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
             for _ in range(100):  # the user presses Enter only after seeing the notice
                 if "turn cancelled" in out.file.getvalue():
                     printed_before_answer.set()
