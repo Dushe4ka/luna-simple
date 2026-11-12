@@ -48,7 +48,14 @@ class UndoResult:
 def _git(root: Path, args: list[str], env: dict | None = None, *, raw: bool = False) -> str | None:
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, timeout=30, env=env
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -125,6 +132,8 @@ def _snapshot_tree(root: Path) -> str | None:
                 cwd=root,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 env=env,
             )
@@ -148,7 +157,7 @@ class UndoJournal:
     # -- storage ---------------------------------------------------------
     def _load(self) -> dict:
         try:
-            data = json.loads((self.dir / "journal.json").read_text())
+            data = json.loads((self.dir / "journal.json").read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {"turns": [], "redo": []}
         except (OSError, ValueError):
             return {"turns": [], "redo": []}
@@ -159,7 +168,7 @@ class UndoJournal:
     def _save(self, data: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.dir / f"journal.json.{os.getpid()}.{threading.get_ident()}.tmp"
-        tmp.write_text(json.dumps(data))
+        tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(self.dir / "journal.json")
 
     @property

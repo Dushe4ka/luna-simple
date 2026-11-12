@@ -263,7 +263,7 @@ async def run_once(
     with contextlib.ExitStack() as stack:
         quiet = console
         if output_format == "json":
-            devnull = stack.enter_context(open(os.devnull, "w"))  # noqa: SIM115
+            devnull = stack.enter_context(open(os.devnull, "w", encoding="utf-8"))  # noqa: SIM115
             quiet = Console(file=devnull, theme=rich_theme(active()))
         result = await render_turn(
             bundle.agent,

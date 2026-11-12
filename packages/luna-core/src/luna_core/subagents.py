@@ -202,6 +202,8 @@ def _git(root: Path, *args: str, env: dict | None = None) -> subprocess.Complete
         cwd=root,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         env={**os.environ, **(env or {})},
     )

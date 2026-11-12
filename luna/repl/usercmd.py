@@ -53,7 +53,7 @@ def load(workdir: str = ".", *, env: Mapping[str, str] | None = None) -> dict[st
             continue
         for path in sorted(d.glob("*.md")):
             try:
-                text = path.read_text()
+                text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             meta, body = _frontmatter(text)

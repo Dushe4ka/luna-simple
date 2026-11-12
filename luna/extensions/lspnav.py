@@ -70,7 +70,7 @@ def _server(workdir: str, language: str):
 
 def _find_column(workdir: str, file: str, line: int, symbol: str) -> int:
     try:
-        text = (Path(workdir) / file).read_text()
+        text = (Path(workdir) / file).read_text(encoding="utf-8")
         target = text.splitlines()[line - 1]
         return max(0, target.find(symbol))
     except (OSError, IndexError, UnicodeDecodeError):
@@ -185,7 +185,7 @@ def _functions(workdir: str, language: str) -> list[Callable[..., str]]:
             return f"'{symbol}' in {file} has no range information"
         start_line, end_line = span
         try:
-            lines = (Path(workdir) / file).read_text().splitlines()
+            lines = (Path(workdir) / file).read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError) as exc:
             return f"LSP unavailable: {exc}"
         text = "\n".join(lines[start_line : end_line + 1])

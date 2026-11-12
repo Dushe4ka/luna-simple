@@ -415,7 +415,7 @@ def _write_user_config(
 
     path = config_path(env)
     try:
-        text = path.read_text() if path.exists() else ""
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
         doc = tomlkit.parse(text)
     except (OSError, UnicodeDecodeError, ParseError) as exc:
         raise LunaConfigError(f"Cannot read config {path}: {exc}") from exc
@@ -433,7 +433,7 @@ def _write_user_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(tomlkit.dumps(doc))
+        tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

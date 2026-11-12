@@ -26,7 +26,9 @@ def _load_known_models() -> dict:
     if _KNOWN_MODELS_CACHE is not None:
         return _KNOWN_MODELS_CACHE
     try:
-        text = resources.files("luna.config").joinpath("known_models.toml").read_text()
+        text = (
+            resources.files("luna.config").joinpath("known_models.toml").read_text(encoding="utf-8")
+        )
         _KNOWN_MODELS_CACHE = tomllib.loads(text)
     except (OSError, tomllib.TOMLDecodeError, ModuleNotFoundError):
         _KNOWN_MODELS_CACHE = {}
