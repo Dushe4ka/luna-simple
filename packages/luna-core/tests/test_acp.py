@@ -181,6 +181,7 @@ async def test_acp_stdio_end_to_end(tmp_path):
         str(tmp_path),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
 
     async def send(obj):
@@ -188,7 +189,12 @@ async def test_acp_stdio_end_to_end(tmp_path):
         await proc.stdin.drain()
 
     async def read():
-        return json.loads(await asyncio.wait_for(proc.stdout.readline(), 10))
+        try:
+            return json.loads(await asyncio.wait_for(proc.stdout.readline(), 10))
+        except TimeoutError as exc:
+            proc.kill()
+            err = (await asyncio.wait_for(proc.stderr.read(), 10)).decode(errors="replace")
+            raise AssertionError(f"the agent stopped answering:\n{err}") from exc
 
     await send(
         {
