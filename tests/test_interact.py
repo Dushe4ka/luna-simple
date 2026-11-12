@@ -77,14 +77,20 @@ def test_arrow_pick_default_is_valid_against_real_questionary():
     exactly what arrow_pick builds internally and calls the real,
     unmocked questionary.select with it."""
     import questionary
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
 
     options = [("a", "Alpha  (A_KEY)"), ("b", "Beta  (B_KEY)")]
-    for value, _ in options:
-        questionary.select(
-            "",
-            choices=[questionary.Choice(label, value=v) for v, label in options],
-            default=value,
-        )
+    # explicit input/output: on Windows the default output needs a real console
+    with create_pipe_input() as pipe:
+        for value, _ in options:
+            questionary.select(
+                "",
+                choices=[questionary.Choice(label, value=v) for v, label in options],
+                default=value,
+                input=pipe,
+                output=DummyOutput(),
+            )
 
 
 def test_arrow_pick_raises_keyboard_interrupt_on_cancel(monkeypatch):
