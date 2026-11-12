@@ -35,7 +35,6 @@ def log_path(env=None) -> Path:
     return token_path(env).parent / "server.log"
 
 
-_DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -77,9 +76,16 @@ def _default_is_alive(pid: int) -> bool:
 
 
 def _spawn_kwargs() -> dict:
-    """Detach the server so closing the launching terminal does not stop it."""
+    """Detach the server so closing the launching terminal does not stop it.
+
+    On Windows the server gets its own *hidden* console (``CREATE_NO_WINDOW``),
+    not ``DETACHED_PROCESS``: a process without any console makes Windows open a
+    new, visible console window for every console program it starts (bash, git,
+    rg, taskkill). With a hidden console the children inherit it and stay
+    invisible, and the server is still not attached to the launching terminal.
+    """
     if _shell.IS_WINDOWS:
-        return {"creationflags": _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW}
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW}
     return {"start_new_session": True}
 
 

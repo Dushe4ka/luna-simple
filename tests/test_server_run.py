@@ -340,4 +340,16 @@ def test_spawn_kwargs_detach_from_the_console(monkeypatch):
     assert server_run._spawn_kwargs() == {"start_new_session": True}
     monkeypatch.setattr(shell, "IS_WINDOWS", True)
     flags = server_run._spawn_kwargs()["creationflags"]
-    assert flags & 0x00000008 and flags & 0x00000200  # DETACHED_PROCESS, NEW_PROCESS_GROUP
+    assert flags & 0x08000000 and flags & 0x00000200  # CREATE_NO_WINDOW, NEW_PROCESS_GROUP
+
+
+def test_spawn_kwargs_give_the_server_a_hidden_console_for_its_children(monkeypatch):
+    """A DETACHED_PROCESS server has no console at all, so every console program it
+    starts (bash, git, rg) gets a new, visible console window. CREATE_NO_WINDOW
+    alone gives the server its own hidden console, which children inherit.
+    """
+    from luna_core import shell
+
+    monkeypatch.setattr(shell, "IS_WINDOWS", True)
+    flags = server_run._spawn_kwargs()["creationflags"]
+    assert not flags & 0x00000008  # DETACHED_PROCESS would cancel CREATE_NO_WINDOW

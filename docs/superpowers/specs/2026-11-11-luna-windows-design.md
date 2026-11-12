@@ -102,8 +102,11 @@ def kill_tree(pid: int) -> None:
   `GetExitCodeProcess == STILL_ACTIVE` через `ctypes`, без новых зависимостей. На POSIX без
   изменений.
 - `_default_kill(pid)` использует `shell.kill_tree`.
-- Запуск сервера на Windows: `creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-  CREATE_NO_WINDOW` вместо `start_new_session`, иначе закрытие консоли убивает сервер.
+- Запуск сервера на Windows: `creationflags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`
+  вместо `start_new_session`, иначе закрытие консоли убивает сервер. Без `DETACHED_PROCESS`
+  (исправлено по итоговому ревью): у процесса без консоли каждый консольный дочерний процесс
+  (`bash`, `git`, `rg`) открывал бы видимое окно; со скрытой собственной консолью дети
+  наследуют её, а с консолью терминала сервер всё равно не связан.
 - `os.fchmod` заменяется вызовом `luna_core.fsperm.restrict(fd)` (см. п. 5).
 
 ### 3. Правила `execute`
