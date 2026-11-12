@@ -22,7 +22,4 @@ def make_agent(cwd: str) -> Agent:
 
 
 if __name__ == "__main__":
-    import faulthandler
-
-    faulthandler.dump_traceback_later(6)  # TEMP: show where the agent hangs on Windows CI
     asyncio.run(run_acp(make_agent, EventLog(Path(sys.argv[1]) / "acp.db")))
