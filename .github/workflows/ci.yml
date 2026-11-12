@@ -36,7 +36,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv venv --python ${{ matrix.python }}
       - run: uv pip install -e packages/luna-core -e ".[dev,all]"
-      - run: uv run pytest -q
+      - name: pytest
+        shell: bash
+        run: uv run pytest -v -o addopts="-m 'not live'" -rfE --tb=short -p no:cacheprovider
 
   smoke:
     strategy:
