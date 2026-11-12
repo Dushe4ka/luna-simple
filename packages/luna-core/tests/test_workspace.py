@@ -27,11 +27,26 @@ def test_real_absolute_path_inside_the_root_is_accepted(ws):
     assert ws.resolve(str(ws.root / "src" / "a.py")) == ws.root / "src" / "a.py"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="drive-less host dirs like /Users are POSIX")
 def test_outside_path_is_an_error_not_remapped(ws):
     host_dir = next(p for p in ("/Users", "/home", "/tmp", "/etc") if Path(p).is_dir())
     with pytest.raises(OutsideWorkspace, match="outside the project"):
         ws.resolve(f"{host_dir}/me/Desktop/x.txt")
     assert not (ws.root / host_dir.lstrip("/")).exists()
+
+
+def test_real_absolute_path_outside_the_root_is_an_error_not_remapped(ws, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("host") / "me" / "x.txt"
+    before = set(ws.root.iterdir())
+    with pytest.raises(OutsideWorkspace, match="outside the project"):
+        ws.resolve(str(outside))
+    assert set(ws.root.iterdir()) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="backslash is a path separator only on Windows")
+def test_backslash_rooted_path_is_the_virtual_root_on_windows(ws):
+    assert ws.resolve("\\") == ws.root
+    assert ws.resolve("\\src\\a.py") == ws.root / "src" / "a.py"
 
 
 def test_dotdot_escape_is_an_error(ws):
