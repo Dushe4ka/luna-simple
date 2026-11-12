@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -198,7 +199,9 @@ async def test_expanded_secret_values_are_redacted_from_warnings(tmp_path):
     manager = MCPManager(servers, on_warn=warnings.append, connect_timeout=5, redactions=redactions)
     assert await manager.start() == []
     await manager.close()
-    assert warnings and secret not in warnings[0] and "${TOKEN}" in warnings[0]
+    assert warnings and secret not in warnings[0]
+    if os.name != "nt":  # Windows' "[WinError 2]" text does not name the missing file
+        assert "${TOKEN}" in warnings[0]
     assert secret not in manager.status()["ghost"]
 
 
