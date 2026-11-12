@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 
+from luna_core import shell as _shell
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
 from luna_core.shellsplit import program_name, rough_split, split_command
@@ -50,6 +51,21 @@ def _tool_matches(rule_tool: str, tool: str) -> bool:
     return rule_tool in ("*", tool) or tool in _GROUPS.get(rule_tool, ())
 
 
+def _fold_program(pattern: str) -> str:
+    """On Windows, normalise a literal program word of a deny/ask pattern.
+
+    ``execute:rm.exe *`` must catch ``rm`` and ``RM.EXE``: the subjects carry
+    the program in :func:`program_name` form, so the pattern gets the same.
+    A first word with glob metacharacters is left as written.
+    """
+    if not _shell.IS_WINDOWS:
+        return pattern
+    word, sep, rest = pattern.partition(" ")
+    if not word or any(ch in word for ch in "*?["):
+        return pattern
+    return program_name(word) + sep + rest
+
+
 @dataclass
 class Rules:
     """Allow / ask / deny rules of the form ``<tool or group>:<fnmatch pattern>``."""
@@ -58,11 +74,13 @@ class Rules:
     deny: list[str] = field(default_factory=list)
     ask: list[str] = field(default_factory=list)
 
-    def _hit(self, rules: list[str], tool: str, subject: str) -> bool:
+    def _hit(self, rules: list[str], tool: str, subject: str, fold: bool = False) -> bool:
         for rule in rules:
             rtool, _, pattern = rule.partition(":")
             if not _tool_matches(rtool, tool):
                 continue
+            if fold and tool == "execute":
+                pattern = _fold_program(pattern)
             if tool != "execute":
                 pattern = _relpath(pattern)
             if fnmatch(subject, pattern):
@@ -105,7 +123,7 @@ class Rules:
             subjects += parts.subjects if parts else ()
         for kind in ("deny", "ask"):
             rules = getattr(self, kind)
-            if any(self._hit(rules, "execute", s) for s in subjects):
+            if any(self._hit(rules, "execute", s, fold=True) for s in subjects):
                 return kind
         if any(parts is None for parts in readings):
             return None

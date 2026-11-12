@@ -25,6 +25,11 @@ DENY_RM = Rules(deny=["execute:rm *"], allow=["execute:ls *", "execute:git *"])
         "ENV.EXE rm -rf x",
         'BASH.EXE -c "rm -rf x"',
         "ls && RM.exe x",
+        r"'C:\Git\usr\bin\rm.exe' -rf x",
+        r'"C:\\Git\\usr\\bin\\rm.exe" -rf x',
+        r'"C:\Git\usr\bin\rm.exe" -rf x',
+        r"C:\\Git\\usr\\bin\\rm.exe -rf x",
+        r"'C:\Git\usr\bin\RM' x",
     ],
 )
 def test_deny_rm_cannot_be_bypassed_on_windows(windows, command):
@@ -61,3 +66,22 @@ def test_windows_runners_are_never_allowed(windows, runner):
 def test_windows_runner_rules_are_refused_on_every_os(runner):
     with pytest.raises(UnsafeRule):
         check_rule_safe(f"execute:{runner} *")
+
+
+def test_backslash_path_is_never_allowed(windows):
+    for command in (r"'C:\Git\usr\bin\git.exe' status", r"C:\\Git\\git.exe status"):
+        assert DENY_RM.match("execute", {"command": command}) is None
+
+
+@pytest.mark.parametrize("command", ["rm -rf x", "RM.EXE x", "C:/x/rm x"])
+def test_deny_pattern_with_exe_is_folded_on_windows(windows, command):
+    assert Rules(deny=["execute:rm.exe *"]).match("execute", {"command": command}) == "deny"
+
+
+def test_ask_pattern_with_exe_is_folded_on_windows(windows):
+    rules = Rules(ask=["execute:Git.EXE *"])
+    assert rules.match("execute", {"command": "git push"}) == "ask"
+
+
+def test_deny_pattern_with_exe_is_literal_on_posix():
+    assert Rules(deny=["execute:rm.exe *"]).match("execute", {"command": "rm x"}) is None

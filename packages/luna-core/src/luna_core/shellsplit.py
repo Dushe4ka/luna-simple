@@ -198,11 +198,14 @@ def _strip_windows(name: str) -> str:
 def program_name(word: str) -> str:
     """Basename of a program word; on Windows also lower-cased without ``.exe`` & co.
 
+    On Windows both slash and backslash separate path parts (MSYS bash runs Win32 paths).
+
     Windows finds ``rm.exe`` for ``RM``, ``Rm.EXE`` or ``C:/Git/usr/bin/rm``, so a
     deny rule on ``rm`` must see all of them as ``rm``.
     """
-    name = word.rsplit("/", 1)[-1]
-    return _strip_windows(name) if _shell.IS_WINDOWS else name
+    if not _shell.IS_WINDOWS:
+        return word.rsplit("/", 1)[-1]
+    return _strip_windows(re.split(r"[/\\]", word)[-1])
 
 
 def allow_form(word: str) -> str:
