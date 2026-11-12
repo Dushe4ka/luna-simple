@@ -150,8 +150,10 @@ class CommandHook:
             )
         except TimeoutError:
             self._kill_group(proc.pid)
+            # ``wait()`` also waits for the pipes to close; a survivor holding them must
+            # not stall the turn (e.g. a process that left the killed tree).
             with contextlib.suppress(Exception):
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), 5)
             return HookResult(notices=(f"hook `{self.command}` timed out after {self.timeout:g}s",))
         stdout = out.decode("utf-8", errors="replace")
         stderr = err.decode("utf-8", errors="replace")

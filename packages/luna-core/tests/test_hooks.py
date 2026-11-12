@@ -1,7 +1,13 @@
 import asyncio
+import contextlib
 import json
+import os
+import shlex
+import signal
 import sys
+from pathlib import Path
 
+import pytest
 from luna_core.hooks import CommandHook, HookResult, Hooks, load_command_hooks
 
 
@@ -59,6 +65,11 @@ async def test_failures_and_timeouts_become_notices():
     )
 
 
+def _sh(path) -> str:
+    """``path`` quoted for sh/Git Bash (forward slashes, so backslashes survive)."""
+    return shlex.quote(Path(path).as_posix())
+
+
 async def test_command_hook_exit_codes(tmp_path):
     script = tmp_path / "hook.py"
     script.write_text(
@@ -69,7 +80,7 @@ async def test_command_hook_exit_codes(tmp_path):
         "if 'warn' in cmd:\n    print('meh', file=sys.stderr); sys.exit(1)\n"
         "print('checked ' + p['tool'])\n"
     )
-    hook = CommandHook(f"{sys.executable} {script}", cwd=tmp_path)
+    hook = CommandHook(f"{_sh(sys.executable)} {_sh(script)}", cwd=tmp_path)
     ok = await hook({"tool": "execute", "args": {"command": "ls"}})
     assert ok.context.strip() == "checked execute" and not ok.block
     blocked = await hook({"tool": "execute", "args": {"command": "rm -rf x"}})
@@ -96,6 +107,26 @@ async def test_command_hook_timeout_kills_whole_process_group(tmp_path):
     assert not (tmp_path / "marker").exists(), (
         "grandchild survived the timeout and created the marker"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="os.setsid is POSIX; Windows runs the tree test above")
+async def test_command_hook_timeout_does_not_wait_for_a_survivor_holding_the_pipes(tmp_path):
+    pidfile = tmp_path / "pid"
+    code = (
+        "import os, time; os.setsid(); "
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid())); time.sleep(20)"
+    )
+    hook = CommandHook(f'{_sh(sys.executable)} -c "{code}" & sleep 30', cwd=tmp_path, timeout=0.5)
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    try:
+        result = await hook({"tool": "execute", "args": {}})
+        assert "timed out" in result.notices[0]
+        assert loop.time() - start < 10
+    finally:
+        if pidfile.exists():
+            with contextlib.suppress(OSError):
+                os.kill(int(pidfile.read_text(encoding="utf-8")), signal.SIGKILL)
 
 
 async def test_load_command_hooks_from_config(tmp_path):
