@@ -45,10 +45,16 @@ class UndoResult:
     note: str
 
 
+#: Snapshots and restores must be byte-exact: ``core.autocrlf`` (``true`` by default
+#: in Git for Windows) would turn LF into CRLF on restore, and ``core.safecrlf``
+#: could make the snapshot fail. A repository's ``.gitattributes`` still applies.
+_EXACT_BYTES = ("-c", "core.autocrlf=false", "-c", "core.safecrlf=false")
+
+
 def _git(root: Path, args: list[str], env: dict | None = None, *, raw: bool = False) -> str | None:
     try:
         proc = subprocess.run(
-            ["git", *args],
+            ["git", *_EXACT_BYTES, *args],
             cwd=root,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -129,7 +135,17 @@ def _snapshot_tree(root: Path) -> str | None:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
         try:
             proc = subprocess.run(
-                ["git", "-c", "add.ignoreErrors=false", "add", "-A", "--", ".", *_EXCLUDES],
+                [
+                    "git",
+                    *_EXACT_BYTES,
+                    "-c",
+                    "add.ignoreErrors=false",
+                    "add",
+                    "-A",
+                    "--",
+                    ".",
+                    *_EXCLUDES,
+                ],
                 cwd=root,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,

@@ -404,3 +404,20 @@ def test_gc_skips_a_journal_whose_lock_is_held(tmp_path):
         fcntl.flock(held, fcntl.LOCK_UN)
     gc(tmp_path, keep_days=1, keep_max=0)
     assert not j.dir.exists()
+
+
+@pytest.mark.parametrize("autocrlf", ["true", "input"])
+def test_git_undo_restores_bytes_exactly_despite_core_autocrlf(repo2, autocrlf):
+    """Git for Windows defaults to ``core.autocrlf=true``: a git-mode undo wrote
+    LF files back as CRLF (final review minor 5). Compare bytes, not text."""
+    git(repo2, "config", "core.autocrlf", autocrlf)
+    (repo2 / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
+    j = UndoJournal(repo2, "s1")
+    j.begin_turn("t1")
+    j.note_command("t1")
+    (repo2 / "b.txt").write_bytes(b"changed by a command\n")
+    (repo2 / "crlf.txt").write_bytes(b"changed\n")
+    j.end_turn("t1")
+    j.undo()
+    assert (repo2 / "b.txt").read_bytes() == b"bee\n"
+    assert (repo2 / "crlf.txt").read_bytes() == b"one\r\ntwo\r\n"
