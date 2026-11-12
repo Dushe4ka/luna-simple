@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -791,12 +793,28 @@ def _serve(argv: list[str]) -> int:
     return run_serve(argv)
 
 
+def _utf8_stdio(streams=None, *, windows: bool | None = None) -> None:
+    """On Windows, print UTF-8 even when redirected (the ANSI code page breaks Cyrillic)."""
+    windows = (os.name == "nt") if windows is None else windows
+    if not windows:
+        return
+    for stream in streams if streams is not None else (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
+    _utf8_stdio()
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw in (["--version"], ["-V"]):  # before any heavy import: this path must stay instant
         print(f"luna {__version__}")
         return 0
+    from luna_core.shell import ensure_git_on_path
+
+    ensure_git_on_path()
     return _main(raw)
 
 

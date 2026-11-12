@@ -114,3 +114,7 @@ def test_pinned_files_render_fresh(tmp_path):
     assert "v2" in out and "gone.py" not in out
     pinned.drop("a.py")
     assert pinned.paths == ["gone.py"]
+
+
+def test_prompt_names_the_shell(tmp_path):
+    assert "Shell:" in build_system_prompt("base", root=tmp_path)

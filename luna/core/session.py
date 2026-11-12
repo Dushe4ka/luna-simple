@@ -90,17 +90,23 @@ def _ctrl_c_cancels(on_sigint: Callable[[], None]):
     """
     loop = asyncio.get_running_loop()
     previous = signal.getsignal(signal.SIGINT)
-    installed = False
+    installed = plain = False
     try:
         loop.add_signal_handler(signal.SIGINT, on_sigint)
         installed = True
     except (NotImplementedError, RuntimeError, ValueError):
-        pass  # not the main thread, or a platform without loop signal handlers
+        # Windows has no loop signal handlers: a plain handler hops back onto the loop
+        try:
+            signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(on_sigint))
+            plain = True
+        except ValueError:
+            pass  # not the main thread
     try:
         yield
     finally:
         if installed:
             loop.remove_signal_handler(signal.SIGINT)
+        if installed or plain:
             with contextlib.suppress(TypeError, ValueError):
                 signal.signal(signal.SIGINT, previous)
 
