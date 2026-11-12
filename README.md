@@ -55,7 +55,12 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Dus
 - Проверка установки: `luna doctor`
 - Обновление: `luna update`
 - Удаление: `uv tool uninstall luna-simple`
-- Конкретная версия: `LUNA_REF=<ветка|тег> …` перед командой установки
+- Конкретная версия:
+  - macOS/Linux: `curl -LsSf …/install.sh | LUNA_REF=<ветка|тег> sh` (или `| sh -s -- --ref <ветка|тег>`)
+  - Windows: `$env:LUNA_REF='<ветка|тег>'; powershell -ExecutionPolicy ByPass -c "irm …/install.ps1 | iex"`
+- Не менять `PATH`: `LUNA_NO_MODIFY_PATH=1` (macOS/Linux: `| LUNA_NO_MODIFY_PATH=1 sh`,
+  Windows: `$env:LUNA_NO_MODIFY_PATH='1'; …`)
+- Windows: не ставить PortableGit — `$env:LUNA_NO_GIT='1'; …` (тогда Git должен быть установлен)
 - Свой путь к Git Bash: переменная `LUNA_GIT_BASH_PATH`
 - Терминалы на Windows: Windows Terminal или консоль Windows 10+
 

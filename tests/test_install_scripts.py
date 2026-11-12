@@ -42,3 +42,23 @@ def test_ps1_never_accepts_the_wsl_bash():
     text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
     assert re.search(r"windowsapps", text, re.IGNORECASE)
     assert "SystemRoot" in text
+
+
+def test_install_sh_runs_main_as_its_last_line():
+    lines = [
+        x for x in (SCRIPTS / "install.sh").read_text(encoding="utf-8").splitlines() if x.strip()
+    ]
+    assert lines[-1] == 'main "$@"'
+
+
+def test_ps1_die_throws_instead_of_exiting():
+    text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
+    die = next(x for x in text.splitlines() if x.strip().startswith("function Die"))
+    assert "throw" in die
+    assert "exit" not in die
+
+
+def test_readme_shows_how_to_pin_a_ref():
+    text = (SCRIPTS.parent / "README.md").read_text(encoding="utf-8")
+    assert "| LUNA_REF=" in text
+    assert "$env:LUNA_REF" in text
