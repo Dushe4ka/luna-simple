@@ -45,3 +45,33 @@ def _offences(path: Path) -> list[str]:
 def test_no_text_io_without_encoding():
     offences = [o for src in SOURCES for p in sorted(src.rglob("*.py")) for o in _offences(p)]
     assert offences == []
+
+
+def _spawns_without_stdin(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out = []
+    for node in ast.walk(tree):
+        func = node.func if isinstance(node, ast.Call) else None
+        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+            continue
+        spawn = (func.value.id == "subprocess" and func.attr in SUBPROCESS) or (
+            func.value.id == "asyncio" and func.attr.startswith("create_subprocess_")
+        )
+        if spawn and _kw(node, "stdin") is None:
+            out.append(f"{path.relative_to(ROOT)}:{node.lineno} {func.attr} without stdin")
+    return out
+
+
+def test_no_child_process_inherits_stdin():
+    """A child inheriting Luna's stdin hangs on Windows and can eat ACP input.
+
+    Under ``luna acp`` stdin is the editor's JSON-RPC pipe, read by a thread with a
+    blocking synchronous read. On Windows a child that inherits that pipe blocks at
+    startup until the read completes (``git`` in the undo journal hung the ACP
+    session); on every OS a child that reads stdin would consume the editor's
+    messages. Every spawn must say what its stdin is.
+    """
+    offences = [
+        o for src in SOURCES for p in sorted(src.rglob("*.py")) for o in _spawns_without_stdin(p)
+    ]
+    assert offences == []

@@ -200,6 +200,7 @@ def _git(root: Path, *args: str, env: dict | None = None) -> subprocess.Complete
     return subprocess.run(
         ["git", *args],
         cwd=root,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -50,6 +50,7 @@ def _git(root: Path, args: list[str], env: dict | None = None, *, raw: bool = Fa
         proc = subprocess.run(
             ["git", *args],
             cwd=root,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -130,6 +131,7 @@ def _snapshot_tree(root: Path) -> str | None:
             proc = subprocess.run(
                 ["git", "-c", "add.ignoreErrors=false", "add", "-A", "--", ".", *_EXCLUDES],
                 cwd=root,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

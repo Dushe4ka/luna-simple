@@ -312,7 +312,10 @@ async def _rg(
         argv += ["-m", str(max_count)]
     argv += ["-e", pattern, str(base)]
     proc = await asyncio.create_subprocess_exec(
-        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
     )
     out, _ = await proc.communicate()
     rows = []

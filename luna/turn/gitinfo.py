@@ -11,6 +11,7 @@ def _run(workdir: str, *args: str) -> str:
         out = subprocess.run(
             ["git", *args],
             cwd=workdir,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -35,6 +36,7 @@ def _run_raw(workdir: str, *args: str) -> str:
         out = subprocess.run(
             ["git", *args],
             cwd=workdir,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
