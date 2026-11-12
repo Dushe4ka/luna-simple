@@ -56,7 +56,6 @@ jobs:
         run: uv tool dir --bin >> "$GITHUB_PATH"
       - name: luna doctor
         run: luna doctor
-        continue-on-error: true
       - name: End-to-end turn through the real shell
         run: python scripts/ci/smoke.py
 
@@ -81,7 +80,9 @@ jobs:
         shell: bash
         run: |
           PY=$( [ "$RUNNER_OS" = "Windows" ] && echo sdk-env/Scripts/python.exe || echo sdk-env/bin/python )
-          "$PY" -c "import luna, sys" 2>/dev/null && { echo "the app leaked into the SDK env"; exit 1; }
+          # isolated (-I) and outside the checkout, where `luna/` would shadow the check
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$PY" -I -c "import importlib.util, sys; sys.exit(1 if importlib.util.find_spec('luna') else 0)") \
+            || { echo "the app leaked into the SDK env"; exit 1; }
           "$PY" scripts/ci/sdk_smoke.py
 
   installer:
@@ -105,7 +106,9 @@ jobs:
         run: ./scripts/install.ps1
       - name: luna from the uv tool dir
         shell: bash
-        run: '"$(uv tool dir --bin)/luna" --version'
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"  # the installer was told not to modify PATH
+          "$(uv tool dir --bin)/luna" --version
 
   installer-windows-no-git:
     runs-on: windows-latest
@@ -124,7 +127,7 @@ jobs:
           ./scripts/install.ps1
           if (-not (Test-Path "$env:LOCALAPPDATA\luna\git\bin\bash.exe")) { throw 'PortableGit not installed' }
           $luna = Join-Path (uv tool dir --bin).Trim() 'luna.exe'
-          & $luna doctor
-          if ($LASTEXITCODE -ne 0) { Write-Host 'doctor reported problems (path is expected off PATH)' }
-          $out = & $luna doctor | Out-String
-          if ($out -notmatch 'luna\\git\\bin\\bash.exe') { throw "doctor did not find PortableGit bash:`n$out" }
+          $env:COLUMNS = '400'
+          $out = & $luna doctor 2>&1 | Out-String
+          Write-Host $out
+          if (($out -replace '\s+', '') -notmatch 'luna\\git\\bin\\bash\.exe') { throw "doctor did not find PortableGit bash:`n$out" }
