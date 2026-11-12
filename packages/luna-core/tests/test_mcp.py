@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from luna_core.fsperm import POSIX_PERMISSIONS
 
 pytest.importorskip("mcp")
 
@@ -122,6 +123,7 @@ async def test_oauth_callback_listener_rejects_error_redirect():
         await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), timeout=1)
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 async def test_token_storage_round_trip(tmp_path):
     from mcp.shared.auth import OAuthToken
 
@@ -133,6 +135,7 @@ async def test_token_storage_round_trip(tmp_path):
     assert stat.S_IMODE((tmp_path / "tok" / "srv.json").stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 async def test_token_file_tightens_existing_loose_permissions(tmp_path):
     from mcp.shared.auth import OAuthToken
 
@@ -144,6 +147,7 @@ async def test_token_file_tightens_existing_loose_permissions(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 async def test_token_storage_never_uses_write_text(tmp_path, monkeypatch):
     from mcp.shared.auth import OAuthToken
 

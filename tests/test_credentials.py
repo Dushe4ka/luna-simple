@@ -2,6 +2,7 @@ import os
 import stat
 
 import pytest
+from luna_core.fsperm import POSIX_PERMISSIONS
 
 from luna.config.credentials import (
     credentials_path,
@@ -22,6 +23,7 @@ def test_missing_key_is_none():
     assert get_api_key("openai") is None
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 def test_file_is_chmod_600():
     path = set_api_key("deepseek", "dsk-123")
     mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -110,6 +112,7 @@ def test_unset_api_key_works_with_a_custom_registry():
     assert get_api_key("mylocal") is None
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 def test_credentials_file_is_never_created_world_readable(monkeypatch):
     """The key must not sit in a 0644 file until a later chmod (there is none here)."""
     monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
@@ -215,6 +218,7 @@ def test_concurrent_writers_never_lose_a_key(monkeypatch):
     assert {n: get_api_key(n) for n in names} == {n: f"k-{n}" for n in names}
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 def test_a_stow_style_symlink_is_written_through_to_its_target(tmp_path):
     dotfiles = tmp_path / "dotfiles"
     dotfiles.mkdir()

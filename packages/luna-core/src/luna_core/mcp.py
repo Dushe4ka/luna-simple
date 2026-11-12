@@ -14,7 +14,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from luna_core.errors import LunaCoreError
+from luna_core.fsperm import restrict
 from luna_core.messages import Image, Text
+from luna_core.paths import user_config_dir
 from luna_core.tools.base import Tool, ToolContext, ToolOutput
 
 INSTALL_HINT = 'MCP support is not installed: pip install "luna-core[mcp]"'
@@ -142,7 +144,7 @@ class FileTokenStorage:
         # a file whose permissions are looser than 0600.
         fd = os.open(self.path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            restrict(fd)
             os.write(fd, payload)
         finally:
             os.close(fd)
@@ -235,9 +237,7 @@ class MCPManager:
         self.on_warn = on_warn
         self.connect_timeout = connect_timeout
         self.call_timeout = call_timeout
-        self.token_dir = (
-            Path(token_dir) if token_dir else Path.home() / ".config" / "luna" / "mcp-tokens"
-        )
+        self.token_dir = Path(token_dir) if token_dir else user_config_dir() / "mcp-tokens"
         self.open_browser = open_browser or webbrowser.open
         self.tools: list[Tool] = []
         self._status: dict[str, str] = {}

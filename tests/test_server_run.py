@@ -2,6 +2,9 @@ import subprocess
 import threading
 import time
 
+import pytest
+from luna_core.fsperm import POSIX_PERMISSIONS
+
 from luna.server.auth import read_token_file, token_path, write_token_file
 from luna.server.run import ensure_running, log_path
 
@@ -245,6 +248,7 @@ def test_ensure_running_spawns_the_shared_server_outside_any_project(tmp_path, m
     assert captured["kwargs"]["cwd"] == str(Path.home())
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 def test_token_and_log_files_are_created_private(tmp_path, monkeypatch):
     import os
     import stat

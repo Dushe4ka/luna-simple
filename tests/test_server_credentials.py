@@ -7,6 +7,7 @@ import stat
 
 import httpx
 import pytest
+from luna_core.fsperm import POSIX_PERMISSIONS
 
 from luna.config.credentials import credentials_path, get_api_key
 from luna.config.providers import PROVIDERS
@@ -36,6 +37,7 @@ async def test_requires_the_bearer_token(tmp_path):
     assert not credentials_path().exists()
 
 
+@pytest.mark.skipif(not POSIX_PERMISSIONS, reason="POSIX file modes")
 async def test_stores_the_key_0600_stripped(tmp_path):
     async with client(make_app()) as c:
         resp = await _set(c, str(tmp_path), key=f"  {SECRET}\n")

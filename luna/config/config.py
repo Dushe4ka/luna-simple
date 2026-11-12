@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from luna_core.hooks import POINTS
+from luna_core.paths import user_config_dir
 
 from luna.config.providers import (
     DEFAULT_PROVIDER,
@@ -45,11 +46,11 @@ _SETTABLE: dict[str, str] = {
 
 
 def config_dir(env: Mapping[str, str] | None = None) -> Path:
-    """Return Luna's config directory (``$XDG_CONFIG_HOME/luna`` or ``~/.config/luna``)."""
-    env = os.environ if env is None else env
-    xdg = env.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "luna"
+    r"""Return Luna's config directory.
+
+    ``$XDG_CONFIG_HOME/luna``, else ``%APPDATA%\luna`` on Windows, else ``~/.config/luna``.
+    """
+    return user_config_dir(env)
 
 
 def config_path(env: Mapping[str, str] | None = None) -> Path:

@@ -13,6 +13,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from luna_core.fsperm import restrict
+
 from luna.server.auth import read_token_file, token_path, write_token_file
 
 _log = logging.getLogger(__name__)
@@ -112,7 +114,7 @@ def ensure_running(
         path.parent.mkdir(parents=True, exist_ok=True)
         # The log may hold request details: private from creation on.
         fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        os.fchmod(fd, 0o600)
+        restrict(fd)
         with os.fdopen(fd, "a", buffering=1) as log_file:
             subprocess.Popen(
                 [sys.executable, "-m", "luna.server.run", "--port", str(port)],
