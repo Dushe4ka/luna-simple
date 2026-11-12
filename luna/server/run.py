@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-import signal
 import socket
 import subprocess
 import sys
@@ -13,6 +12,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from luna_core import shell as _shell
 from luna_core.fsperm import restrict
 
 from luna.server.auth import read_token_file, token_path, write_token_file
@@ -35,12 +35,45 @@ def log_path(env=None) -> Path:
     return token_path(env).parent / "server.log"
 
 
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _windows_is_alive(pid: int) -> bool:
+    """Liveness via WinAPI: ``os.kill(pid, 0)`` would terminate the process."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _default_is_alive(pid: int) -> bool:
+    if _shell.IS_WINDOWS:
+        return _windows_is_alive(pid)
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
         return False
     return True
+
+
+def _spawn_kwargs() -> dict:
+    """Detach the server so closing the launching terminal does not stop it."""
+    if _shell.IS_WINDOWS:
+        return {"creationflags": _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW}
+    return {"start_new_session": True}
 
 
 def _free_port() -> int:
@@ -66,10 +99,7 @@ def _code_fingerprint() -> float:
 
 
 def _default_kill(pid: int) -> None:
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
+    _shell.kill_tree(pid)
 
 
 def ensure_running(
@@ -120,7 +150,7 @@ def ensure_running(
                 [sys.executable, "-m", "luna.server.run", "--port", str(port)],
                 # never in argv: anyone on the machine can read it with ``ps``
                 env={**os.environ, TOKEN_ENV: token},
-                start_new_session=True,
+                **_spawn_kwargs(),
                 # One server serves every project: never tie its cwd to the
                 # launching folder, which may be deleted while it runs.
                 cwd=str(Path.home()),

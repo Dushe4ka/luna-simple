@@ -1,10 +1,13 @@
+import os
 import subprocess
+import sys
 import threading
 import time
 
 import pytest
 from luna_core.fsperm import POSIX_PERMISSIONS
 
+from luna.server import run as server_run
 from luna.server.auth import read_token_file, token_path, write_token_file
 from luna.server.run import ensure_running, log_path
 
@@ -311,3 +314,30 @@ def test_serve_token_flag_still_wins_for_manual_runs(tmp_path, monkeypatch):
     monkeypatch.setattr("uvicorn.run", lambda app, **kw: None)
     run.run_serve(["--port", "4321", "--token", "manual"])
     assert read_token_file()["token"] == "manual"
+
+
+def test_is_alive_true_for_self_and_false_for_a_finished_process():
+    assert server_run._default_is_alive(os.getpid())
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    assert not server_run._default_is_alive(proc.pid)
+
+
+def test_is_alive_never_kills_the_process():
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert server_run._default_is_alive(proc.pid)
+        assert proc.poll() is None  # on Windows os.kill(pid, 0) would have terminated it
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_spawn_kwargs_detach_from_the_console(monkeypatch):
+    from luna_core import shell
+
+    monkeypatch.setattr(shell, "IS_WINDOWS", False)
+    assert server_run._spawn_kwargs() == {"start_new_session": True}
+    monkeypatch.setattr(shell, "IS_WINDOWS", True)
+    flags = server_run._spawn_kwargs()["creationflags"]
+    assert flags & 0x00000008 and flags & 0x00000200  # DETACHED_PROCESS, NEW_PROCESS_GROUP
