@@ -46,7 +46,13 @@ def _windows_is_alive(pid: int) -> bool:
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Full signatures: without them a 64-bit HANDLE would be truncated to int.
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, wintypes.LPDWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not handle:
         return False
@@ -54,6 +60,7 @@ def _windows_is_alive(pid: int) -> bool:
         code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
             return False
+        # A process that itself exits with code 259 reads as alive: accepted.
         return code.value == 259  # STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)
@@ -151,6 +158,7 @@ def ensure_running(
                 # never in argv: anyone on the machine can read it with ``ps``
                 env={**os.environ, TOKEN_ENV: token},
                 **_spawn_kwargs(),
+                stdin=subprocess.DEVNULL,
                 # One server serves every project: never tie its cwd to the
                 # launching folder, which may be deleted while it runs.
                 cwd=str(Path.home()),
