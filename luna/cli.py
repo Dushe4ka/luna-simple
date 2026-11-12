@@ -22,6 +22,8 @@ _SUBCOMMANDS = {
     "run",
     "sessions",
     "acp",
+    "doctor",
+    "update",
 }
 
 
@@ -818,6 +820,18 @@ def main(argv: list[str] | None = None) -> int:
     return _main(raw)
 
 
+def _run_doctor(argv: list[str]) -> int:
+    from luna.doctor import run_doctor
+
+    return run_doctor(argv)
+
+
+def _run_update(argv: list[str]) -> int:
+    from luna.doctor import run_update
+
+    return run_update(argv)
+
+
 def _main(raw: list[str]) -> int:
     import asyncio
 
@@ -837,6 +851,8 @@ def _main(raw: list[str]) -> int:
             "run": _run_run,
             "sessions": _run_sessions,
             "acp": _run_acp,
+            "doctor": _run_doctor,
+            "update": _run_update,
         }
         try:
             return handlers[raw[0]](raw[1:])
