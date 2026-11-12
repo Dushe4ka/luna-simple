@@ -53,7 +53,6 @@ def test_query_without_tty_returns_none(monkeypatch):
     assert termbg.query_osc11() is None
 
 
-
 def test_query_without_termios_returns_none(monkeypatch):
     """Windows has no termios: the query gives up even on a real terminal."""
     tty = types.SimpleNamespace(isatty=lambda: True)
@@ -61,6 +60,7 @@ def test_query_without_termios_returns_none(monkeypatch):
     monkeypatch.setattr(sys, "stdout", tty)
     monkeypatch.setitem(sys.modules, "termios", None)
     assert termbg.query_osc11(timeout=0.01) is None
+
 
 @_POSIX_TTY
 def test_query_reads_until_da1(monkeypatch):
