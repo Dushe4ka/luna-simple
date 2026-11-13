@@ -120,4 +120,5 @@ def test_stdin_guard_sees_runners_injected_as_parameters(tmp_path):
         offences = _spawns_without_stdin(sample)
     finally:
         sample.unlink()
-    assert offences == ["tests/_stdin_guard_sample.py:3 injected run() without stdin"]
+    where = Path("tests", "_stdin_guard_sample.py")
+    assert offences == [f"{where}:3 injected run() without stdin"]

@@ -411,6 +411,7 @@ def test_git_undo_restores_bytes_exactly_despite_core_autocrlf(repo2, autocrlf):
     """Git for Windows defaults to ``core.autocrlf=true``: a git-mode undo wrote
     LF files back as CRLF (final review minor 5). Compare bytes, not text."""
     git(repo2, "config", "core.autocrlf", autocrlf)
+    (repo2 / "b.txt").write_bytes(b"bee\n")  # write_text would give CRLF on Windows
     (repo2 / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
     j = UndoJournal(repo2, "s1")
     j.begin_turn("t1")
