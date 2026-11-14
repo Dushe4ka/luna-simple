@@ -2,6 +2,7 @@ import pytest
 from textual import work
 
 from luna.tui.approval_modal import ApprovalModal
+from tests.tui_fakes import click_when_shown, settle
 
 
 class _HostApp:
@@ -24,9 +25,8 @@ async def test_approval_modal_dismisses_with_approve_decision():
 
     app = _TestApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.click("#approve-button")
-        await pilot.pause()
+        await click_when_shown(pilot, "#approve-button")
+        await settle(pilot, lambda: getattr(app, "result", None) is not None)
     assert app.result == {"type": "approve"}
 
 
@@ -43,9 +43,8 @@ async def test_approval_modal_dismisses_with_reject_decision():
 
     app = _TestApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.click("#reject-button")
-        await pilot.pause()
+        await click_when_shown(pilot, "#reject-button")
+        await settle(pilot, lambda: getattr(app, "result", None) is not None)
     assert app.result["type"] == "reject"
 
 
@@ -64,9 +63,8 @@ async def test_approval_modal_dismisses_with_always_decision():
 
     app = _TestApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.click("#always-button")
-        await pilot.pause()
+        await click_when_shown(pilot, "#always-button")
+        await settle(pilot, lambda: getattr(app, "result", None) is not None)
     assert app.result["type"] == "approve"
     assert "always" in app.result
     assert app.result["always"]  # suggest_rule produced a non-empty rule string

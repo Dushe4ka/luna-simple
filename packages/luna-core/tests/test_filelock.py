@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from luna_core import filelock
 from luna_core.filelock import InterProcessRLock, file_lock
@@ -20,16 +22,15 @@ def test_an_unlock_error_does_not_mask_the_original_exception(tmp_path, monkeypa
 
 
 def test_non_blocking_acquire_reports_a_held_lock(tmp_path):
-    import fcntl
-    import sys
-
-    if sys.platform == "win32":
-        pytest.skip("the test holds the lock with fcntl")
     path = tmp_path / "z.lock"
     lock = InterProcessRLock(path)
-    with open(path, "a+") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
+    # another holder: a separate descriptor locked with the OS primitive (flock / msvcrt)
+    held = os.open(path, os.O_RDWR | os.O_CREAT)
+    try:
+        assert filelock._lock(held, blocking=False) is True
         assert lock.acquire(blocking=False) is False
-        fcntl.flock(held, fcntl.LOCK_UN)
+        filelock._unlock(held)
+    finally:
+        os.close(held)
     assert lock.acquire(blocking=False) is True
     lock.release()

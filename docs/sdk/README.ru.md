@@ -55,12 +55,14 @@ SDK и без LangChain), политика разрешений, хуки, пе�
 **Установка.** Python 3.11+.
 
 ```bash
-pip install luna-core                  # httpx, httpx-sse, pyyaml
-pip install "luna-core[mcp]"           # MCP-серверы как инструменты (mcp>=1.12,<2)
-pip install "luna-core[acp]"           # ACP для редакторов (agent-client-protocol>=0.4)
-pip install "luna-core[lsp]"           # multilspy
-pip install "luna-core[websearch]"     # ddgs
+pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # httpx, httpx-sse, pyyaml
+pip install "luna-core[mcp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # MCP-серверы как инструменты (mcp>=1.12,<2)
+pip install "luna-core[acp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # ACP для редакторов (agent-client-protocol>=0.4)
+# или: uv add "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
 ```
+
+На PyPI пакета пока нет; ставится из GitHub, нужен `git`. Extras `lsp` (multilspy) и `websearch` (ddgs)
+ставятся так же: `luna-core[lsp] @ ...`.
 
 ## 2. Быстрый старт
 
@@ -515,6 +517,35 @@ pass_env = ["GITHUB_TOKEN"]
 Те же правила действуют для командных хуков (`CommandHook(..., env_passthrough=...)`,
 `load_command_hooks(..., env_passthrough=...)`), а в приложении — и для команд
 `verify_command`, форматтера и диагностики.
+
+### Windows
+
+SDK работает на Windows 10+ так же, как на macOS и Linux. Отличается только оболочка.
+
+- `LocalSandbox` выполняет команды через **Git Bash**, потому что правила `execute`
+  разбирают команду по грамматике bash, а `cmd.exe` её не понимает. Git Bash ищется так:
+  `LUNA_GIT_BASH_PATH` → рядом с `git.exe` из `PATH` → `%ProgramFiles%\Git` →
+  `%LOCALAPPDATA%\Programs\Git` → `%LOCALAPPDATA%\luna\git` (PortableGit от установщика
+  Luna). `bash.exe` из `System32` и `WindowsApps` (это WSL) не используется.
+- Без Git Bash `execute` не падает: результат с кодом 127 и подсказкой, где взять Git.
+- В командах используйте прямые слеши: `cat src/main.py`, `C:/Users/...`.
+- `DockerSandbox` на Windows требует запущенного Docker Desktop.
+- Папка пользовательских файлов (токены MCP) — `%APPDATA%\luna`
+  (`luna_core.paths.user_config_dir()`); `XDG_CONFIG_HOME` по-прежнему главнее.
+- Своему инструменту, которому нужна та же оболочка, используйте `luna_core.shell`:
+
+```python
+from luna_core.shell import ShellNotFound, run_sync
+
+try:
+    proc = run_sync("git log -1 --format=%s", cwd=".", timeout=10)
+    print(proc.stdout)
+except ShellNotFound as exc:
+    print(exc)  # подсказка, как поставить Git Bash
+```
+
+`run_sync` возвращает `subprocess.CompletedProcess` с текстом в UTF-8, а при таймауте
+снимает всё дерево процессов и поднимает `subprocess.TimeoutExpired`.
 
 ## 6. Подтверждения и правила
 

@@ -35,24 +35,46 @@ Luna — это **CLI-агент для кода** на собственном �
 
 ## Установка
 
+macOS и Linux:
+
 ```bash
-# со всеми необязательными возможностями: MCP, ACP, LSP, веб-поиск
-uv pip install "luna-simple[all]"
+curl -LsSf https://raw.githubusercontent.com/Dushe4ka/luna-simple/main/scripts/install.sh | sh
+```
 
-# или только база (все провайдеры встроены)
-uv pip install luna-simple
+Windows (PowerShell):
 
-# по отдельности: luna-simple[mcp], [acp], [lsp], [websearch]
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Dushe4ka/luna-simple/main/scripts/install.ps1 | iex"
+```
 
-# из клона репозитория
+Установщик ставит [uv](https://docs.astral.sh/uv/) (он сам скачает Python 3.12), затем Luna
+командой `uv tool install`. На Windows без Git он кладёт PortableGit в
+`%LOCALAPPDATA%\luna\git`: Luna выполняет команды через Git Bash. После установки откройте
+новый терминал и наберите `luna`.
+
+- Проверка установки: `luna doctor`
+- Обновление: `luna update`
+- Удаление: `uv tool uninstall luna-simple`
+- Конкретная версия:
+  - macOS/Linux: `curl -LsSf …/install.sh | LUNA_REF=<ветка|тег> sh` (или `| sh -s -- --ref <ветка|тег>`)
+  - Windows: `$env:LUNA_REF='<ветка|тег>'; powershell -ExecutionPolicy ByPass -c "irm …/install.ps1 | iex"`
+- Не менять `PATH`: `LUNA_NO_MODIFY_PATH=1` (macOS/Linux: `| LUNA_NO_MODIFY_PATH=1 sh`,
+  Windows: `$env:LUNA_NO_MODIFY_PATH='1'; …`)
+- Windows: не ставить PortableGit — `$env:LUNA_NO_GIT='1'; …` (тогда Git должен быть установлен)
+- Свой путь к Git Bash: переменная `LUNA_GIT_BASH_PATH`
+- Терминалы на Windows: Windows Terminal или консоль Windows 10+
+
+Требуется Python **3.11+** (установщик берёт 3.12).
+
+## Разработка
+
+```bash
 uv venv --python 3.12 && uv pip install -e packages/luna-core -e ".[dev,all]"
 ```
 
-Требуется Python **3.11+**.
-
 ## Luna как SDK
 
-Ядро — отдельный пакет [`luna-core`](packages/luna-core) (`pip install luna-core`):
+Ядро — отдельный пакет [`luna-core`](packages/luna-core) (`pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"`; на PyPI пакета пока нет):
 его можно встроить в своё приложение, не используя CLI.
 
 ```python

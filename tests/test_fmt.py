@@ -1,4 +1,6 @@
-import sys
+import shlex
+
+from tests.shellcmd import PY, posix
 
 
 def test_detect_returns_empty_with_no_markers(tmp_path):
@@ -13,7 +15,7 @@ def test_run_executes_and_reports_paths(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("x")
     marker = tmp_path / "ran.txt"
-    cmd = f"{sys.executable} -c \"open('{marker}', 'w').close()\""
+    cmd = f"{PY} -c \"open('{posix(marker)}', 'w').close()\""
     touched = run(cmd, str(tmp_path), ["a.txt"])
     assert marker.exists()
     assert touched == ["a.txt"]
@@ -39,7 +41,7 @@ def test_run_does_not_execute_shell_metacharacters_in_a_path(tmp_path):
     # a formatter command that would just no-op on a nonexistent file — the point
     # is that shlex.quote must prevent the shell from ever seeing "$(...)" as a
     # command substitution
-    cmd = f'{sys.executable} -c "import sys; sys.exit(0)"'
+    cmd = f'{PY} -c "import sys; sys.exit(0)"'
     run(cmd, str(tmp_path), [evil_path])
     assert not marker.exists()
 
@@ -62,7 +64,7 @@ def test_run_prefixes_paths_so_a_dash_prefixed_filename_is_never_read_as_an_opti
         "args = p.parse_args()\n"
         "sys.exit(0 if args.paths == ['./--version'] else 1)\n"
     )
-    cmd = f"{sys.executable} {stub}"
+    cmd = f"{PY} {shlex.quote(posix(stub))}"
     # a file literally named "--version" — argparse would otherwise choke on it
     # as an unrecognized option (nonzero exit) instead of treating it as a path
     touched = run(cmd, str(tmp_path), ["--version"])

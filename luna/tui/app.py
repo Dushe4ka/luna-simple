@@ -329,7 +329,9 @@ class LunaApp(App):
 
     async def on_chat_pane_turn_finished(self, event: ChatPane.TurnFinished) -> None:
         """Re-fetch the list so a new session appears and the order updates."""
-        await self.query_one(SessionsSidebar).refresh_sessions()
+        # a turn can finish while the app is closing, when the sidebar is already gone
+        for sidebar in self.query(SessionsSidebar):
+            await sidebar.refresh_sessions()
 
     @work
     async def _ask(self, screen):

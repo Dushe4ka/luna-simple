@@ -45,10 +45,24 @@ class UndoResult:
     note: str
 
 
+#: Snapshots and restores must be byte-exact: ``core.autocrlf`` (``true`` by default
+#: in Git for Windows) would turn LF into CRLF on restore, and ``core.safecrlf``
+#: could make the snapshot fail. A repository's ``.gitattributes`` still applies.
+_EXACT_BYTES = ("-c", "core.autocrlf=false", "-c", "core.safecrlf=false")
+
+
 def _git(root: Path, args: list[str], env: dict | None = None, *, raw: bool = False) -> str | None:
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, timeout=30, env=env
+            ["git", *_EXACT_BYTES, *args],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -121,10 +135,23 @@ def _snapshot_tree(root: Path) -> str | None:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
         try:
             proc = subprocess.run(
-                ["git", "-c", "add.ignoreErrors=false", "add", "-A", "--", ".", *_EXCLUDES],
+                [
+                    "git",
+                    *_EXACT_BYTES,
+                    "-c",
+                    "add.ignoreErrors=false",
+                    "add",
+                    "-A",
+                    "--",
+                    ".",
+                    *_EXCLUDES,
+                ],
                 cwd=root,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 env=env,
             )
@@ -148,7 +175,7 @@ class UndoJournal:
     # -- storage ---------------------------------------------------------
     def _load(self) -> dict:
         try:
-            data = json.loads((self.dir / "journal.json").read_text())
+            data = json.loads((self.dir / "journal.json").read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {"turns": [], "redo": []}
         except (OSError, ValueError):
             return {"turns": [], "redo": []}
@@ -159,7 +186,7 @@ class UndoJournal:
     def _save(self, data: dict) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.dir / f"journal.json.{os.getpid()}.{threading.get_ident()}.tmp"
-        tmp.write_text(json.dumps(data))
+        tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(self.dir / "journal.json")
 
     @property
@@ -583,3 +610,5 @@ def gc(
             _git(Path(root), ["update-ref", "-d", f"refs/luna/undo/{d.name}"])
         finally:
             lock.release()
+        # Windows cannot delete the lock file (so the folder) while it is held open.
+        shutil.rmtree(d, ignore_errors=True)

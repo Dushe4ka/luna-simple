@@ -10,11 +10,14 @@
 ## Установка
 
 ```bash
-pip install luna-core                  # httpx, httpx-sse, pyyaml
-pip install "luna-core[mcp]"           # MCP-серверы как инструменты
-pip install "luna-core[acp]"           # отдавать агента редакторам по ACP
-pip install "luna-core[lsp,websearch]" # необязательные extras
+pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # httpx, httpx-sse, pyyaml
+pip install "luna-core[mcp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # MCP-серверы как инструменты
+pip install "luna-core[acp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # отдавать агента редакторам по ACP
+# или: uv add "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
 ```
+
+На PyPI пакета пока нет; ставится из GitHub, нужен `git`. Необязательные extras
+`lsp` и `websearch` ставятся так же: `luna-core[lsp,websearch] @ ...`.
 
 Python 3.11+. Вендорских SDK нет: провайдеры обращаются к HTTP API напрямую.
 

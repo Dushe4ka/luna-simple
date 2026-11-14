@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from luna_core.sandbox import scrub_env
+from luna_core.shell import ShellNotFound, run_sync
 
 _TIMEOUT = 60
 
@@ -42,16 +43,13 @@ def run(command: str, workdir: str, paths: list[str], *, pass_env: Iterable[str]
         return []
     full = f"{command} {' '.join(shlex.quote(f'./{p}') for p in paths)}" if paths else command
     try:
-        result = subprocess.run(
+        result = run_sync(
             full,
-            shell=True,
             cwd=workdir,
-            capture_output=True,
-            text=True,
             timeout=_TIMEOUT,
             env=scrub_env(os.environ, passthrough=pass_env),
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ShellNotFound):
         return []
     if result.returncode != 0:
         return []

@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import httpx
 from textual.widgets import Input, Label
@@ -8,6 +9,7 @@ from luna.tui.app import LunaApp
 from luna.tui.chat import ChatPane
 from luna.tui.sidebar_sessions import SessionsSidebar, short_path
 from tests.server_helpers import StreamingASGITransport, make_app, seed
+from tests.tui_fakes import settle
 
 
 def _app(tmp_path, thread_id="t1") -> LunaApp:
@@ -27,7 +29,7 @@ def _age(thread_id: str, seconds: float) -> None:
 
 def test_short_path_uses_tilde_and_truncates_from_the_left(monkeypatch, tmp_path):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    assert short_path(str(tmp_path / "a" / "b"), 30) == "~/a/b"
+    assert short_path(str(tmp_path / "a" / "b"), 30) == str(Path("~", "a", "b"))  # native seps
     long = short_path(str(tmp_path / ("x" * 50)), 20)
     assert len(long) == 20 and long.startswith("…")
 
@@ -61,6 +63,19 @@ async def test_current_session_is_highlighted_and_follows_set_current(tmp_path):
         assert current == ["t2"]
 
 
+async def test_a_turn_finishing_while_the_app_closes_does_not_crash(tmp_path):
+    """Regression: TurnFinished handled after the sidebar (or its list) was torn down
+    on exit raised NoMatches and printed a traceback."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        sidebar = app.query_one(SessionsSidebar)
+        await sidebar.query_one("#session-list").remove()
+        await sidebar.refresh_sessions()
+        await sidebar.remove()
+        await app.on_chat_pane_turn_finished(ChatPane.TurnFinished())
+        await pilot.pause()
+
+
 async def test_ctrl_n_starts_a_fresh_session(tmp_path):
     app = _app(tmp_path, thread_id="t1")
     async with app.run_test() as pilot:
@@ -77,9 +92,13 @@ async def test_sidebar_shows_the_session_after_its_first_turn(tmp_path):
         chat = app.query_one(ChatPane)
         chat.query_one("#chat-input", Input)
         await chat.submit("hello")
-        await pilot.pause()
-        ids = [i.data_thread_id for i in app.query_one(SessionsSidebar).query(".session-item")]
-        assert "t-new" in ids
+        sidebar = app.query_one(SessionsSidebar)
+
+        def ids():
+            return [i.data_thread_id for i in sidebar.query(".session-item")]
+
+        await settle(pilot, lambda: "t-new" in ids())
+        assert "t-new" in ids()
 
 
 async def test_header_shows_the_real_folder_name_for_a_relative_workdir(tmp_path, monkeypatch):

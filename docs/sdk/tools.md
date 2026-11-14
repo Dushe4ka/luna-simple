@@ -74,7 +74,7 @@ from luna_core import DockerSandbox, LocalSandbox
 agent = Agent(provider, model, sandbox=DockerSandbox(".", image="python:3.12-slim", network="none"))
 ```
 
-`LocalSandbox` работает на хосте (по умолчанию). `DockerSandbox` запускает один контейнер на
+`LocalSandbox` работает на хосте (по умолчанию); на Windows — через Git Bash, см. README.ru.md → Windows. `DockerSandbox` запускает один контейнер на
 сессию (`await sandbox.start()`, лениво выполняется первой командой) с проектом, смонтированным в
 `/workspace`; `network` равен `"none"` или `"bridge"`. По окончании вызовите
 `await agent.sandbox.close()`, чтобы контейнер был удалён. Своя песочница реализует

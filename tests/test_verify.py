@@ -1,5 +1,4 @@
 import io
-import sys
 
 from luna_core.providers.fake import FakeProvider
 from rich.console import Console
@@ -10,6 +9,7 @@ from luna.core.session import run_once
 from luna.core.store import open_log
 from luna.turn import engine
 from luna.turn.verify import run_verify
+from tests.shellcmd import PY, posix
 
 
 def _console() -> Console:
@@ -21,23 +21,21 @@ def test_disabled_command_is_ok(tmp_path):
 
 
 def test_passing_command(tmp_path):
-    ok, tail = run_verify(f"{sys.executable} -c \"print('hi')\"", str(tmp_path))
+    ok, tail = run_verify(f"{PY} -c \"print('hi')\"", str(tmp_path))
     assert ok is True
 
 
 def test_failing_command_tail(tmp_path):
-    ok, tail = run_verify(
-        f"{sys.executable} -c \"import sys; print('boom'); sys.exit(1)\"", str(tmp_path)
-    )
+    ok, tail = run_verify(f"{PY} -c \"import sys; print('boom'); sys.exit(1)\"", str(tmp_path))
     assert ok is False and "boom" in tail
 
 
 def _flaky_command(sentinel) -> str:
     """A command that fails the first time and passes once ``sentinel`` exists."""
     return (
-        f'{sys.executable} -c "import os,sys; '
-        f"sys.exit(0) if os.path.exists(r'{sentinel}') "
-        f"else (open(r'{sentinel}','w').close() or sys.exit(1))\""
+        f'{PY} -c "import os,sys; '
+        f"sys.exit(0) if os.path.exists('{posix(sentinel)}') "
+        f"else (open('{posix(sentinel)}','w').close() or sys.exit(1))\""
     )
 
 
@@ -97,7 +95,7 @@ async def test_run_verification_gives_up_after_one_retry(tmp_path, monkeypatch):
     monkeypatch.setattr(
         engine, "run_verify", lambda c, w, **k: verify_calls.append(c) or real_run_verify(c, w, **k)
     )
-    cfg = _cfg(tmp_path, f'{sys.executable} -c "import sys; sys.exit(1)"')
+    cfg = _cfg(tmp_path, f'{PY} -c "import sys; sys.exit(1)"')
     out, users = await _once(
         tmp_path, cfg, [_WRITE, FakeProvider.text("done"), FakeProvider.text("tried")]
     )

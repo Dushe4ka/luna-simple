@@ -6,13 +6,20 @@ import asyncio
 import contextlib
 import json
 import os
-import signal
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
 from luna_core.sandbox import scrub_env
+from luna_core.shell import (
+    ShellNotFound,
+    forget,
+    kill_tree,
+    popen_kwargs,
+    shell_argv,
+    track,
+)
 
 POINTS = ("session_start", "pre_tool", "post_tool", "turn_end", "pre_compact")
 
@@ -130,15 +137,20 @@ class CommandHook:
         The process starts its own session so a timeout can kill the whole
         process group, never leaving orphaned children behind.
         """
-        proc = await asyncio.create_subprocess_shell(
-            self.command,
+        try:
+            argv = shell_argv(self.command)
+        except ShellNotFound as exc:
+            return HookResult(notices=(f"hook `{self.command}` not run: {exc}",))
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             cwd=self.cwd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
             env=scrub_env(os.environ, passthrough=self.env_passthrough),
+            **popen_kwargs(),
         )
+        track(proc.pid)
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(json.dumps(payload, ensure_ascii=False).encode()),
@@ -146,9 +158,13 @@ class CommandHook:
             )
         except TimeoutError:
             self._kill_group(proc.pid)
+            # ``wait()`` also waits for the pipes to close; a survivor holding them must
+            # not stall the turn (e.g. a process that left the killed tree).
             with contextlib.suppress(Exception):
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), 5)
             return HookResult(notices=(f"hook `{self.command}` timed out after {self.timeout:g}s",))
+        finally:
+            forget(proc.pid)
         stdout = out.decode("utf-8", errors="replace")
         stderr = err.decode("utf-8", errors="replace")
         if proc.returncode == 0:
@@ -164,9 +180,8 @@ class CommandHook:
 
     @staticmethod
     def _kill_group(pid: int) -> None:
-        """Kill the whole process group rooted at ``pid`` (started via start_new_session)."""
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        """Kill ``pid`` and every process it started."""
+        kill_tree(pid)
 
 
 def load_command_hooks(

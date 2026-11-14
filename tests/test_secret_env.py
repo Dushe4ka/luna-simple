@@ -12,6 +12,7 @@ from luna.config.config import LunaConfig, load_config
 from luna.config.credentials import set_api_key
 from luna.config.providers import build_provider
 from luna.core.agent import build_agent
+from tests.shellcmd import posix
 
 
 def test_stored_key_is_not_exported_to_os_environ(monkeypatch):
@@ -112,7 +113,7 @@ def test_engine_hands_pass_env_to_verify(tmp_path, monkeypatch):
 async def test_config_hooks_get_the_scrubbed_env(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-shell-openai")
     monkeypatch.setenv("GITHUB_TOKEN", "ghp-passed")
-    hook = {"event": "pre_tool", "command": f"env >> {tmp_path}/hook.txt"}
+    hook = {"event": "pre_tool", "command": f"env >> {posix(tmp_path / 'hook.txt')}"}
     config = LunaConfig(
         workdir=str(tmp_path), yolo=True, hooks=[hook], execute_pass_env=("GITHUB_TOKEN",)
     )

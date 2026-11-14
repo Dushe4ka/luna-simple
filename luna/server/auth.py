@@ -42,6 +42,6 @@ def read_token_file(*, env: Mapping[str, str] | None = None) -> dict | None:
     """Return {"port", "token", "pid"} or None if absent/unreadable."""
     path = token_path(env)
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None

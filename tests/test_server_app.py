@@ -1,4 +1,5 @@
 import httpx
+from luna_core.fsperm import POSIX_PERMISSIONS
 from luna_core.protocol import PROTOCOL_VERSION
 
 import luna
@@ -47,7 +48,8 @@ def test_write_and_read_token_file(tmp_path, monkeypatch):
     assert data == {"port": 54321, "token": "abc", "pid": 999}
     path = token_path()
     assert path.is_file()
-    assert oct(path.stat().st_mode)[-3:] == "600"
+    if POSIX_PERMISSIONS:  # Windows: the profile's ACL protects it, chmod is a no-op
+        assert oct(path.stat().st_mode)[-3:] == "600"
 
 
 def test_read_token_file_missing_returns_none(tmp_path, monkeypatch):

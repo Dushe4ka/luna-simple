@@ -11,6 +11,7 @@ from pathlib import Path
 
 from luna_core.memory import memory_files
 from luna_core.messages import Image
+from luna_core.shell import describe_shell
 from luna_core.skills import SkillInfo
 from luna_core.workspace import InvalidPath, OutsideWorkspace, Workspace
 
@@ -56,7 +57,8 @@ def build_system_prompt(
     today = (now or datetime.date.today()).isoformat()
     env = (
         f"# Environment\n\nWorking directory: {root}\n"
-        f"Platform: {platform.system()} {platform.machine()}\nDate: {today}"
+        f"Platform: {platform.system()} {platform.machine()}\n"
+        f"Shell: {describe_shell()}\nDate: {today}"
     )
     parts = [base.rstrip(), env]
     agents = root / "AGENTS.md"

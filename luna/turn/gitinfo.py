@@ -8,7 +8,16 @@ from pathlib import Path
 
 def _run(workdir: str, *args: str) -> str:
     try:
-        out = subprocess.run(["git", *args], cwd=workdir, capture_output=True, text=True, timeout=5)
+        out = subprocess.run(
+            ["git", *args],
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout.strip() if out.returncode == 0 else ""
@@ -24,7 +33,16 @@ def _run_raw(workdir: str, *args: str) -> str:
     first entry's status/path split.
     """
     try:
-        out = subprocess.run(["git", *args], cwd=workdir, capture_output=True, text=True, timeout=5)
+        out = subprocess.run(
+            ["git", *args],
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout if out.returncode == 0 else ""

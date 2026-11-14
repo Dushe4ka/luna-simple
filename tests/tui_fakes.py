@@ -1,6 +1,33 @@
 """A scripted stand-in for luna_core.client.LunaClient in TUI tests."""
 
 import asyncio
+import time
+
+
+async def settle(pilot, condition, timeout: float = 10.0) -> None:
+    """Pause until ``condition()`` holds or ``timeout`` passes (the caller then asserts).
+
+    A fixed ``pilot.pause()`` is enough on a fast machine but not on a slow CI
+    runner (Windows), where a handler awaiting the server is still running.
+    """
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        await pilot.pause(0.05)
+
+
+async def click_when_shown(pilot, selector: str, timeout: float = 10.0) -> None:
+    """Click ``selector`` once it is laid out on the active screen (e.g. an approval popping up).
+
+    Being in the DOM is not enough: before the first layout its region is empty and
+    the click lands nowhere.
+    """
+
+    def shown() -> bool:
+        found = pilot.app.screen.query(selector)
+        return bool(found) and all(w.region.width and w.region.height for w in found)
+
+    await settle(pilot, shown, timeout)
+    await pilot.click(selector)
 
 
 class FakeLunaClient:

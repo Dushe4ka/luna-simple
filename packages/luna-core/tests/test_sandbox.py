@@ -1,11 +1,15 @@
 import asyncio
+import os
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
+from luna_core import shell
 from luna_core.sandbox import DockerSandbox, LocalSandbox
 
 
@@ -44,12 +48,30 @@ async def test_local_runs_and_merges_output(tmp_path):
 
 
 async def test_local_timeout_kills_the_process_group(tmp_path):
-    marker = tmp_path / "late"
+    marker = (tmp_path / "late").as_posix()
     started = time.monotonic()
-    r = await LocalSandbox().run(f"(sleep 3; touch {marker}) & sleep 30", cwd=tmp_path, timeout=0.5)
+    r = await LocalSandbox().run(
+        f"(sleep 3; touch '{marker}') & sleep 30", cwd=tmp_path, timeout=0.5
+    )
     assert r.timed_out and time.monotonic() - started < 5
     await asyncio.sleep(3.5)
-    assert not marker.exists()  # the background child died with the group
+    assert not (tmp_path / "late").exists()  # the background child died with the group
+
+
+async def test_local_without_a_shell_reports_how_to_fix_it(tmp_path, monkeypatch):
+    def missing(command):
+        raise shell.ShellNotFound("нужен Git Bash: https://git-scm.com/download/win")
+
+    monkeypatch.setattr("luna_core.sandbox.shell_argv", missing)
+    r = await LocalSandbox().run("echo hi", cwd=tmp_path, timeout=10)
+    assert r.exit_code == 127 and "git-scm.com" in r.output
+
+
+async def test_local_cwd_with_spaces_and_cyrillic(tmp_path):
+    cwd = tmp_path / "Мой проект"
+    cwd.mkdir()
+    r = await LocalSandbox().run("echo привет && pwd", cwd=cwd, timeout=30)
+    assert r.exit_code == 0 and "привет" in r.output and "проект" in r.output
 
 
 async def test_local_cancel_event_stops_the_command(tmp_path):
@@ -64,26 +86,47 @@ async def test_local_cancel_event_stops_the_command(tmp_path):
 
 
 async def test_local_output_is_capped(tmp_path):
+    py = shlex.quote(Path(sys.executable).as_posix())  # backslashes would not survive sh
     r = await LocalSandbox(max_output=1000).run(
-        f"{sys.executable} -c \"print('x' * 50000)\"", cwd=tmp_path, timeout=10
+        f"{py} -c \"print('x' * 50000)\"",
+        cwd=tmp_path,
+        timeout=10,
     )
     assert len(r.output) < 1200 and "truncated" in r.output
 
 
+_FAKE_DOCKER = """\
+import subprocess, sys
+from luna_core.shell import shell_argv
+args = sys.argv[1:]
+with open(sys.argv[0] + ".log", "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\\n")
+if args[0] == "run":
+    print("cid123")
+elif args[0] == "exec":
+    command = args[args.index("cid123") + 1 :]
+    assert command[:2] == ["sh", "-lc"], command
+    sys.exit(subprocess.run(shell_argv(command[2])).returncode)
+"""
+
+
 @pytest.fixture
 def fake_docker(tmp_path):
-    log = tmp_path / "docker.log"
-    script = tmp_path / "docker"
-    script.write_text(
-        "#!/bin/sh\n"
-        f'echo "$@" >> {log}\n'
-        'case "$1" in\n'
-        "  run) echo cid123 ;;\n"
-        '  exec) shift; while [ "$1" != "cid123" ]; do shift; done; shift; "$@" ;;\n'
-        "esac\n"
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return script, log
+    """A ``docker`` stand-in: logs its arguments, runs ``exec`` commands with the host shell.
+
+    It is a Python script behind a launcher (a ``.cmd`` on Windows, which cannot
+    execute a shebang script) so the same fake runs on every OS.
+    """
+    fake = tmp_path / "fake_docker.py"
+    fake.write_text(_FAKE_DOCKER, encoding="utf-8")
+    if os.name == "nt":
+        script = tmp_path / "docker.cmd"
+        script.write_text(f'@"{sys.executable}" "{fake}" %*\r\n', encoding="utf-8")
+    else:
+        script = tmp_path / "docker"
+        script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n', encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script, Path(f"{fake}.log")
 
 
 async def test_docker_sandbox_lifecycle(tmp_path, fake_docker):

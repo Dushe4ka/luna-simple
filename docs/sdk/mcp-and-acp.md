@@ -2,7 +2,7 @@
 
 ## MCP-серверы как инструменты (extra `mcp`)
 
-`pip install "luna-core[mcp]"` (официальный SDK `mcp`, `>=1.12,<2`). `luna_core.mcp` не входит
+Extra `mcp` (`pip install "luna-core[mcp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"`; официальный SDK `mcp`, `>=1.12,<2`). `luna_core.mcp` не входит
 в публичный API, импортируемый сразу, поэтому импортируйте его явно:
 
 ```python
@@ -37,7 +37,7 @@ finally:
 
 ## ACP для редакторов (extra `acp`)
 
-`pip install "luna-core[acp]"` (`agent-client-protocol>=0.4`). `run_acp` отдаёт агента по
+Extra `acp` (`pip install "luna-core[acp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"`; `agent-client-protocol>=0.4`). `run_acp` отдаёт агента по
 stdio для Zed, JetBrains и других ACP-клиентов:
 
 ```python

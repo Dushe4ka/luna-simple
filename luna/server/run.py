@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import secrets
@@ -12,6 +13,9 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+
+from luna_core import shell as _shell
+from luna_core.fsperm import restrict
 
 from luna.server.auth import read_token_file, token_path, write_token_file
 
@@ -33,12 +37,58 @@ def log_path(env=None) -> Path:
     return token_path(env).parent / "server.log"
 
 
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _windows_is_alive(pid: int) -> bool:
+    """Liveness via WinAPI: ``os.kill(pid, 0)`` would terminate the process."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Full signatures: without them a 64-bit HANDLE would be truncated to int.
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, wintypes.LPDWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        # A process that itself exits with code 259 reads as alive: accepted.
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _default_is_alive(pid: int) -> bool:
+    if _shell.IS_WINDOWS:
+        return _windows_is_alive(pid)
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
         return False
     return True
+
+
+def _spawn_kwargs() -> dict:
+    """Detach the server so closing the launching terminal does not stop it.
+
+    On Windows the server gets its own *hidden* console (``CREATE_NO_WINDOW``),
+    not ``DETACHED_PROCESS``: a process without any console makes Windows open a
+    new, visible console window for every console program it starts (bash, git,
+    rg, taskkill). With a hidden console the children inherit it and stay
+    invisible, and the server is still not attached to the launching terminal.
+    """
+    if _shell.IS_WINDOWS:
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW}
+    return {"start_new_session": True}
 
 
 def _free_port() -> int:
@@ -63,11 +113,41 @@ def _code_fingerprint() -> float:
     return max((p.stat().st_mtime for p in root.rglob("*.py")), default=0.0)
 
 
-def _default_kill(pid: int) -> None:
+def _default_is_ours(data: dict) -> bool:
+    """Tell whether ``data``'s port answers ``/health`` with ``data``'s token.
+
+    ``server.json`` outlives a reboot or a crash, and its pid may by then belong
+    to any process. Only our server knows the token, so a successful
+    authenticated ``/health`` is the identity check that must pass before a pid
+    from the file is ever killed.
+    """
+    import http.client
+    import json
+
+    port, token = data.get("port"), data.get("token")
+    if not isinstance(port, int) or isinstance(port, bool) or not isinstance(token, str):
+        return False
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
     try:
+        conn.request("GET", "/health", headers={"Authorization": f"Bearer {token}"})
+        response = conn.getresponse()
+        if response.status != 200:
+            return False
+        body = json.loads(response.read(4096).decode("utf-8", errors="replace"))
+        return isinstance(body, dict) and body.get("ok") is True and "protocol" in body
+    except (OSError, http.client.HTTPException, ValueError):
+        return False
+    finally:
+        conn.close()
+
+
+def _default_kill(pid: int) -> None:
+    """Stop our (identity-checked) server: SIGTERM on POSIX, the whole tree on Windows."""
+    if _shell.IS_WINDOWS:
+        _shell.kill_tree(pid)
+        return
+    with contextlib.suppress(OSError):
         os.kill(pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
 
 
 def ensure_running(
@@ -78,6 +158,7 @@ def ensure_running(
     _spawn: Callable[[int, str], None] | None = None,
     _fingerprint: Callable[[], float] | None = None,
     _kill: Callable[[int], None] | None = None,
+    _is_ours: Callable[[dict], bool] | None = None,
 ) -> dict:
     """Return the running server's token-file dict, starting one if needed.
 
@@ -88,6 +169,10 @@ def ensure_running(
     one — restarted, not reused — so local edits actually take effect
     instead of running invisibly against a stale, already-imported copy of
     the code until someone finds and kills the old process by hand.
+
+    The recorded pid is killed only after ``_is_ours`` confirms the recorded
+    port still answers with the recorded token (see :func:`_default_is_ours`):
+    a stale file's pid may be an unrelated process by now.
     """
     fingerprint = (_fingerprint or _code_fingerprint)()
     existing = read_token_file()
@@ -95,7 +180,8 @@ def ensure_running(
         if existing.get("fingerprint") == fingerprint:
             return existing
         on_warn("Luna server code changed since it started — restarting the background server")
-        (_kill or _default_kill)(existing["pid"])
+        if (_is_ours or _default_is_ours)(existing):
+            (_kill or _default_kill)(existing["pid"])
 
     if existing is not None:
         # Stale (dead, or just killed above for being outdated) — remove it
@@ -112,13 +198,14 @@ def ensure_running(
         path.parent.mkdir(parents=True, exist_ok=True)
         # The log may hold request details: private from creation on.
         fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        os.fchmod(fd, 0o600)
+        restrict(fd)
         with os.fdopen(fd, "a", buffering=1) as log_file:
             subprocess.Popen(
                 [sys.executable, "-m", "luna.server.run", "--port", str(port)],
                 # never in argv: anyone on the machine can read it with ``ps``
                 env={**os.environ, TOKEN_ENV: token},
-                start_new_session=True,
+                **_spawn_kwargs(),
+                stdin=subprocess.DEVNULL,
                 # One server serves every project: never tie its cwd to the
                 # launching folder, which may be deleted while it runs.
                 cwd=str(Path.home()),
@@ -138,6 +225,37 @@ def ensure_running(
         time.sleep(0.05)
         data = read_token_file()
     return data or {"port": port, "token": token, "pid": 0}
+
+
+def stop_server(
+    *,
+    _is_alive: Callable[[int], bool] = _default_is_alive,
+    _is_ours: Callable[[dict], bool] = _default_is_ours,
+    _kill: Callable[[int], None] = _default_kill,
+    timeout: float = 5.0,
+) -> bool:
+    """Stop the background server recorded in ``server.json``; True if one was stopped.
+
+    Used before ``luna update`` on Windows, where the running server keeps the
+    tool's files locked. The pid is killed only after :func:`_default_is_ours`
+    confirms it is our server; then this waits up to ``timeout`` seconds for it
+    to exit so its files are released.
+    """
+    try:
+        existing = read_token_file()
+        pid = existing["pid"] if isinstance(existing, dict) else None
+    except (KeyError, TypeError):
+        pid = None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if not _is_alive(pid) or not _is_ours(existing):
+        return False
+    _kill(pid)
+    deadline = time.monotonic() + timeout
+    while _is_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    token_path().unlink(missing_ok=True)
+    return True
 
 
 def make_session_build(*, provider_factory: Callable[[object], object] | None = None):

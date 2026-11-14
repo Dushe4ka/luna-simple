@@ -10,11 +10,14 @@
 ## Установка
 
 ```bash
-pip install luna-core                 # httpx, httpx-sse, pyyaml
-pip install "luna-core[mcp]"          # MCP-серверы как инструменты
-pip install "luna-core[acp]"          # отдавать по ACP (Zed, JetBrains)
-pip install "luna-core[lsp,websearch]"
+pip install "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # httpx, httpx-sse, pyyaml
+pip install "luna-core[mcp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # MCP-серверы как инструменты
+pip install "luna-core[acp] @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"   # отдавать по ACP (Zed, JetBrains)
+# или: uv add "luna-core @ git+https://github.com/Dushe4ka/luna-simple#subdirectory=packages/luna-core"
 ```
+
+На PyPI пакета пока нет; ставится из GitHub, нужен `git`. Extras `lsp` и `websearch`
+ставятся так же: `luna-core[lsp,websearch] @ ...`.
 
 Python 3.11+.
 

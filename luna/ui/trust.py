@@ -8,6 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.text import Text
 
+from luna.config.config import config_dir
 from luna.core.projects import ProjectIndex
 from luna.ui.interact import _real_terminal
 
@@ -107,7 +108,7 @@ def ensure_trusted(
             # The server re-checks trust per request, so an unsaved "yes"
             # would only lead to a TUI where every request is refused.
             console.print(
-                "Не удалось сохранить доверие: база ~/.config/luna/sessions.db недоступна."
+                f"Не удалось сохранить доверие: база {config_dir() / 'sessions.db'} недоступна."
             )
             return False
     else:

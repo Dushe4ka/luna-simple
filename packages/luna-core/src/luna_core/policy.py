@@ -5,15 +5,18 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
+import tempfile
 import tomllib
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path, PurePosixPath
 
+from luna_core import shell as _shell
 from luna_core.errors import LunaCoreError, ToolError
 from luna_core.events import ApprovalRequest
-from luna_core.shellsplit import rough_split, split_command
+from luna_core.shellsplit import program_name, rough_split, split_command
 from luna_core.tools.base import Tool, args_preview
 from luna_core.workspace import OutsideWorkspace, Workspace
 
@@ -26,17 +29,25 @@ _GROUPS = {
 
 
 def _relpath(raw: str) -> str:
-    """Project-relative POSIX form of ``raw``, with ``..``/``.``/``/`` collapsed.
+    r"""Project-relative POSIX form of ``raw``, with ``..``/``.``/``/`` collapsed.
 
     ``PurePosixPath.as_posix()`` alone does not collapse ``..`` segments (so
     ``src/../.env`` would stay distinct from ``.env``), which let a deny rule
     on ``.env`` be bypassed by a non-normalised path. ``posixpath.normpath``
     closes that gap for the no-workspace case; ``Policy.check`` additionally
     resolves file-tool paths through the real :class:`Workspace` first.
+
+    On Windows ``\`` is a path separator too, so it becomes ``/`` in subjects
+    and patterns alike: ``fnmatchcase`` (used when case folding is on, which it
+    always is on NTFS) would otherwise never match ``secrets\*.key`` against the
+    POSIX-form ``secrets/a.key`` the workspace hands out.
     """
     if not raw:
         return ""
-    posix = PurePosixPath(str(raw)).as_posix()
+    raw = str(raw)
+    if _shell.IS_WINDOWS:
+        raw = raw.replace("\\", "/")
+    posix = PurePosixPath(raw).as_posix()
     return posixpath.normpath(posix).lstrip("/")
 
 
@@ -50,6 +61,40 @@ def _tool_matches(rule_tool: str, tool: str) -> bool:
     return rule_tool in ("*", tool) or tool in _GROUPS.get(rule_tool, ())
 
 
+def _fold_program(pattern: str) -> str:
+    """On Windows, normalise a literal program word of a deny/ask pattern.
+
+    ``execute:rm.exe *`` must catch ``rm`` and ``RM.EXE``: the subjects carry
+    the program in :func:`program_name` form, so the pattern gets the same.
+    A first word with glob metacharacters is left as written.
+    """
+    if not _shell.IS_WINDOWS:
+        return pattern
+    word, sep, rest = pattern.partition(" ")
+    if not word or any(ch in word for ch in "*?["):
+        return pattern
+    return program_name(word) + sep + rest
+
+
+def _fold_path(text: str) -> str:
+    """Return ``text`` as a case-insensitive filesystem sees it (NFC, casefolded)."""
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def case_insensitive_fs(root: Path) -> bool:
+    """Tell whether ``root``'s filesystem ignores letter case (macOS / Windows defaults).
+
+    Probes with a temporary file; when the probe itself fails, answers True —
+    deny rules then match more, never less.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".luna-CaseProbe-", dir=root) as handle:
+            probe = Path(handle.name)
+            return (probe.parent / probe.name.swapcase()).exists()
+    except OSError:
+        return True
+
+
 @dataclass
 class Rules:
     """Allow / ask / deny rules of the form ``<tool or group>:<fnmatch pattern>``."""
@@ -57,14 +102,22 @@ class Rules:
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     ask: list[str] = field(default_factory=list)
+    #: compare file-path patterns without letter case (set for case-insensitive projects)
+    fold_case: bool = False
 
-    def _hit(self, rules: list[str], tool: str, subject: str) -> bool:
+    def _hit(self, rules: list[str], tool: str, subject: str, fold: bool = False) -> bool:
         for rule in rules:
             rtool, _, pattern = rule.partition(":")
             if not _tool_matches(rtool, tool):
                 continue
+            if fold and tool == "execute":
+                pattern = _fold_program(pattern)
             if tool != "execute":
                 pattern = _relpath(pattern)
+                if self.fold_case:
+                    if fnmatchcase(_fold_path(subject), _fold_path(pattern)):
+                        return True
+                    continue
             if fnmatch(subject, pattern):
                 return True
             # ``execute:ls *`` also covers a bare ``ls``
@@ -82,6 +135,10 @@ class Rules:
                 return kind
         return None
 
+    @staticmethod
+    def _covers_execute(rules: list[str]) -> bool:
+        return any(_tool_matches(r.partition(":")[0], "execute") for r in rules)
+
     def _match_execute(self, command: str) -> str | None:
         """Match a shell line segment by segment (see :mod:`luna_core.shellsplit`).
 
@@ -91,13 +148,15 @@ class Rules:
         ``sh`` reading; a line that cannot be parsed is never allowed by a rule.
         When the rough net gives up (see :func:`luna_core.shellsplit.rough_split`)
         the line is denied if any deny rule covers ``execute``, else asked about.
+        On Windows a line that runs one of :data:`WINDOWS_RUNNERS` is asked about
+        whenever a deny rule covers ``execute``: their payloads are not parsed.
         """
         readings = [split_command(command)]
         if "$'" in command:
             readings.append(split_command(command, ansi_c=False))
         rough, complete = rough_split(command)
         if not complete:  # the safety net gave up: fail closed (yolo cannot skip "ask")
-            if any(_tool_matches(r.partition(":")[0], "execute") for r in self.deny):
+            if self._covers_execute(self.deny):
                 return "deny"
             return "ask"
         subjects = [command, *rough]
@@ -105,8 +164,14 @@ class Rules:
             subjects += parts.subjects if parts else ()
         for kind in ("deny", "ask"):
             rules = getattr(self, kind)
-            if any(self._hit(rules, "execute", s) for s in subjects):
+            if any(self._hit(rules, "execute", s, fold=True) for s in subjects):
                 return kind
+        if _shell.IS_WINDOWS and self._covers_execute(self.deny):
+            # Payloads of ``cmd /c``, ``wsl``, ``powershell -c`` ... are not parsed,
+            # so a deny rule cannot see inside them: ask (yolo cannot skip "ask").
+            programs = {program_name(s.split()[0]) for s in subjects if s.split()}
+            if programs & WINDOWS_RUNNERS:
+                return "ask"
         if any(parts is None for parts in readings):
             return None
         if any(parts.elevated for parts in readings):  # sudo/env/LD_PRELOAD=...: ask
@@ -253,8 +318,15 @@ RUNNER_PROGRAMS = frozenset(
         "eval", "exec", "source", ".", "env", "command", "builtin",
         "sudo", "doas", "su", "xargs", "find", "nohup", "nice", "timeout",
         "time", "stdbuf", "watch", "busybox", "parallel",
+        "cmd", "cmd.exe", "powershell", "pwsh", "wsl", "start", "cygstart", "winpty",
     }
 )  # fmt: skip
+
+
+#: Windows programs that run a command line Luna's parser does not read
+#: (``cmd /c``, ``wsl``, ``powershell -c`` ...): with any execute deny rule a line
+#: running one is asked about, since the deny rule cannot see its payload.
+WINDOWS_RUNNERS = frozenset({"cmd", "powershell", "pwsh", "wsl", "start", "cygstart", "winpty"})
 
 
 class UnsafeRule(ValueError):
@@ -279,7 +351,7 @@ def check_rule_safe(rule: str) -> None:
     program = words[0] if words else ""
     if not _PLAIN_PROGRAM.match(program):
         raise UnsafeRule(f"refusing to save {rule!r}: {program!r} is not a plain program name")
-    if program.rsplit("/", 1)[-1] in RUNNER_PROGRAMS:
+    if program_name(program) in RUNNER_PROGRAMS:
         raise UnsafeRule(f"refusing to save {rule!r}: {program!r} can run any command")
 
 
@@ -484,6 +556,8 @@ class Policy:
         anchors: AnchorTracker | None = None,
     ) -> None:
         self.rules = rules or Rules()
+        if workspace is not None and not self.rules.fold_case:
+            self.rules.fold_case = case_insensitive_fs(workspace.root)
         self.approval_tools = frozenset(approval_tools)
         self.yolo = yolo
         self.plan_mode = plan_mode

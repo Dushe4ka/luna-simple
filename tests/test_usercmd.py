@@ -54,11 +54,10 @@ def test_expand_substitutes_arguments(tmp_path):
 
 
 def test_expand_runs_shell_injection(tmp_path):
-    import sys
-
     from luna.repl.usercmd import UserCommand, expand
+    from tests.shellcmd import PY
 
-    cmd = UserCommand(name="x", description="", body=f"say: !`{sys.executable} -c \"print('hi')\"`")
+    cmd = UserCommand(name="x", description="", body=f"say: !`{PY} -c \"print('hi')\"`")
     assert "hi" in expand(cmd, "", str(tmp_path))
 
 

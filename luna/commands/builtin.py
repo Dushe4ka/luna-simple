@@ -486,7 +486,7 @@ def _need_key(provider: str, spec) -> CommandResult:
 
     path = credentials_path()
     try:
-        shown = f"~/{path.relative_to(Path.home())}"
+        shown = str(Path("~") / path.relative_to(Path.home()))  # one separator style
     except ValueError:
         shown = str(path)
     return CommandResult(

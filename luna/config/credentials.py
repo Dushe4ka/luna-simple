@@ -1,4 +1,6 @@
-"""Local API-key storage: ``$XDG_CONFIG_HOME/luna/credentials.toml`` (mode 0600).
+r"""Local API-key storage: ``$XDG_CONFIG_HOME/luna/credentials.toml`` (mode 0600).
+
+On Windows the directory is ``%APPDATA%\luna``.
 
 Kept separate from ``config.toml`` so the config file stays safe to share or
 commit. Environment variables always take precedence over stored keys.
@@ -9,18 +11,17 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-import stat
 import tempfile
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
 from luna_core.filelock import file_lock
+from luna_core.fsperm import restrict
 
 from luna.config.config import config_dir
 from luna.config.providers import PROVIDERS, LunaConfigError, ProviderSpec, normalize_base_url
 
-_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0600
 #: Provider names a credentials table may have (written quoted either way).
 _PROVIDER_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
@@ -65,7 +66,7 @@ def write_private(path: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         try:
-            os.fchmod(fd, _FILE_MODE)
+            restrict(fd)
             view = memoryview(data)
             while view:
                 view = view[os.write(fd, view) :]
