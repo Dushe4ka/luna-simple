@@ -3,6 +3,7 @@
 from luna_core import providers
 from luna_core.background import AgentManager, BackgroundTasks
 from luna_core.compaction import Compactor
+from luna_core.dynamic import resolve_spec
 from luna_core.errors import LunaCoreError, ProviderError, ToolError
 from luna_core.events import (
     ApprovalRequest,
@@ -30,7 +31,7 @@ from luna_core.policy import Decision, Policy, Rules
 from luna_core.roles import ModelRoles
 from luna_core.sandbox import DockerSandbox, LocalSandbox
 from luna_core.session import EventLog, Session
-from luna_core.subagents import SubagentRunner, SubagentSpec, task_tool
+from luna_core.subagents import DynamicSettings, SubagentRunner, SubagentSpec, task_tool
 from luna_core.tools import Tool, ToolContext, ToolOutput, builtin_tools, tool
 from luna_core.usage import Usage
 from luna_core.workspace import Workspace
@@ -39,12 +40,14 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Agent", "AgentManager", "ApprovalRequest", "BackgroundDone", "BackgroundTasks", "Cancelled",
-    "Compacted", "Compactor", "Decision", "DockerSandbox", "EventLog", "HookResult", "Hooks",
+    "Compacted", "Compactor", "Decision", "DockerSandbox", "DynamicSettings", "EventLog",
+    "HookResult", "Hooks",
     "Image", "LocalSandbox", "LunaCoreError", "Message", "ModelRoles", "NeedsApproval", "Notice",
     "PathLocks", "Policy", "ProviderError", "ReloadRequested", "Rules", "Session", "SideAnswer",
     "SubagentRunner", "SubagentSpec", "Text", "TextDelta", "Thinking", "ThinkingDelta",
     "TodosUpdated", "Tool", "ToolCall", "ToolContext", "ToolError", "ToolFinished", "ToolOutput",
     "ToolResult", "ToolStarted", "TurnDone", "TurnError", "TurnStarted", "Usage", "UsageUpdate",
-    "Workspace", "__version__", "builtin_tools", "image_from_file", "providers", "task_tool",
+    "Workspace", "__version__", "builtin_tools", "image_from_file", "providers", "resolve_spec",
+    "task_tool",
     "to_wire", "tool",
 ]  # fmt: skip

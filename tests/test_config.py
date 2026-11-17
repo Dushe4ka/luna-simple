@@ -386,3 +386,69 @@ def test_luna_theme_env(monkeypatch):
 
     monkeypatch.setenv("LUNA_THEME", "ansi-dark")
     assert load_config().theme == "ansi-dark"
+
+
+def test_subagents_section_defaults_and_user_values(tmp_path):
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    assert (cfg.subagents_dynamic, cfg.subagents_allow_write) == (True, False)
+    assert (cfg.subagents_models, cfg.subagents_max_steps) == ((), 30)
+    home = tmp_path / "home"
+    (home / "luna").mkdir(parents=True)
+    (home / "luna" / "config.toml").write_text(
+        '[subagents]\ndynamic = true\nallow_write = true\nmodels = ["m-1"]\nmax_steps = 12\n'
+    )
+    cfg = load_config({}, env={"XDG_CONFIG_HOME": str(home)}, cwd=str(tmp_path))
+    assert cfg.subagents_allow_write and cfg.subagents_models == ("m-1",)
+    assert cfg.subagents_max_steps == 12
+
+
+def test_project_toml_can_only_narrow_subagent_rights(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        '[subagents]\nallow_write = true\nmodels = ["evil"]\nmax_steps = 99\ndynamic = false\n'
+    )
+    cfg = load_config({}, env={}, cwd=str(tmp_path))
+    assert cfg.subagents_allow_write is False and cfg.subagents_models == ()
+    assert cfg.subagents_max_steps == 30 and cfg.subagents_dynamic is False
+    assert any("[subagents]" in w and "allow_write" in w for w in cfg.warnings)
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["max_steps = 0", "max_steps = true", 'models = "m"', 'allow_write = "yes"'],
+)
+def test_bad_subagents_values_are_config_errors(tmp_path, body):
+    home = tmp_path / "home"
+    (home / "luna").mkdir(parents=True)
+    (home / "luna" / "config.toml").write_text(f"[subagents]\n{body}\n")
+    with pytest.raises(LunaConfigError, match=r"\[subagents\]"):
+        load_config({}, env={"XDG_CONFIG_HOME": str(home)}, cwd=str(tmp_path))
+
+
+def _user_and_project(tmp_path, user, project):
+    home = tmp_path / "home"
+    (home / "luna").mkdir(parents=True)
+    (home / "luna" / "config.toml").write_text(f"[subagents]\n{user}\n")
+    (tmp_path / ".luna.toml").write_text(f"[subagents]\n{project}\n")
+    return {"XDG_CONFIG_HOME": str(home)}
+
+
+def test_project_narrows_the_user_subagent_ceilings(tmp_path):
+    env = _user_and_project(
+        tmp_path, "allow_write = true\nmax_steps = 20", "allow_write = false\nmax_steps = 7"
+    )
+    cfg = load_config({}, env=env, cwd=str(tmp_path))
+    assert cfg.subagents_max_steps == 7 and cfg.subagents_allow_write is False
+
+
+def test_project_max_steps_over_a_bad_user_value_reports_the_user_value(tmp_path):
+    env = _user_and_project(tmp_path, 'max_steps = "ten"', "max_steps = 5")
+    with pytest.raises(LunaConfigError, match=r"\[subagents\] max_steps"):
+        load_config({}, env=env, cwd=str(tmp_path))
+
+
+@pytest.mark.parametrize("value", ["0", "-3", '"5"', "true", "2.5"])
+def test_bad_project_max_steps_is_ignored_with_a_warning(tmp_path, value):
+    env = _user_and_project(tmp_path, "max_steps = 20", f"max_steps = {value}")
+    cfg = load_config({}, env=env, cwd=str(tmp_path))
+    assert cfg.subagents_max_steps == 20
+    assert any(".luna.toml" in w and "max_steps" in w for w in cfg.warnings)

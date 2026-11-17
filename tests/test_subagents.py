@@ -76,10 +76,12 @@ def test_project_file_overrides_user_file(tmp_path, monkeypatch):
     assert load_subagents(str(tmp_path))["a"].description == "project"
 
 
-def test_bad_tool_name_rejected(tmp_path, monkeypatch):
+def test_forbidden_tool_name_rejected_and_unknown_names_load(tmp_path, monkeypatch):
     cfg = tmp_path / ".config" / "luna"
     cfg.mkdir(parents=True)
-    (cfg / "subagents.toml").write_text('[subagent.x]\ndescription = "d"\ntools = ["frobnicate"]\n')
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    with pytest.raises(LunaConfigError, match="unknown tools"):
+    (cfg / "subagents.toml").write_text('[subagent.x]\ndescription = "d"\ntools = ["task"]\n')
+    with pytest.raises(LunaConfigError, match="cannot use"):
         load_subagents(str(tmp_path))
+    (cfg / "subagents.toml").write_text('[subagent.x]\ndescription = "d"\ntools = ["frobnicate"]\n')
+    assert load_subagents(str(tmp_path))["x"].tools == ("frobnicate",)

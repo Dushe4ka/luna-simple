@@ -9,7 +9,7 @@ EXPECTED = {
     "Tool", "ToolContext", "ToolOutput", "tool", "builtin_tools", "Workspace", "LocalSandbox",
     "DockerSandbox", "Compactor", "ModelRoles", "SubagentSpec", "SubagentRunner", "task_tool",
     "BackgroundTasks", "AgentManager", "Usage", "LunaCoreError", "ProviderError", "ToolError",
-    "providers", "__version__",
+    "providers", "__version__", "DynamicSettings", "resolve_spec",
 }  # fmt: skip
 
 
