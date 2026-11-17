@@ -67,6 +67,9 @@ def resolve_spec(
             "dynamic subagents are disabled ([subagents] dynamic = false); "
             "call task with subagent_type only"
         )
+    if "max_steps" not in changes:
+        # The user's ceiling holds even when the call does not name a step count.
+        changes["max_steps"] = min(base.max_steps, settings.max_steps)
 
     if "prompt" in args and args["prompt"] is not None:
         prompt = args["prompt"]

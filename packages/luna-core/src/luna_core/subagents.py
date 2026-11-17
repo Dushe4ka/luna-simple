@@ -421,13 +421,26 @@ class SubagentResult:
     cancelled: bool = False
     dynamic: bool = False
     spec: SubagentSpec | None = None
+    #: Tip of the branch before a resumed run: where its new changes start.
+    prev_tip: str | None = None
 
     def render(self) -> str:
         """Text for the parent model."""
         head = self.text.strip() or "(the subagent gave no answer)"
         if not self.ok:
             head = f"subagent {self.name} failed: {self.error}\n\n{head}"
-        if self.branch:
+        if self.branch and self.prev_tip:
+            apply = "| git apply --3way --binary"
+            head += (
+                f"\n\n[changes are committed on branch {self.branch}; diff stat:\n"
+                f"{self.diffstat or 'no changes'}\n"
+                "apply them to the main working tree with one of:\n"
+                "new changes since the last run: "
+                f"git diff --binary {self.prev_tip} {self.branch} {apply}\n"
+                f"all changes: git diff --binary {self.base} {self.branch} {apply}\n"
+                "(--3way also stages the applied changes in the index)]"
+            )
+        elif self.branch:
             head += (
                 f"\n\n[changes are committed on branch {self.branch}; diff stat:\n"
                 f"{self.diffstat or 'no changes'}\n"
@@ -450,6 +463,26 @@ def child_prompt(spec: SubagentSpec, skill_bodies: list[tuple[str, str]]) -> str
         parts.append(f"# Context from the parent agent\n\n{spec.context.strip()}")
     parts += [f"# Skill: {name}\n\n{body.strip()}" for name, body in skill_bodies]
     return "\n\n".join(parts)
+
+
+def _mutating(parent, name: str) -> bool:
+    """Return True when the parent's tool ``name`` is marked as changing things."""
+    return bool(getattr(parent.tools.get(name), "mutating", False))
+
+
+def _child_tools(parent, spec: SubagentSpec) -> tuple[list[str], list[str]]:
+    """Return (tools the child gets, mutating tools dropped for lack of ``unsafe``)."""
+    wanted = [t for t in spec.tools if t not in CHILD_FORBIDDEN and t in parent.tools]
+    if spec.unsafe:
+        return wanted, []
+    dropped = [t for t in wanted if _mutating(parent, t)]
+    return [t for t in wanted if t not in dropped], dropped
+
+
+def _branch_tip(root: Path, branch: str) -> str | None:
+    """Return the commit ``branch`` points at, or None when it does not exist."""
+    tip = _git(root, "rev-parse", "--verify", "-q", branch).stdout.strip()
+    return tip or None
 
 
 @dataclass
@@ -504,6 +537,68 @@ class SubagentRunner:
             raise LunaCoreError("skills are not available in this host")
         return [(name, self.skill_loader(name)) for name in spec.skills]
 
+    def _restore(self, parent, resumed: SessionInfo, label: str) -> SubagentSpec | SubagentResult:
+        """Rebuild a resumed subagent's spec, re-checked against the current ceilings.
+
+        Returns an error :class:`SubagentResult` when it can no longer be resumed.
+        """
+        stored = resumed.meta.get("spec")
+        if stored:
+            try:
+                spec = SubagentSpec.from_dict(stored)
+                if not isinstance(spec.name, str) or not isinstance(spec.max_steps, int):
+                    raise TypeError("bad field types")
+            except Exception:  # noqa: BLE001 - any shape of broken metadata
+                return SubagentResult(label, False, "", "stored subagent assembly is unreadable")
+        else:
+            agent = str(resumed.meta.get("agent", ""))
+            found = self.specs.get(agent)
+            if found is None:
+                return SubagentResult(
+                    agent or label,
+                    False,
+                    "",
+                    f"subagent profile '{agent}' no longer exists; it cannot be resumed",
+                )
+            spec = found
+        if not resumed.meta.get("dynamic"):
+            return spec
+        # A dynamic assembly obeys today's [subagents] settings, not the ones it was built under.
+        name = spec.name
+        if not self.dynamic.enabled:
+            return SubagentResult(
+                name,
+                False,
+                "",
+                "dynamic subagents are disabled ([subagents] dynamic = false); "
+                "this subagent cannot be resumed",
+                dynamic=True,
+                spec=spec,
+            )
+        if not self.dynamic.allow_write and any(
+            t in WRITE_TOOLS or _mutating(parent, t) for t in spec.tools
+        ):
+            return SubagentResult(
+                name,
+                False,
+                "",
+                "this subagent can change files or run commands, but [subagents] allow_write "
+                "is now false; it cannot be resumed",
+                dynamic=True,
+                spec=spec,
+            )
+        if spec.model and spec.model not in ROLES and spec.model not in self.dynamic.models:
+            return SubagentResult(
+                name,
+                False,
+                "",
+                f"model {spec.model!r} is no longer allowed ([subagents] models); "
+                "this subagent cannot be resumed",
+                dynamic=True,
+                spec=spec,
+            )
+        return dataclasses.replace(spec, max_steps=min(spec.max_steps, self.dynamic.max_steps))
+
     async def run(
         self,
         parent,
@@ -553,16 +648,10 @@ class SubagentRunner:
         resume: str | None,
         reserved: list[str],
     ) -> SubagentResult:
-        if isinstance(spec, str):
-            found = self.specs.get(spec)
-            if found is None:
-                return SubagentResult(
-                    spec, False, "", f"unknown subagent; available: {', '.join(self.specs)}"
-                )
-            spec = found
-        name = spec.name
         resumed: SessionInfo | None = None
         if resume:
+            # The stored session decides the assembly; the call's spec is only a label.
+            label = spec if isinstance(spec, str) else spec.name
             resumed = session.log.info(resume)
             if (
                 resumed is None
@@ -570,37 +659,48 @@ class SubagentRunner:
                 or resumed.meta.get("kind") != "subagent"
             ):
                 return SubagentResult(
-                    name, False, "", f"no subagent session {resume!r} of this session to resume"
+                    label, False, "", f"no subagent session {resume!r} of this session to resume"
                 )
             if resume in self._running:
                 return SubagentResult(
-                    name, False, "", f"subagent session {resume!r} is still running"
+                    label, False, "", f"subagent session {resume!r} is still running"
                 )
             # Reserved before the first await, so a parallel resume of it is refused.
             self._running.add(resume)
             reserved.append(resume)
-            stored = resumed.meta.get("spec")
-            spec = (
-                SubagentSpec.from_dict(stored)
-                if stored
-                else self.specs.get(resumed.meta.get("agent", ""), spec)
-            )
-            name = spec.name
+            restored = self._restore(parent, resumed, label)
+            if isinstance(restored, SubagentResult):
+                return restored
+            spec = restored
             dynamic = bool(resumed.meta.get("dynamic"))
+        elif isinstance(spec, str):
+            found = self.specs.get(spec)
+            if found is None:
+                return SubagentResult(
+                    spec, False, "", f"unknown subagent; available: {', '.join(self.specs)}"
+                )
+            spec = found
+        name = spec.name
         try:
             skill_bodies = self._skill_bodies(spec)
         except Exception as exc:  # noqa: BLE001 - any loader failure is the parent's to see
             return SubagentResult(name, False, "", str(exc), dynamic=dynamic, spec=spec)
-        if isolation not in ISOLATION:
+        if resumed is not None:
+            # A resumed subagent keeps the isolation it started with, whatever the call says.
+            mode = resumed.meta.get("isolation") or (
+                "worktree" if resumed.meta.get("branch") else "none"
+            )
+        elif isolation not in ISOLATION:
             return SubagentResult(
                 name, False, "", f"isolation must be one of {ISOLATION}", spec=spec
             )
+        else:
+            mode = isolation if isolation != "auto" else spec.isolation
         emit = emit or (lambda event: None)
         if parent.max_cost is not None and session.cost() >= parent.max_cost:
             return self._over_budget(name, parent.max_cost, spec)
         root = parent.workspace.root
         top = await asyncio.to_thread(_git_toplevel, root)
-        mode = isolation if isolation != "auto" else spec.isolation
         if mode == "worktree" and top is None:
             return SubagentResult(
                 name, False, "", "worktree isolation needs a git repository", spec=spec
@@ -614,7 +714,10 @@ class SubagentRunner:
                 "worktree isolation needs the project root to be the git repository root",
                 spec=spec,
             )
-        use_worktree = mode == "worktree" or (mode == "auto" and spec.writes and at_top)
+        # Mutating tools a profile lists without ``unsafe`` are dropped in ``_drive``.
+        kept, _dropped = _child_tools(parent, spec)
+        writes = spec.writes or any(_mutating(parent, t) for t in kept)
+        use_worktree = mode == "worktree" or (mode == "auto" and writes and at_top)
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.max_parallel)
         async with self._semaphore:
@@ -625,6 +728,7 @@ class SubagentRunner:
             message = f"luna subagent {name}: {task[:60]}"
             created: asyncio.Future | None = None
             worktree: tuple[Path, str, str] | None = None
+            prev_tip: str | None = None
             try:
                 if use_worktree:
                     created = asyncio.ensure_future(
@@ -638,6 +742,9 @@ class SubagentRunner:
                     )
                     worktree = await asyncio.shield(created)
                     workspace = Workspace(worktree[0])
+                    if resumed is not None and resumed.meta.get("branch") == worktree[1]:
+                        # Continuing an existing branch: its new work starts at this tip.
+                        prev_tip = await asyncio.to_thread(_branch_tip, root, worktree[1])
                 else:
                     workspace = parent.workspace
                 out = await self._drive(
@@ -691,6 +798,7 @@ class SubagentRunner:
                 cancelled=out.cancelled,
                 dynamic=dynamic,
                 spec=spec,
+                prev_tip=prev_tip if branch else None,
             )
 
     @staticmethod
@@ -728,10 +836,19 @@ class SubagentRunner:
         missing = [t for t in wanted if t not in parent.tools]
         if missing:
             emit(Notice("warn", f"{name}: tools not available here: {', '.join(missing)}"))
+        kept, dropped = _child_tools(parent, spec)
+        for tool_name in dropped:
+            emit(
+                Notice(
+                    "warn",
+                    f"{name}: {tool_name} changes things; "
+                    "add unsafe = true to the profile to allow it",
+                )
+            )
         child = Agent(
             provider,
             model,
-            tools=[parent.tools[t] for t in wanted if t in parent.tools],
+            tools=[parent.tools[t] for t in kept],
             system=build_system_prompt(
                 child_prompt(spec, skill_bodies), root=workspace.root, memory=[]
             ),
@@ -759,6 +876,8 @@ class SubagentRunner:
                     "agent": name,
                     "dynamic": dynamic,
                     "spec": spec.to_dict(),
+                    # The isolation actually used; a resume keeps it.
+                    "isolation": "worktree" if use_worktree else "none",
                 },
             )
             child_session = Session(session.log, child_id, workdir=str(workspace.root), undo=False)

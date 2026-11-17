@@ -139,7 +139,8 @@ def task_tool(runner: SubagentRunner) -> Tool:
             "resume": {
                 "type": "string",
                 "description": "Session id from an earlier result: continue that subagent "
-                "(other fields are ignored).",
+                "with its original assembly and isolation; isolation and the other fields "
+                "are ignored (background still applies).",
             },
         },
         "required": ["description"],

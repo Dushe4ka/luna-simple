@@ -246,3 +246,8 @@ async def test_task_detail_names_the_assembly_on_run_and_resume(tmp_path):
     events = [e async for e in agent.run(session, "again")]
     assert _task_details(events) == [expected]
     log.close()
+
+
+def test_settings_max_steps_caps_a_dynamic_call_without_max_steps(parent_tools):
+    spec, dynamic = resolve({"prompt": "x"}, parent_tools, max_steps=5)
+    assert dynamic and spec.max_steps == 5

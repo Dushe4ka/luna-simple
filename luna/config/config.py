@@ -159,9 +159,17 @@ def _apply_toml(data: dict, into: dict, *, project: bool = False) -> None:
                 into["subagents_dynamic"] = False
             if subagents.get("allow_write") is False:
                 into["subagents_allow_write"] = False
-            steps = subagents.get("max_steps")
-            if isinstance(steps, int) and not isinstance(steps, bool):
-                into["subagents_max_steps"] = min(steps, into.get("subagents_max_steps", 30))
+            if "max_steps" in subagents:
+                steps = subagents["max_steps"]
+                current = into.get("subagents_max_steps", 30)
+                if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+                    into.setdefault("warnings", []).append(
+                        f".luna.toml: [subagents] max_steps ignored: must be an integer "
+                        f">= 1, got {steps!r}."
+                    )
+                elif isinstance(current, int) and not isinstance(current, bool):
+                    into["subagents_max_steps"] = min(steps, current)
+                # else: a bad user value stays for validation to report.
         else:
             for key in ("dynamic", "allow_write", "models", "max_steps"):
                 if key in subagents:

@@ -865,3 +865,180 @@ async def test_parallel_resume_of_the_same_session_is_serialised(tmp_path, log):
     assert sum(r.ok for r in results) == 1
     again = await resume("c")  # the id was not leaked
     assert again.ok
+
+
+@tool(mutating=True)
+async def mcp__db__write(sql: str) -> str:
+    """Write to the db."""
+    return "ok"
+
+
+def _writer_spec(**kw):
+    return SubagentSpec("w", "d", "p", ("ls", "write_file"), unsafe=True, **kw)
+
+
+async def test_resume_is_refused_after_allow_write_is_turned_off(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("first"), FakeProvider.text("second")])
+    runner = SubagentRunner(
+        {}, model_for=lambda s: (child, "m"), dynamic=DynamicSettings(allow_write=True)
+    )
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    one = await runner.run(parent, session, _writer_spec(), "a", dynamic=True)
+    assert one.ok
+    runner.dynamic = DynamicSettings(allow_write=False)
+    two = await runner.run(parent, session, "w", "b", resume=one.session_id)
+    assert not two.ok and "allow_write is now false" in two.error
+    assert len(child.requests) == 1  # nothing ran
+
+
+async def test_resume_is_refused_after_dynamic_is_disabled(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("first"), FakeProvider.text("second")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("r", "d", "p", ("ls",))
+    one = await runner.run(parent, session, spec, "a", dynamic=True)
+    runner.dynamic = DynamicSettings(enabled=False)
+    two = await runner.run(parent, session, "r", "b", resume=one.session_id)
+    assert not two.ok and "dynamic subagents are disabled" in two.error
+    # a model that is no longer allowed is refused too
+    runner = SubagentRunner(
+        {}, model_for=lambda s: (child, "m"), dynamic=DynamicSettings(models=("m-1",))
+    )
+    one = await runner.run(
+        parent, session, SubagentSpec("r", "d", "p", model="m-1"), "a", dynamic=True
+    )
+    runner.dynamic = DynamicSettings()
+    two = await runner.run(parent, session, "r", "b", resume=one.session_id)
+    assert not two.ok and "'m-1'" in two.error
+
+
+async def test_resume_clamps_max_steps_to_the_current_ceiling(tmp_path, log):
+    child = FakeProvider(
+        [FakeProvider.text("first"), FakeProvider.call("ls", {}), FakeProvider.text("never")]
+    )
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("r", "d", "p", ("ls",), max_steps=10)
+    one = await runner.run(parent, session, spec, "a", dynamic=True)
+    runner.dynamic = DynamicSettings(max_steps=1)
+    two = await runner.run(parent, session, "r", "b", resume=one.session_id)
+    assert two.hit_max_steps and two.steps == 1 and two.spec.max_steps == 1
+
+
+async def test_resume_keeps_the_original_worktree_isolation(tmp_path, log):
+    init_repo(tmp_path)
+    child = FakeProvider(
+        [
+            FakeProvider.call("write_file", {"file_path": "a.txt", "content": "one\n"}),
+            FakeProvider.text("wrote a"),
+            FakeProvider.call("write_file", {"file_path": "b.txt", "content": "two\n"}),
+            FakeProvider.text("wrote b"),
+        ]
+    )
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS), model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    one = await runner.run(parent, session, "general-purpose", "a", isolation="worktree")
+    assert log.info(one.session_id).meta["isolation"] == "worktree"
+    two = await runner.run(
+        parent, session, "general-purpose", "b", isolation="none", resume=one.session_id
+    )
+    assert two.ok and two.branch == one.branch
+    assert "a.txt" in two.diffstat and "b.txt" in two.diffstat
+    assert not (tmp_path / "a.txt").exists() and not (tmp_path / "b.txt").exists()
+
+
+async def test_resume_render_offers_new_and_all_changes(tmp_path, log):
+    init_repo(tmp_path)
+    child = FakeProvider(
+        [
+            FakeProvider.call("write_file", {"file_path": "a.txt", "content": "one\n"}),
+            FakeProvider.text("wrote a"),
+            FakeProvider.call("write_file", {"file_path": "b.txt", "content": "two\n"}),
+            FakeProvider.text("wrote b"),
+        ]
+    )
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS), model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    one = await runner.run(parent, session, "general-purpose", "a", isolation="worktree")
+    assert one.prev_tip is None
+    tip = subprocess.run(
+        ["git", "rev-parse", one.branch], cwd=tmp_path, capture_output=True, text=True
+    ).stdout.strip()
+    two = await runner.run(parent, session, "general-purpose", "b", resume=one.session_id)
+    text = two.render()
+    assert two.prev_tip == tip
+    assert (
+        f"new changes since the last run: git diff --binary {tip} {two.branch} "
+        "| git apply --3way --binary" in text
+    )
+    assert (
+        f"all changes: git diff --binary {two.base} {two.branch} | git apply --3way --binary"
+        in text
+    )
+    # the hinted "new changes" command applies on top of the first run's changes
+    for frm in (one.base, tip):
+        diff = subprocess.run(
+            ["git", "diff", "--binary", frm, two.branch],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert ("a.txt" in diff) == (frm == one.base) and "b.txt" in diff
+
+
+async def test_profile_mutating_tool_needs_unsafe(tmp_path, log):
+    init_repo(tmp_path)
+    child = FakeProvider([FakeProvider.text("done"), FakeProvider.text("done")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child, tools=[*builtin_tools(), mcp__db__write])
+    session = Session.create(log, str(tmp_path), undo=False)
+    seen = []
+    spec = SubagentSpec("db", "d", "p", ("read_file", "mcp__db__write"))
+    result = await runner.run(parent, session, spec, "x", emit=seen.append)
+    assert result.ok
+    assert [t.name for t in child.requests[0].tools] == ["read_file"]
+    assert any(
+        isinstance(e, Notice)
+        and e.level == "warn"
+        and "mcp__db__write" in e.text
+        and "unsafe = true" in e.text
+        for e in seen
+    )
+    assert log.info(result.session_id).meta["isolation"] == "none"
+
+    unsafe = SubagentSpec("db", "d", "p", ("read_file", "mcp__db__write"), unsafe=True)
+    result = await runner.run(parent, session, unsafe, "x")
+    assert result.ok
+    assert "mcp__db__write" in [t.name for t in child.requests[1].tools]
+    assert log.info(result.session_id).meta["isolation"] == "worktree"
+
+
+async def test_resume_of_a_vanished_profile_is_refused(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("first"), FakeProvider.text("second")])
+    runner = SubagentRunner(
+        {"old": SubagentSpec("old", "d", "p", ("ls",))}, model_for=lambda s: (child, "m")
+    )
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    one = await runner.run(parent, session, "old", "a")
+    log.set_meta(one.session_id, spec=None)  # a session from before meta.spec existed
+    runner.specs.pop("old")
+    two = await runner.run(parent, session, "researcher", "b", resume=one.session_id)
+    assert not two.ok and "subagent profile 'old' no longer exists" in two.error
+
+
+@pytest.mark.parametrize("bad", [{"bogus": 1}, "garbage", {"name": "x", "tools": 5}])
+async def test_resume_with_an_unreadable_assembly_is_an_error(tmp_path, log, bad):
+    child = FakeProvider([FakeProvider.text("first")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    one = await runner.run(parent, session, SubagentSpec("r", "d", "p", ("ls",)), "a")
+    log.set_meta(one.session_id, spec=bad)
+    two = await runner.run(parent, session, "r", "b", resume=one.session_id)
+    assert not two.ok and "stored subagent assembly is unreadable" in two.error
