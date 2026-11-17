@@ -518,6 +518,40 @@ class SubagentRunner:
         resume: str | None = None,
     ) -> SubagentResult:
         """Run subagent ``spec`` (a ready spec or a profile name) on ``task``."""
+        reserved: list[str] = []
+        try:
+            return await self._run(
+                parent,
+                session,
+                spec,
+                task,
+                isolation,
+                emit,
+                cancel,
+                turn_id,
+                dynamic,
+                resume,
+                reserved,
+            )
+        finally:
+            # Only the code that reserved a resumed id releases it (see ``_run``).
+            for child_id in reserved:
+                self._running.discard(child_id)
+
+    async def _run(
+        self,
+        parent,
+        session: Session,
+        spec: str | SubagentSpec,
+        task: str,
+        isolation: str,
+        emit: Callable[[object], None] | None,
+        cancel: asyncio.Event | None,
+        turn_id: str | None,
+        dynamic: bool,
+        resume: str | None,
+        reserved: list[str],
+    ) -> SubagentResult:
         if isinstance(spec, str):
             found = self.specs.get(spec)
             if found is None:
@@ -541,6 +575,9 @@ class SubagentRunner:
                 return SubagentResult(
                     name, False, "", f"subagent session {resume!r} is still running"
                 )
+            # Reserved before the first await, so a parallel resume of it is refused.
+            self._running.add(resume)
+            reserved.append(resume)
             stored = resumed.meta.get("spec")
             spec = (
                 SubagentSpec.from_dict(stored)
@@ -717,15 +754,19 @@ class SubagentRunner:
                 },
             )
             child_session = Session(session.log, child_id, workdir=str(workspace.root), undo=False)
-        # Marked running before any await so a concurrent resume of it is refused.
-        self._running.add(child_id)
-        before = child_session.messages()
-        cost_before = child_session.cost()
-        session.adopt(child_session)
-        watcher = asyncio.create_task(self._watch(cancel, child_session)) if cancel else None
+        # A resumed id was reserved by ``run``; a new one is marked here, before any await.
+        owned = not resume_id
+        if owned:
+            self._running.add(child_id)
+        watcher = None
         ok, error = True, ""
         hit_max_steps = cancelled = False
         try:
+            before = child_session.messages()
+            cost_before = child_session.cost()
+            session.adopt(child_session)
+            if cancel:
+                watcher = asyncio.create_task(self._watch(cancel, child_session))
             # ``aclosing`` so a cancelled parent also closes the child turn (and its tools).
             async with contextlib.aclosing(child.run(child_session, task)) as events:
                 async for event in events:
@@ -746,7 +787,8 @@ class SubagentRunner:
                     elif isinstance(event, Cancelled):
                         ok, error, cancelled = False, "cancelled", True
         finally:
-            self._running.discard(child_id)
+            if owned:
+                self._running.discard(child_id)
             session.release(child_session)
             if watcher:
                 watcher.cancel()

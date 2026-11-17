@@ -825,3 +825,43 @@ async def test_resume_in_a_worktree_continues_the_branch(tmp_path, log):
     assert two.branch == one.branch and two.base == one.base
     assert "a.txt" in two.diffstat and "b.txt" in two.diffstat
     assert not (tmp_path / "a.txt").exists()  # the user's tree is untouched
+
+
+async def test_parallel_resume_of_the_same_session_is_serialised(tmp_path, log):
+    gate = asyncio.Event()
+
+    @tool()
+    async def wait() -> str:
+        """Block until released."""
+        await gate.wait()
+        return "released"
+
+    child = FakeProvider(
+        [
+            FakeProvider.text("first"),
+            FakeProvider.call("wait", {}),
+            FakeProvider.text("second"),
+            FakeProvider.text("third"),
+        ]
+    )
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child, tools=[*builtin_tools(), wait])
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("w", "d", "p", ("wait",))
+    one = await runner.run(parent, session, spec, "start")
+
+    async def resume(text):
+        return await runner.run(parent, session, spec, text, resume=one.session_id)
+
+    pair = asyncio.gather(resume("a"), resume("b"))
+    for _ in range(100):
+        if child.requests and len(child.requests) >= 2:
+            break
+        await asyncio.sleep(0.01)
+    gate.set()
+    results = await pair
+    refused = [r for r in results if not r.ok]
+    assert len(refused) == 1 and "still running" in refused[0].error
+    assert sum(r.ok for r in results) == 1
+    again = await resume("c")  # the id was not leaked
+    assert again.ok
