@@ -12,6 +12,8 @@ from luna_core.providers.fake import FakeProvider
 from luna_core.session import EventLog, Session
 from luna_core.subagents import (
     BUILTIN_SUBAGENTS,
+    CHILD_FORBIDDEN,
+    DynamicSettings,
     SubagentConfigError,
     SubagentRunner,
     SubagentSpec,
@@ -93,8 +95,7 @@ def test_load_subagents_validation(tmp_path):
     with pytest.raises(SubagentConfigError, match="unsafe = true"):
         load_subagents([bad])
     bad.write_text('[subagent.x]\ntools = ["teleport"]\n')
-    with pytest.raises(SubagentConfigError, match="unknown tools"):
-        load_subagents([bad])
+    assert load_subagents([bad])["x"].tools == ("teleport",)
 
 
 async def test_delegation_returns_the_child_answer(tmp_path, log):
@@ -592,3 +593,71 @@ def test_binary_subagent_changes_apply_with_the_hinted_command(tmp_path):
     ).stdout
     subprocess.run(["git", "apply", "--3way", "--binary"], cwd=tmp_path, input=raw, check=True)
     assert (tmp_path / "blob.bin").read_bytes() == bytes(range(256)) * 4
+
+
+def test_spec_round_trips_through_a_dict():
+    spec = SubagentSpec(
+        "mig",
+        "migrations",
+        "p",
+        ("read_file", "mcp__db__query"),
+        "fast",
+        skills=("sql",),
+        context="db is postgres",
+        auto=True,
+        version=3,
+    )
+    data = spec.to_dict()
+    assert data["tools"] == ["read_file", "mcp__db__query"] and data["skills"] == ["sql"]
+    assert SubagentSpec.from_dict(data) == spec
+    # unknown keys (from a newer Luna) are ignored, missing ones take defaults
+    assert SubagentSpec.from_dict({"name": "x", "description": "d", "prompt": "p", "new": 1}) == (
+        SubagentSpec("x", "d", "p")
+    )
+
+
+def test_loader_accepts_mcp_tools_skills_and_context(tmp_path):
+    f = tmp_path / "s.toml"
+    f.write_text(
+        '[subagent.db]\ntools = ["read_file", "mcp__db__query"]\n'
+        'skills = ["sql"]\ncontext = "postgres 16"\nauto = true\nversion = 2\n'
+    )
+    spec = load_subagents([f])["db"]
+    assert spec.tools == ("read_file", "mcp__db__query")
+    assert (spec.skills, spec.context, spec.auto, spec.version) == (
+        ("sql",),
+        "postgres 16",
+        True,
+        2,
+    )
+
+
+def test_loader_rejects_delegation_tools_and_skips_disabled(tmp_path):
+    f = tmp_path / "s.toml"
+    f.write_text('[subagent.x]\ntools = ["read_file", "task"]\n')
+    with pytest.raises(SubagentConfigError, match="cannot use"):
+        load_subagents([f])
+    f.write_text('[subagent.off]\nprompt = "p"\ndisabled = true\n')
+    assert "off" not in load_subagents([f])
+
+
+def test_loader_type_checks_the_new_keys(tmp_path):
+    f = tmp_path / "s.toml"
+    f.write_text('[subagent.x]\nskills = "sql"\n')
+    with pytest.raises(SubagentConfigError, match="skills must be a list of strings"):
+        load_subagents([f])
+    f.write_text('[subagent.x]\nauto = "yes"\n')
+    with pytest.raises(SubagentConfigError, match="auto must be a boolean"):
+        load_subagents([f])
+
+
+def test_dynamic_settings_defaults_and_forbidden_set():
+    assert DynamicSettings() == DynamicSettings(True, False, (), 30)
+    assert CHILD_FORBIDDEN == {
+        "task",
+        "task_status",
+        "task_cancel",
+        "manage_mcp",
+        "manage_skills",
+        "save_skill",
+    }

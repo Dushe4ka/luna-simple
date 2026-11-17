@@ -11,7 +11,7 @@ import subprocess
 import threading
 import tomllib
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +27,10 @@ from luna_core.workspace import Workspace
 READ_ONLY = ("ls", "read_file", "glob", "grep")
 WRITE_TOOLS = ("write_file", "edit_file", "delete", "execute")
 VALID_TOOLS = frozenset((*READ_ONLY, *WRITE_TOOLS, "write_todos"))
+#: Never given to a subagent: no delegation, no extension changes (depth 1).
+CHILD_FORBIDDEN = frozenset(
+    {"task", "task_status", "task_cancel", "manage_mcp", "manage_skills", "save_skill"}
+)
 ISOLATION = ("auto", "none", "worktree")
 _IDENTITY = {
     "GIT_AUTHOR_NAME": "Luna",
@@ -79,11 +83,43 @@ class SubagentSpec:
     isolation: str = "auto"
     max_steps: int = 30
     max_cost: float | None = None
+    skills: tuple[str, ...] = ()
+    context: str = ""
+    auto: bool = False
+    disabled: bool = False
+    version: int = 1
 
     @property
     def writes(self) -> bool:
         """True when it may change files or run commands."""
         return bool(set(self.tools) & set(WRITE_TOOLS)) or self.unsafe
+
+    def to_dict(self) -> dict:
+        """JSON-friendly form (session metadata, the assembly log)."""
+        data = dataclasses.asdict(self)
+        data["tools"] = list(self.tools)
+        data["skills"] = list(self.skills)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping) -> SubagentSpec:
+        """Inverse of :meth:`to_dict`; unknown keys are ignored."""
+        known = {f.name for f in dataclasses.fields(cls)}
+        values = {k: v for k, v in data.items() if k in known}
+        for key in ("tools", "skills"):
+            if key in values:
+                values[key] = tuple(values[key])
+        return cls(**values)
+
+
+@dataclass(frozen=True)
+class DynamicSettings:
+    """``[subagents]``: may the parent assemble subagents, and within which limits."""
+
+    enabled: bool = True
+    allow_write: bool = False
+    models: tuple[str, ...] = ()
+    max_steps: int = 30
 
 
 BUILTIN_SUBAGENTS: dict[str, SubagentSpec] = {
@@ -121,6 +157,10 @@ def _check_types(path: Path, name: str, cfg: dict) -> None:
         "isolation": (str, "a string"),
         "max_steps": (int, "an integer"),
         "max_cost": ((int, float), "a number"),
+        "context": (str, "a string"),
+        "auto": (bool, "a boolean (auto = true or auto = false)"),
+        "disabled": (bool, "a boolean (disabled = true or disabled = false)"),
+        "version": (int, "an integer"),
     }
     for key, (kind, label) in checks.items():
         if key not in cfg:
@@ -136,6 +176,11 @@ def _check_types(path: Path, name: str, cfg: dict) -> None:
     if not isinstance(tools, (list, tuple)) or not all(isinstance(t, str) for t in tools):
         raise SubagentConfigError(
             f"{path}: [subagent.{name}] tools must be a list of strings, got {tools!r}"
+        )
+    skills = cfg.get("skills", [])
+    if not isinstance(skills, (list, tuple)) or not all(isinstance(s, str) for s in skills):
+        raise SubagentConfigError(
+            f"{path}: [subagent.{name}] skills must be a list of strings, got {skills!r}"
         )
 
 
@@ -160,11 +205,11 @@ def load_subagents(
                 raise SubagentConfigError(f"{path}: [subagent.{name}] must be a table")
             _check_types(path, name, cfg)
             tools = tuple(cfg.get("tools", READ_ONLY))
-            unknown = set(tools) - VALID_TOOLS
-            if unknown:
+            forbidden = set(tools) & CHILD_FORBIDDEN
+            if forbidden:
                 raise SubagentConfigError(
-                    f"subagent {name!r}: unknown tools {sorted(unknown)}; "
-                    f"valid: {', '.join(sorted(VALID_TOOLS))}"
+                    f"subagent {name!r} cannot use {sorted(forbidden)}: "
+                    "subagents do not delegate or change extensions"
                 )
             mutating = set(tools) & set(WRITE_TOOLS)
             if mutating and cfg.get("unsafe") is not True:
@@ -182,6 +227,9 @@ def load_subagents(
                 raise SubagentConfigError(
                     f"subagent {name!r}: isolation must be one of {ISOLATION}"
                 )
+            if cfg.get("disabled") is True:
+                specs.pop(name, None)
+                continue
             specs[name] = SubagentSpec(
                 name,
                 str(cfg.get("description", name)),
@@ -192,6 +240,10 @@ def load_subagents(
                 isolation,
                 int(cfg.get("max_steps", 30)),
                 float(cfg["max_cost"]) if "max_cost" in cfg else None,
+                skills=tuple(cfg.get("skills", ())),
+                context=str(cfg.get("context", "")),
+                auto=bool(cfg.get("auto", False)),
+                version=int(cfg.get("version", 1)),
             )
     return specs
 
