@@ -80,6 +80,10 @@ class LunaConfig:
     reasoning: str | None = None
     max_cost: float | None = None
     max_parallel: int = 4
+    subagents_dynamic: bool = True
+    subagents_allow_write: bool = False
+    subagents_models: tuple[str, ...] = ()
+    subagents_max_steps: int = 30
     roles: dict[str, str] = field(default_factory=dict)
     sandbox: str = "local"
     sandbox_image: str = "python:3.12-slim"
@@ -136,6 +140,32 @@ def _apply_toml(data: dict, into: dict, *, project: bool = False) -> None:
             into[key] = agent[key]
     if isinstance(agent.get("extra"), dict) and agent["extra"]:
         into["ignored_extra"] = True
+
+    subagents = data.get("subagents", {})
+    if isinstance(subagents, dict):
+        if project:
+            # A cloned repository may narrow what assembled subagents can do, never widen it.
+            widen = [
+                key
+                for key in ("allow_write", "models")
+                if key in subagents and subagents[key] not in (False, [])
+            ]
+            if widen:
+                into.setdefault("warnings", []).append(
+                    f".luna.toml: [subagents] {', '.join(widen)} ignored: only the user "
+                    "config can widen subagent rights."
+                )
+            if subagents.get("dynamic") is False:
+                into["subagents_dynamic"] = False
+            if subagents.get("allow_write") is False:
+                into["subagents_allow_write"] = False
+            steps = subagents.get("max_steps")
+            if isinstance(steps, int) and not isinstance(steps, bool):
+                into["subagents_max_steps"] = min(steps, into.get("subagents_max_steps", 30))
+        else:
+            for key in ("dynamic", "allow_write", "models", "max_steps"):
+                if key in subagents:
+                    into[f"subagents_{key}"] = subagents[key]
 
     sandbox = data.get("sandbox", {})
     for src, dst in (
@@ -289,6 +319,21 @@ def load_config(
         raise LunaConfigError(
             f"[agent] max_parallel must be an integer >= 1, got {max_parallel!r}."
         )
+    sub_dynamic = merged.get("subagents_dynamic", True)
+    sub_write = merged.get("subagents_allow_write", False)
+    for key, value in (("dynamic", sub_dynamic), ("allow_write", sub_write)):
+        if not isinstance(value, bool):
+            raise LunaConfigError(f"[subagents] {key} must be true or false, got {value!r}.")
+    sub_models = merged.get("subagents_models", ())
+    if not isinstance(sub_models, (list, tuple)) or not all(
+        isinstance(m, str) and m for m in sub_models
+    ):
+        raise LunaConfigError(
+            f"[subagents] models must be a list of model ids, got {sub_models!r}."
+        )
+    sub_steps = merged.get("subagents_max_steps", 30)
+    if isinstance(sub_steps, bool) or not isinstance(sub_steps, int) or sub_steps < 1:
+        raise LunaConfigError(f"[subagents] max_steps must be an integer >= 1, got {sub_steps!r}.")
     max_cost = merged.get("max_cost")
     if max_cost is not None and (
         isinstance(max_cost, bool) or not isinstance(max_cost, (int, float)) or max_cost < 0
@@ -325,6 +370,10 @@ def load_config(
         reasoning=reasoning,
         max_cost=max_cost,
         max_parallel=max_parallel,
+        subagents_dynamic=sub_dynamic,
+        subagents_allow_write=sub_write,
+        subagents_models=tuple(sub_models),
+        subagents_max_steps=sub_steps,
         roles=roles,
         sandbox=sandbox,
         sandbox_image=merged.get("sandbox_image", "python:3.12-slim"),

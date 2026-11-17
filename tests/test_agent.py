@@ -412,3 +412,24 @@ async def test_ollama_style_model_ids_are_not_flagged_as_provider_typos(tmp_path
     bundle = await build_agent(cfg, provider=FakeProvider([]))
     assert bundle.agent.roles.fast == target
     await bundle.aclose()
+
+
+async def test_build_agent_passes_subagent_settings_and_skills(tmp_path, fake_provider):
+    skill = tmp_path / ".luna" / "skills" / "sql"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: sql\ndescription: SQL help\n---\nUse CTEs.\n")
+    config = LunaConfig(
+        workdir=str(tmp_path),
+        provider="anthropic",
+        model="m",
+        subagents_allow_write=True,
+        subagents_max_steps=10,
+    )
+    bundle = await build_agent(config, provider=fake_provider())
+    try:
+        runner = bundle.agent.tools["task"].runner
+        assert runner.dynamic.allow_write and runner.dynamic.max_steps == 10
+        assert "sql" in runner.skill_names()
+        assert runner.skill_loader("sql").strip() == "Use CTEs."
+    finally:
+        await bundle.aclose()

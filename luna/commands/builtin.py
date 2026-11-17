@@ -106,6 +106,15 @@ def _agents(env, arg):
     work = [f"- {r.session_id[:8]} · {r.label} · {r.status} · ${r.cost:.3f}" for r in runs]
     work += [f"- {t.handle} · {t.label} · {t.status}" for t in tasks]
     text = "**Subagents**\n" + "\n".join(lines)
+    task = env.agent.tools.get("task")
+    settings = getattr(getattr(task, "runner", None), "dynamic", None)
+    if settings is not None:
+        mode = (
+            "off"
+            if not settings.enabled
+            else ("may write" if settings.allow_write else "read-only")
+        )
+        text += f"\n\nDynamic subagents: {mode} · max_steps ≤ {settings.max_steps}"
     return CommandResult(
         text=text + "\n\n**Background**\n" + ("\n".join(work) or "(no background work)")
     )

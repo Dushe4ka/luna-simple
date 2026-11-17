@@ -164,7 +164,9 @@ def task_tool(runner: SubagentRunner) -> Tool:
         "Several task calls in one message run in parallel.\n"
         f"Subagents:\n{runner.describe()}\n{dynamic_note}"
     )
-    return Tool("task", description, schema, run, raw=True)
+    built = Tool("task", description, schema, run, raw=True)
+    built.runner = runner  # hosts and tests inspect the bound runner
+    return built
 
 
 def task_status_tool() -> Tool:

@@ -19,7 +19,7 @@ from luna_core.policy import DEFAULT_APPROVAL, Policy, Rules, RulesFileError, ap
 from luna_core.providers.base import Provider
 from luna_core.roles import ROLES, ModelRoles
 from luna_core.sandbox import DockerSandbox, LocalSandbox
-from luna_core.subagents import SubagentRunner, task_tool
+from luna_core.subagents import DynamicSettings, SubagentRunner, task_tool
 from luna_core.tools import builtin_tools
 from luna_core.tools.base import Tool
 from luna_core.tools.tasks import task_cancel_tool, task_status_tool
@@ -182,7 +182,16 @@ async def build_agent(
     )
     try:
         runner = SubagentRunner(
-            load_subagents(str(workdir), on_warn=on_warn), max_parallel=config.max_parallel
+            load_subagents(str(workdir), on_warn=on_warn),
+            max_parallel=config.max_parallel,
+            dynamic=DynamicSettings(
+                enabled=config.subagents_dynamic,
+                allow_write=config.subagents_allow_write,
+                models=config.subagents_models,
+                max_steps=config.subagents_max_steps,
+            ),
+            skill_loader=lambda name: core_skills.load_body(name, skill_dirs(workdir)),
+            skill_names=lambda: [s.name for s in core_skills.discover(skill_dirs(workdir))],
         )
         tools += [task_tool(runner), task_status_tool(), task_cancel_tool()]
         roles = _roles(config, registry)
