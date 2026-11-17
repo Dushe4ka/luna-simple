@@ -127,7 +127,7 @@ def _agents(env, arg):
     agent=True,
 )
 async def _subagents(env, arg):
-    from luna.extensions.autoprofiles import AutoProfiles, open_journal
+    from luna.extensions.autoprofiles import AutoProfiles, open_journal, report_lines
 
     journal = open_journal()
     auto = AutoProfiles(journal)
@@ -139,8 +139,7 @@ async def _subagents(env, arg):
         agent = env.agent
         provider, model = agent.roles.get("fast", agent.provider, agent.model)
         report = await auto.distill(provider, model, allow_write=env.config.subagents_allow_write)
-        journal.drain_notices()
-        return CommandResult(text="\n".join(report.lines()))
+        return CommandResult(text="\n".join(report_lines(journal, report)))
     if cmd in ("undo", "disable", "enable") and name:
         text = (
             auto.undo(name)

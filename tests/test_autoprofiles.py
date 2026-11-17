@@ -411,3 +411,77 @@ async def test_run_counts_for_one_profile_only(auto, journal, tmp_path):
     assert report.rejected == [("second-one", "only 3 runs (needs 5)")]
     names = {r.id: r.profile_name for r in (journal.get(i) for i in ids)}
     assert [names[i] for i in ids] == ["first-one"] * 6 + [None] * 3
+
+
+async def test_manual_user_profile_blocks_a_project_auto_profile(
+    auto, journal, tmp_path, isolated_config_home
+):
+    user = config_dir() / "subagents.toml"
+    user.parent.mkdir(parents=True, exist_ok=True)
+    user.write_text('[subagent.migration-writer]\nprompt = "hand"\n')
+    ids = add_runs(journal, 6, workdir=tmp_path)
+    report = await auto.distill(FakeProvider([reply(ids)]), "fast", allow_write=False)
+    assert report.saved == [] and "hand-written" in report.rejected[0][1]
+    assert not (tmp_path / ".luna" / "subagents.toml").exists()
+
+
+@pytest.mark.parametrize("value", ["subagent = 1\n", "subagent = { x = { prompt = 'p' } }\n"])
+async def test_subagent_key_that_is_not_a_table_is_rejected(auto, journal, tmp_path, value):
+    f = tmp_path / ".luna" / "subagents.toml"
+    f.parent.mkdir()
+    f.write_text(value)
+    ids = add_runs(journal, 6, workdir=tmp_path)
+    report = await auto.distill(FakeProvider([reply(ids)]), "fast", allow_write=False)
+    assert report.saved == []
+    assert "'subagent' must be a table" in report.rejected[0][1]
+    assert f.read_text() == value
+
+
+def static_runs(journal, n, *, workdir, ok, dynamic=False, name="migration-writer"):
+    for i in range(n):
+        journal.record(
+            workdir=str(workdir),
+            parent_session="p",
+            child_session=f"s{i}",
+            base_profile=name,
+            dynamic=dynamic,
+            spec={"tools": []},
+            task="t",
+            ok=ok(i),
+            cancelled=False,
+            hit_max_steps=False,
+            steps=1,
+            cost=0.0,
+        )
+
+
+async def test_enable_after_auto_disable_sticks(auto, journal, tmp_path):
+    ids = add_runs(journal, 5, workdir=tmp_path)
+    await auto.distill(FakeProvider([reply(ids)]), "fast", allow_write=False)
+    static_runs(journal, 5, workdir=tmp_path, ok=lambda i: False)
+    assert auto.check_disable("migration-writer")
+    auto.set_disabled("migration-writer", False, workdir=str(tmp_path))
+    static_runs(journal, 1, workdir=tmp_path, ok=lambda i: True)
+    assert auto.check_disable("migration-writer") is None
+    f = tmp_path / ".luna" / "subagents.toml"
+    assert "disabled" not in table(f, "migration-writer")
+
+
+async def test_dynamic_and_other_project_runs_do_not_disable(auto, journal, tmp_path):
+    ids = add_runs(journal, 5, workdir=tmp_path)
+    await auto.distill(FakeProvider([reply(ids)]), "fast", allow_write=False)
+    static_runs(journal, 5, workdir=tmp_path, ok=lambda i: False, dynamic=True)
+    static_runs(journal, 5, workdir=tmp_path / "elsewhere", ok=lambda i: False)
+    assert auto.check_disable("migration-writer") is None
+
+
+async def test_update_starts_a_fresh_window(auto, journal, clock, tmp_path):
+    ids = add_runs(journal, 5, workdir=tmp_path)
+    await auto.distill(FakeProvider([reply(ids)]), "fast", allow_write=False)
+    static_runs(journal, 4, workdir=tmp_path, ok=lambda i: False)
+    clock.now += HOUR
+    ids = add_runs(journal, 5, workdir=tmp_path)
+    report = await auto.distill(FakeProvider([reply(ids)]), "fast", allow_write=False)
+    assert report.saved  # v2
+    static_runs(journal, 1, workdir=tmp_path, ok=lambda i: False)
+    assert auto.check_disable("migration-writer") is None

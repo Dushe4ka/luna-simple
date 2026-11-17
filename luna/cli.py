@@ -553,8 +553,8 @@ def _run_subagents(argv: list[str]) -> int:
                 allow_write=config.subagents_allow_write,
             )
         )
-        journal.drain_notices()  # printed here; do not repeat them after the next turn
-        print("\n".join(report.lines()))
+        # every queued notice is printed here, so none repeats after the next turn
+        print("\n".join(autoprofiles.report_lines(journal, report)))
         return 0
     if not args.name:
         parser.error(f"{args.cmd} needs a profile name")

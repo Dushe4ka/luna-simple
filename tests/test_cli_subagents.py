@@ -52,3 +52,15 @@ def test_distill_uses_fast_role_and_prints_report(monkeypatch, capsys):
     assert main(["subagents", "distill"]) == 0  # within the hour
     assert "recently" in capsys.readouterr().out
     assert len(provider.requests) == 1
+
+
+def test_distill_shows_notices_queued_earlier_even_when_skipped(monkeypatch, capsys):
+    monkeypatch.setattr(autoprofiles, "fast_target", lambda config: (object(), "fast-m"))
+    journal = open_journal()
+    journal.set_meta("distill_last_ts", repr(__import__("time").time()))  # ran just now
+    journal.push_notice("warn", "Luna отключила профиль `x`: из последних 10 запусков успешны 2")
+    assert main(["subagents", "distill"]) == 0
+    out = capsys.readouterr().out
+    assert "recently" in out
+    assert "Luna отключила профиль `x`" in out
+    assert journal.drain_notices() == []

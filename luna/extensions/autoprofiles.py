@@ -22,6 +22,7 @@ from luna_core.assemblies import AssemblyLog, ProfileVersion, RunRecord
 from luna_core.distill import DistillError, Verdict, check_candidate, propose, should_disable
 from luna_core.subagents import BUILTIN_SUBAGENTS
 from tomlkit.exceptions import ParseError
+from tomlkit.items import Table
 
 from luna.config.config import config_dir
 
@@ -53,10 +54,19 @@ def close_journals() -> None:
 
 
 def deliver_notices(journal: AssemblyLog, emit: Callable[[str, str], None]) -> int:
-    """Hand every queued notice to ``emit(level, text)``; returns how many."""
+    """Hand every queued notice to ``emit(level, text)``; returns how many.
+
+    When ``emit`` raises, the notices it did not take go back to the queue
+    and the error propagates.
+    """
     notices = journal.drain_notices()
-    for level, text in notices:
-        emit(level, text)
+    for i, (level, text) in enumerate(notices):
+        try:
+            emit(level, text)
+        except BaseException:
+            for rest in notices[i:]:
+                journal.push_notice(*rest)
+            raise
     return len(notices)
 
 
@@ -77,6 +87,13 @@ class DistillReport:
         return out or ["no repeating assemblies found"]
 
 
+def report_lines(journal: AssemblyLog, report: DistillReport) -> list[str]:
+    """Return the report plus every other queued notice (all are shown, the queue empties)."""
+    out = report.lines()
+    deliver_notices(journal, lambda level, text: None if text in report.saved else out.append(text))
+    return out
+
+
 class _FileError(Exception):
     """A subagents.toml could not be read or written."""
 
@@ -84,9 +101,13 @@ class _FileError(Exception):
 def _read_doc(path: Path) -> tomlkit.TOMLDocument:
     try:
         text = path.read_text(encoding="utf-8") if path.exists() else ""
-        return tomlkit.parse(text)
+        doc = tomlkit.parse(text)
     except (OSError, UnicodeDecodeError, ParseError) as exc:
         raise _FileError(f"cannot read {path}: {exc}") from exc
+    # profiles are written as [subagent.<name>] tables; anything else is not ours to edit
+    if "subagent" in doc and not isinstance(doc["subagent"], Table):
+        raise _FileError(f"cannot read {path}: 'subagent' must be a table")
+    return doc
 
 
 def _write_doc(path: Path, doc: tomlkit.TOMLDocument) -> None:
@@ -252,9 +273,20 @@ class AutoProfiles:
         return report
 
     def _taken(self, path: Path) -> dict[str, bool]:
+        """Names in use -> True when Luna may overwrite them (auto profiles).
+
+        A project file is loaded after the user file and wins, so an auto
+        profile there would shadow a hand-written user profile: both files
+        count for a project target.
+        """
         taken = {name: False for name in BUILTIN_SUBAGENTS}
-        for name, cfg in _profiles(_read_doc(path)).items():
-            taken[name] = bool(isinstance(cfg, dict) and cfg.get("auto") is True)
+        layers = [self.user_file()]
+        if path != self.user_file():
+            layers.append(path)
+        for layer in layers:
+            for name, cfg in _profiles(_read_doc(layer)).items():
+                auto = isinstance(cfg, dict) and cfg.get("auto") is True
+                taken[name] = taken.get(name, True) and auto
         return taken
 
     def _save(self, verdict: Verdict, path: Path, runs: Mapping[int, RunRecord]) -> None:
@@ -291,7 +323,7 @@ class AutoProfiles:
         current = _plain(_profiles(doc).get(name))
         if not current or current.get("auto") is not True or current.get("disabled") is True:
             return None
-        recent = self._journal.recent_for(name)
+        recent = self._recent_runs(name, path)
         if not should_disable(recent):
             return None
         window = recent[:10]
@@ -313,6 +345,25 @@ class AutoProfiles:
         )
         self._journal.push_notice("warn", text)
         return text
+
+    def _recent_runs(self, name: str, path: Path) -> list[RunRecord]:
+        """Return the runs of the profile as it is now: the auto-disable window.
+
+        Only runs recorded after its latest save / update / enable / undo
+        in ``path`` (an older version's failures do not count against it),
+        only runs of the profile itself (not dynamic assemblies based on
+        it), and for a project profile only runs in that project.
+        """
+        since = next(
+            (
+                v.ts
+                for v in self._journal.versions(name, 200)
+                if v.path == str(path) and v.action != "disable"
+            ),
+            None,
+        )
+        workdir = None if path == self.user_file() else str(path.parent.parent)
+        return self._journal.recent_for(name, after_ts=since, dynamic=False, workdir=workdir)
 
     def set_disabled(self, name: str, disabled: bool, *, workdir: str) -> str:
         """Turn a profile from a subagents.toml off or back on."""
@@ -407,7 +458,16 @@ def make_on_recorded(auto: AutoProfiles, *, fast: tuple[object, str], allow_writ
 def _done(task: asyncio.Task) -> None:
     _TASKS.discard(task)
     if not task.cancelled() and task.exception() is not None:
-        _log.warning("background distill failed: %s", task.exception())
+        exc = task.exception()
+        _log.warning("background distill failed: %s", exc, exc_info=exc)
+
+
+async def stop_background() -> None:
+    """Cancel the running background analyses and wait for them (server shutdown)."""
+    tasks = list(_TASKS)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def fast_target(config) -> tuple[object, str]:
@@ -447,5 +507,7 @@ __all__ = [
     "fast_target",
     "make_on_recorded",
     "open_journal",
+    "report_lines",
+    "stop_background",
     "weekly_distill",
 ]

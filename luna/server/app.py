@@ -139,8 +139,13 @@ def create_app(
         except Exception:  # noqa: BLE001 - the analysis must never fail server startup
             logging.getLogger(__name__).exception("scheduling weekly distill failed")
         yield
-        if weekly is not None and not weekly.done():
+        if weekly is not None:
             weekly.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await weekly
+        from luna.extensions.autoprofiles import stop_background
+
+        await stop_background()
         await shutdown(app)
 
     app = Starlette(

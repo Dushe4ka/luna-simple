@@ -278,13 +278,32 @@ class AssemblyLog:
                 [(profile_name, i) for i in ids],
             )
 
-    def recent_for(self, profile_name: str, limit: int = 10) -> list[RunRecord]:
-        """Return the newest runs that used profile ``profile_name`` as their base."""
-        rows = self._read(
-            f"SELECT {_RUN_COLS} FROM subagent_runs WHERE base_profile = ? "
-            "ORDER BY id DESC LIMIT ?",
-            (profile_name, limit),
-        )
+    def recent_for(
+        self,
+        profile_name: str,
+        limit: int = 10,
+        *,
+        after_ts: float | None = None,
+        dynamic: bool | None = None,
+        workdir: str | None = None,
+    ) -> list[RunRecord]:
+        """Return the newest runs that used profile ``profile_name`` as their base.
+
+        Optional filters: only runs recorded after ``after_ts``, only
+        dynamic (or only non-dynamic) runs, only runs in ``workdir``.
+        """
+        sql = f"SELECT {_RUN_COLS} FROM subagent_runs WHERE base_profile = ?"
+        args: list = [profile_name]
+        if after_ts is not None:
+            sql += " AND ts > ?"
+            args.append(after_ts)
+        if dynamic is not None:
+            sql += " AND dynamic = ?"
+            args.append(int(dynamic))
+        if workdir is not None:
+            sql += " AND workdir = ?"
+            args.append(workdir)
+        rows = self._read(sql + " ORDER BY id DESC LIMIT ?", (*args, limit))
         return [_run(r) for r in rows]
 
     # --- profile versions -------------------------------------------------

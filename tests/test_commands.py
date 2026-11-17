@@ -919,3 +919,14 @@ async def test_repl_theme_with_an_id_applies_it(make_ctx, restore_theme):
     ctx = await make_ctx(input_fn=None)
     await dispatch("/theme daymoon-cb", ctx)
     assert active().id == "daymoon-cb"
+
+
+async def test_subagents_distill_shows_notices_queued_earlier(env):
+    from luna.extensions.autoprofiles import open_journal
+
+    journal = open_journal()
+    journal.push_notice("warn", "Luna отключила профиль `x`: из последних 10 запусков успешны 2")
+    res = await run_line("/subagents distill", env)
+    assert "nothing new in the journal" in res.text
+    assert "Luna отключила профиль `x`" in res.text
+    assert journal.drain_notices() == []
