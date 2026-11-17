@@ -1,8 +1,20 @@
 import pytest
 from luna_core.dynamic import SubagentRequestError, resolve_spec
-from luna_core.subagents import BUILTIN_SUBAGENTS, READ_ONLY, DynamicSettings, SubagentSpec
+from luna_core.loop import Agent
+from luna_core.policy import Policy
+from luna_core.providers.fake import FakeProvider
+from luna_core.session import EventLog, Session
+from luna_core.subagents import (
+    BUILTIN_SUBAGENTS,
+    READ_ONLY,
+    DynamicSettings,
+    SubagentRunner,
+    SubagentSpec,
+)
 from luna_core.tools import builtin_tools
 from luna_core.tools.base import tool
+from luna_core.tools.tasks import task_tool
+from luna_core.workspace import Workspace
 
 
 @tool(mutating=True)
@@ -130,3 +142,79 @@ def test_custom_base_is_kept_as_the_name(parent_tools):
         base, {"context": "c"}, parent_tools=parent_tools, skills=(), settings=DynamicSettings()
     )
     assert spec.name == "db" and spec.tools == ("mcp__db__query",)
+
+
+def agent_with(tmp_path, script, child, **runner_kw):
+    runner = SubagentRunner(
+        dict(BUILTIN_SUBAGENTS), model_for=lambda s: (child, "child"), **runner_kw
+    )
+    ws = Workspace(tmp_path)
+    return Agent(
+        FakeProvider(script),
+        "parent",
+        workspace=ws,
+        tools=[*builtin_tools(), task_tool(runner)],
+        policy=Policy(workspace=ws, yolo=True),
+    )
+
+
+async def run_turn(agent, tmp_path):
+    log = EventLog(tmp_path / "db" / "s.db")
+    session = Session.create(log, str(tmp_path), undo=False)
+    [e async for e in agent.run(session, "go")]
+    return session, log
+
+
+async def test_task_call_assembles_a_dynamic_subagent(tmp_path):
+    child = FakeProvider([FakeProvider.text("done it")])
+    call = {"description": "audit", "prompt": "You audit.", "tools": ["grep"], "model": "fast"}
+    agent = agent_with(
+        tmp_path, [FakeProvider.call("task", call, "t"), FakeProvider.text("ok")], child
+    )
+    session, log = await run_turn(agent, tmp_path)
+    result = session.messages()[2].results[0]
+    assert not result.is_error and "done it" in result.text
+    assert child.requests[0].system.startswith("You audit.")
+    assert [t.name for t in child.requests[0].tools] == ["grep"]
+    assert log.children(session.id)[0].meta["dynamic"] is True
+    log.close()
+
+
+async def test_task_call_with_a_forbidden_tool_is_an_error_for_the_model(tmp_path):
+    call = {"description": "x", "tools": ["task"]}
+    agent = agent_with(
+        tmp_path,
+        [FakeProvider.call("task", call, "t"), FakeProvider.text("ok")],
+        FakeProvider([]),
+    )
+    session, log = await run_turn(agent, tmp_path)
+    result = session.messages()[2].results[0]
+    assert result.is_error and "cannot get" in result.text
+    assert log.children(session.id) == []
+    log.close()
+
+
+async def test_task_call_resume_reaches_the_runner(tmp_path):
+    child = FakeProvider([FakeProvider.text("one"), FakeProvider.text("two")])
+    first = {"description": "a", "subagent_type": "researcher"}
+    agent = agent_with(
+        tmp_path, [FakeProvider.call("task", first, "t1"), FakeProvider.text("ok")], child
+    )
+    session, log = await run_turn(agent, tmp_path)
+    child_id = log.children(session.id)[0].id
+    agent.provider = FakeProvider(
+        [
+            FakeProvider.call("task", {"description": "b", "resume": child_id}, "t2"),
+            FakeProvider.text("ok"),
+        ]
+    )
+    [e async for e in agent.run(session, "again")]
+    result = session.messages()[-2].results[0]
+    assert "two" in result.text and len(log.children(session.id)) == 1
+    log.close()
+
+
+def test_task_schema_lists_the_new_fields():
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS))
+    props = task_tool(runner).spec.parameters["properties"]
+    assert {"prompt", "tools", "skills", "model", "max_steps", "context", "resume"} <= set(props)
