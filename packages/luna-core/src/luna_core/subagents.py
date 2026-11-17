@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import threading
 import tomllib
@@ -15,6 +17,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from luna_core.assemblies import AssemblyLog, RunRecord
 from luna_core.context import build_system_prompt
 from luna_core.errors import LunaCoreError
 from luna_core.events import (
@@ -33,6 +36,8 @@ from luna_core.undo import _snapshot_tree
 from luna_core.workspace import Workspace
 
 READ_ONLY = ("ls", "read_file", "glob", "grep")
+_log = logging.getLogger(__name__)
+
 WRITE_TOOLS = ("write_file", "edit_file", "delete", "execute")
 VALID_TOOLS = frozenset((*READ_ONLY, *WRITE_TOOLS, "write_todos"))
 #: Never given to a subagent: no delegation, no extension changes (depth 1).
@@ -514,6 +519,8 @@ class SubagentRunner:
     dynamic: DynamicSettings = field(default_factory=DynamicSettings)
     skill_loader: Callable[[str], str] | None = None
     skill_names: Callable[[], Collection[str]] | None = None
+    journal: AssemblyLog | None = None
+    on_recorded: Callable[[RunRecord, Session], None] | None = None
     _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
     _running: set[str] = field(default_factory=set, init=False, repr=False)
 
@@ -621,7 +628,7 @@ class SubagentRunner:
         """Run subagent ``spec`` (a ready spec or a profile name) on ``task``."""
         reserved: list[str] = []
         try:
-            return await self._run(
+            result = await self._run(
                 parent,
                 session,
                 spec,
@@ -634,10 +641,42 @@ class SubagentRunner:
                 resume,
                 reserved,
             )
+            self._journal(parent, session, task, result)
+            return result
         finally:
             # Only the code that reserved a resumed id releases it (see ``_run``).
             for child_id in reserved:
                 self._running.discard(child_id)
+
+    def _journal(self, parent, session: Session, task: str, result: SubagentResult) -> None:
+        """Record a run that actually started; never let the journal break the run."""
+        if self.journal is None or not result.session_id or result.spec is None:
+            return
+        spec = result.spec
+        try:
+            record = self.journal.record(
+                workdir=session.workdir,
+                parent_session=session.id,
+                child_session=result.session_id,
+                base_profile=spec.name,
+                dynamic=result.dynamic,
+                spec=spec.to_dict(),
+                task=task,
+                ok=result.ok,
+                cancelled=result.cancelled,
+                hit_max_steps=result.hit_max_steps,
+                steps=result.steps,
+                cost=result.cost,
+                mutating=[t for t in spec.tools if t in WRITE_TOOLS or _mutating(parent, t)],
+            )
+        except (sqlite3.Error, OSError) as exc:
+            _log.warning("subagent journal write failed: %s", exc)
+            return
+        if self.on_recorded is not None:
+            try:
+                self.on_recorded(record, session)
+            except Exception:  # noqa: BLE001 - a journal hook must never fail a run
+                _log.exception("on_recorded failed")
 
     async def _run(
         self,

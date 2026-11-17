@@ -30,6 +30,9 @@ def isolated_config_home(tmp_path_factory, monkeypatch):
     for log in store._LOGS.values():
         log.close()
     store._LOGS.clear()
+    from luna.extensions.autoprofiles import close_journals
+
+    close_journals()
     return home / ".config"
 
 

@@ -25,6 +25,8 @@
   - `shell.py` — единый запуск командной строки: `sh` на POSIX, Git Bash на Windows
     (`find_shell`, `run_sync`, `kill_tree`, `ensure_git_on_path`); `LUNA_GIT_BASH_PATH`
   - `paths.py` — `user_config_dir()`: `XDG_CONFIG_HOME` → `%APPDATA%\luna` → `~/.config/luna`
+  - `assemblies.py` — журнал сборок динамических субагентов (`sessions.db`)
+  - `distill.py` — анализ журнала и проверка кандидатов в профили кодом
   - `fsperm.py` — `restrict(fd)`: права 0600 на POSIX, на Windows ничего не делает
 - `scripts/` — установщики и CI
   - `install.sh` / `install.ps1` — установка одной строкой (uv + `uv tool install`);
@@ -49,6 +51,8 @@
   - `verify.py` — verify-команда
 - `luna/extensions/` — подключаемые возможности
   - `subagents.py` — встроенные субагенты + из `subagents.toml`
+  - `autoprofiles.py` — автопрофили: сохранение, версии, откат, автоотключение,
+    часовой лимит; `luna subagents` / `/subagents`
   - `extension_tools.py` — инструменты агента `manage_mcp` / `manage_skills` /
     `save_skill`
   - `mcp.py` — чтение/трансляция `mcp.json`; обнаружение MCP-инструментов

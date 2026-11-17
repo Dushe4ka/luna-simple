@@ -1,6 +1,7 @@
 """luna-core: an async agent runtime and SDK (tools, sessions, providers, approvals, subagents)."""
 
 from luna_core import providers
+from luna_core.assemblies import AssemblyLog, RunRecord
 from luna_core.background import AgentManager, BackgroundTasks
 from luna_core.compaction import Compactor
 from luna_core.dynamic import resolve_spec
@@ -39,11 +40,13 @@ from luna_core.workspace import Workspace
 __version__ = "0.1.0"
 
 __all__ = [
-    "Agent", "AgentManager", "ApprovalRequest", "BackgroundDone", "BackgroundTasks", "Cancelled",
+    "Agent", "AgentManager", "ApprovalRequest", "AssemblyLog", "BackgroundDone", "BackgroundTasks",
+    "Cancelled",
     "Compacted", "Compactor", "Decision", "DockerSandbox", "DynamicSettings", "EventLog",
     "HookResult", "Hooks",
     "Image", "LocalSandbox", "LunaCoreError", "Message", "ModelRoles", "NeedsApproval", "Notice",
-    "PathLocks", "Policy", "ProviderError", "ReloadRequested", "Rules", "Session", "SideAnswer",
+    "PathLocks", "Policy", "ProviderError", "ReloadRequested", "Rules", "RunRecord", "Session",
+    "SideAnswer",
     "SubagentRunner", "SubagentSpec", "Text", "TextDelta", "Thinking", "ThinkingDelta",
     "TodosUpdated", "Tool", "ToolCall", "ToolContext", "ToolError", "ToolFinished", "ToolOutput",
     "ToolResult", "ToolStarted", "TurnDone", "TurnError", "TurnStarted", "Usage", "UsageUpdate",

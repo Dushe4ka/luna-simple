@@ -10,11 +10,13 @@ Approvals are a plain JSON call (``POST /approve``); the open stream continues.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
 
 from luna_core.errors import LunaCoreError
+from luna_core.events import Notice, TurnDone, TurnError
 from luna_core.messages import Image, message_from_dict
 from luna_core.policy import Decision
 from luna_core.tools.base import args_preview
@@ -37,6 +39,8 @@ _MESSAGE_TYPES = ("user", "assistant", "tool_results")
 RUN_DONE = "run_done"
 #: History notice for a turn that ended with Cancelled (same text as the live one).
 CANCELLED_TEXT = "прервано"
+#: Log record of a queued Luna notice (auto-profiles) handed to this session.
+LUNA_NOTICE = "luna_notice"
 
 
 def _sse(obj: dict) -> dict:
@@ -90,8 +94,11 @@ async def _start(
         if not runtime.session.title:
             runtime.session.log.set_title(session_id, make_title(prepared.title_line))
         try:
+            # only a client-streamed turn takes the notices: a background run
+            # nobody watches leaves them for the next one the user sees
+            agent = _WithNotices(bundle.agent) if origin == "message" else bundle.agent
             info = request.app.state.manager.start(
-                bundle.agent,
+                agent,
                 runtime.session,
                 prepared.text,
                 images=images,
@@ -101,6 +108,49 @@ async def _start(
         except LunaCoreError:
             return JSONResponse({"error": "session_busy"}, status_code=409)
     return runtime, info
+
+
+def _take_notices(session) -> list[Notice]:
+    """Move queued Luna notices into ``session``'s log; return them as events.
+
+    A notice leaves the queue only once its log record is written, so it
+    is never lost: the live stream shows it and the history shows it
+    again when the session is reopened.
+    """
+    from luna.extensions.autoprofiles import deliver_notices, open_journal
+
+    taken: list[Notice] = []
+
+    def emit(level: str, text: str) -> None:
+        session.append(LUNA_NOTICE, {"level": level, "text": text})
+        taken.append(Notice(level, text))
+
+    try:
+        deliver_notices(open_journal(), emit)
+    except Exception:  # noqa: BLE001 - notices must never break a turn
+        _log.exception("delivering notices failed")
+    return taken
+
+
+class _WithNotices:
+    """An agent whose streamed turns end with the queued Luna notices.
+
+    The notices go out *before* the turn's final event, so the client's
+    stream (which ends at that event) still shows them.
+    """
+
+    def __init__(self, agent) -> None:
+        self._agent = agent
+
+    async def run(self, session, text: str, *, images=()):
+        """Run ``agent.run`` and insert the notices before ``TurnDone``/``TurnError``."""
+        turn = self._agent.run(session, text, images=images)
+        async with contextlib.aclosing(turn) as events:
+            async for event in events:
+                if isinstance(event, (TurnDone, TurnError)):
+                    for notice in await asyncio.to_thread(_take_notices, session):
+                        yield notice
+                yield event
 
 
 def closing_event(info, events: list[dict]) -> dict | None:
@@ -315,6 +365,11 @@ def history_entries(records) -> list[dict]:
     for rec in records:
         if rec.type == "turn_started":
             turn = rec.payload["turn_id"]
+        if rec.type == LUNA_NOTICE:  # shown even if its turn was undone
+            entries.append(
+                {"role": "notice", "level": rec.payload["level"], "text": rec.payload["text"]}
+            )
+            continue
         if turn in hidden:
             continue
         if rec.type == "approval":

@@ -329,6 +329,17 @@ async def _rebuild_bundle(ctx: CommandContext, console: Console) -> None:
     console.print("[luna.muted]auto-reloaded — new capabilities are live[/]")
 
 
+def _print_notices(console: Console) -> None:
+    """Print queued auto-profile notices in the REPL's notice style."""
+    from luna.extensions.autoprofiles import deliver_notices, open_journal
+
+    def emit(level: str, text: str) -> None:
+        console.print(Text(text, style=_NOTICE_STYLE.get(level, "")))
+
+    with contextlib.suppress(Exception):
+        deliver_notices(open_journal(), emit)
+
+
 async def run_repl(
     bundle,
     *,
@@ -368,6 +379,7 @@ async def run_repl(
     )
     if session.has_user_messages:
         print_recap(session, console)
+    _print_notices(console)
     while True:
         try:
             label = "luna (plan) › " if plan_state[0] else "luna › "
@@ -413,5 +425,6 @@ async def run_repl(
                 f"[dim]{result.usage.input} in · {result.usage.output} out{cost}[/]",
                 highlight=False,
             )
+        _print_notices(console)
         if (result.reload or reload_after) and rebuild is not None:
             await _rebuild_bundle(ctx, console)

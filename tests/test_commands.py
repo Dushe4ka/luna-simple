@@ -520,6 +520,16 @@ async def test_agents_lists_subagents_and_runs(env):
     assert "(no background work)" in res.text
 
 
+async def test_subagents_command_history_and_distill(env):
+    res = await run_line("/subagents", env)
+    assert "no profile changes yet" in res.text
+    res = await run_line("/subagents distill", env)
+    assert "nothing new in the journal" in res.text
+    assert env.agent.provider.requests == []
+    res = await run_line("/subagents undo", env)
+    assert res.notices[0].level == "error"
+
+
 async def test_tools_lists_real_tools(env):
     res = await run_line("/tools", env)
     assert "write_todos" in res.text and "task_status" in res.text
@@ -909,3 +919,14 @@ async def test_repl_theme_with_an_id_applies_it(make_ctx, restore_theme):
     ctx = await make_ctx(input_fn=None)
     await dispatch("/theme daymoon-cb", ctx)
     assert active().id == "daymoon-cb"
+
+
+async def test_subagents_distill_shows_notices_queued_earlier(env):
+    from luna.extensions.autoprofiles import open_journal
+
+    journal = open_journal()
+    journal.push_notice("warn", "Luna отключила профиль `x`: из последних 10 запусков успешны 2")
+    res = await run_line("/subagents distill", env)
+    assert "nothing new in the journal" in res.text
+    assert "Luna отключила профиль `x`" in res.text
+    assert journal.drain_notices() == []

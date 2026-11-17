@@ -120,6 +120,37 @@ def _agents(env, arg):
     )
 
 
+@register(
+    "/subagents",
+    "auto-profiles: distill | history | undo|disable|enable <name>",
+    "mutate",
+    agent=True,
+)
+async def _subagents(env, arg):
+    from luna.extensions.autoprofiles import AutoProfiles, open_journal, report_lines
+
+    journal = open_journal()
+    auto = AutoProfiles(journal)
+    cmd, _, name = (arg or "").strip().partition(" ")
+    cmd, name = cmd or "history", name.strip()
+    if cmd == "history":
+        return CommandResult(text="\n".join(auto.history(name or None)) or "no profile changes yet")
+    if cmd == "distill":
+        agent = env.agent
+        provider, model = agent.roles.get("fast", agent.provider, agent.model)
+        report = await auto.distill(provider, model, allow_write=env.config.subagents_allow_write)
+        return CommandResult(text="\n".join(report_lines(journal, report)))
+    if cmd in ("undo", "disable", "enable") and name:
+        text = (
+            auto.undo(name)
+            if cmd == "undo"
+            else auto.set_disabled(name, cmd == "disable", workdir=env.workdir)
+        )
+        return CommandResult(text=text)
+    usage = "usage: /subagents [distill|history [name]|undo|disable|enable <name>]"
+    return CommandResult(notices=[Notice("error", usage)])
+
+
 register_ui("/sessions", "list past sessions for this directory")
 register_ui("/resume", "resume a past session")
 

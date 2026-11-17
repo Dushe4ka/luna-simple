@@ -1,0 +1,210 @@
+"""Wiring: runs reach the journal, triggers fire, notices are delivered."""
+
+import asyncio
+
+from luna_core.assemblies import AssemblyLog
+from luna_core.providers.fake import FakeProvider
+
+from luna.extensions import autoprofiles
+from luna.extensions.autoprofiles import AutoProfiles, make_on_recorded
+
+
+async def test_build_agent_journals_subagent_runs(tmp_path, monkeypatch):
+    from luna.config.config import LunaConfig
+    from luna.core.agent import build_agent
+
+    provider = FakeProvider(
+        [
+            FakeProvider.call("task", {"subagent_type": "researcher", "description": "look"}),
+            FakeProvider.text("child done"),
+            FakeProvider.text("parent done"),
+        ]
+    )
+    bundle = await build_agent(LunaConfig(workdir=str(tmp_path)), provider=provider)
+    runner = bundle.agent.tools["task"].runner
+    assert runner.journal is autoprofiles.open_journal()
+    assert runner.on_recorded is not None
+
+
+async def test_on_recorded_starts_one_background_distill(tmp_path, monkeypatch):
+    journal = AssemblyLog(tmp_path / "s.db")
+    auto = AutoProfiles(journal)
+    calls = []
+
+    async def fake_distill(provider, model, *, allow_write):
+        calls.append((model, allow_write))
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(auto, "distill", fake_distill)
+    monkeypatch.setattr(autoprofiles, "EVERY", 2)
+    hook = make_on_recorded(auto, fast=(object(), "fast-model"), allow_write=False)
+    for i in range(3):
+        rec = journal.record(
+            workdir="/w",
+            parent_session="p",
+            child_session=f"c{i}",
+            base_profile="gp",
+            dynamic=True,
+            spec={},
+            task="t",
+            ok=True,
+            cancelled=False,
+            hit_max_steps=False,
+            steps=1,
+            cost=0.0,
+        )
+        hook(rec, None)
+    await asyncio.sleep(0.01)
+    assert calls == [("fast-model", False)]  # one live task at a time
+    journal.close()
+
+
+async def test_on_recorded_checks_auto_disable(tmp_path, monkeypatch):
+    journal = AssemblyLog(tmp_path / "s.db")
+    auto = AutoProfiles(journal)
+    seen = []
+    monkeypatch.setattr(auto, "check_disable", lambda name: seen.append(name))
+    journal.add_version(
+        name="mw",
+        path=str(tmp_path / "x.toml"),
+        action="save",
+        version=1,
+        spec={},
+        prev=None,
+    )
+    hook = make_on_recorded(auto, fast=(object(), "m"), allow_write=False)
+    rec = journal.record(
+        workdir="/w",
+        parent_session="p",
+        child_session="c",
+        base_profile="mw",
+        dynamic=False,
+        spec={},
+        task="t",
+        ok=False,
+        cancelled=False,
+        hit_max_steps=False,
+        steps=1,
+        cost=0.0,
+    )
+    hook(rec, None)
+    other = journal.record(
+        workdir="/w",
+        parent_session="p",
+        child_session="d",
+        base_profile="researcher",
+        dynamic=False,
+        spec={},
+        task="t",
+        ok=False,
+        cancelled=False,
+        hit_max_steps=False,
+        steps=1,
+        cost=0.0,
+    )
+    hook(other, None)
+    assert seen == ["mw"]
+    journal.close()
+
+
+async def test_streamed_turn_shows_queued_notices_before_turn_done(tmp_path):
+    from tests.server_helpers import client, make_app, turn
+
+    journal = autoprofiles.open_journal()
+    journal.push_notice("warn", "Luna отключила профиль `x`: из последних 10 запусков успешны 2")
+    app = make_app()
+    async with client(app) as c:
+        _resp, events = await turn(c, "s1", tmp_path, "hi")
+        await asyncio.gather(*app.state.finishing)
+        history = (await c.get("/sessions/s1/messages", params={"workdir": str(tmp_path)})).json()[
+            "messages"
+        ]
+    kinds = [e["event"] for e in events]
+    notice = {
+        "event": "notice",
+        "level": "warn",
+        "text": "Luna отключила профиль `x`: из последних 10 запусков успешны 2",
+    }
+    assert {k: v for k, v in events[kinds.index("turn_done") - 1].items() if k != "index"} == (
+        notice
+    )
+    assert journal.drain_notices() == []  # handed over exactly once
+    # persisted in the session log: shown again when the session is reopened
+    assert history[-1] == {"role": "notice", "level": "warn", "text": notice["text"]}
+
+
+async def test_background_run_leaves_notices_for_a_watched_turn(tmp_path):
+    from tests.server_helpers import client, make_app
+
+    journal = autoprofiles.open_journal()
+    journal.push_notice("info", "Luna сохранила профиль `x` (5/5 успешно)")
+    app = make_app()
+    async with client(app) as c:
+        await c.post("/sessions/b1/background", json={"workdir": str(tmp_path), "content": "go"})
+        await app.state.manager.wait("b1")
+        await asyncio.gather(*app.state.finishing)
+    assert journal.drain_notices() == [("info", "Luna сохранила профиль `x` (5/5 успешно)")]
+
+
+def test_deliver_notices_requeues_what_emit_did_not_take(tmp_path):
+    import pytest
+
+    journal = AssemblyLog(tmp_path / "s.db")
+    for text in ("one", "two", "three"):
+        journal.push_notice("info", text)
+    shown = []
+
+    def emit(level, text):
+        if text == "two":
+            raise OSError("disk full")
+        shown.append(text)
+
+    with pytest.raises(OSError):
+        autoprofiles.deliver_notices(journal, emit)
+    assert shown == ["one"]
+    assert journal.drain_notices() == [("info", "two"), ("info", "three")]
+    journal.close()
+
+
+async def test_weekly_distill_skips_without_records(monkeypatch):
+    from luna.config.config import LunaConfig
+
+    called = []
+    monkeypatch.setattr(AutoProfiles, "distill", lambda *a, **k: called.append(1))
+    await autoprofiles.weekly_distill(LunaConfig())
+    assert called == []
+
+
+async def test_server_shutdown_stops_weekly_and_background_distills(monkeypatch):
+    from tests.server_helpers import make_app
+
+    started = asyncio.Event()
+
+    async def forever(config=None):
+        started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(autoprofiles, "weekly_distill", forever)
+    app = make_app()
+    async with app.router.lifespan_context(app):
+        await started.wait()
+        weekly = next(t for t in asyncio.all_tasks() if t.get_coro().__name__ == "forever")
+        distill = asyncio.get_running_loop().create_task(forever())
+        autoprofiles._TASKS.add(distill)
+        distill.add_done_callback(autoprofiles._done)
+    assert weekly.done() and distill.done()
+    assert not autoprofiles._TASKS
+
+
+async def test_failed_background_distill_logs_the_traceback(caplog):
+    async def boom():
+        raise RuntimeError("bad reply")
+
+    task = asyncio.get_running_loop().create_task(boom())
+    autoprofiles._TASKS.add(task)
+    task.add_done_callback(autoprofiles._done)
+    with caplog.at_level("WARNING", logger="luna.extensions.autoprofiles"):
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+    record = next(r for r in caplog.records if "background distill failed" in r.message)
+    assert record.exc_info and record.exc_info[0] is RuntimeError

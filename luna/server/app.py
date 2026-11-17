@@ -130,7 +130,22 @@ def create_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
+        weekly = None
+        try:
+            from luna.config.config import load_config
+            from luna.extensions.autoprofiles import weekly_distill
+
+            weekly = asyncio.get_running_loop().create_task(weekly_distill(load_config()))
+        except Exception:  # noqa: BLE001 - the analysis must never fail server startup
+            logging.getLogger(__name__).exception("scheduling weekly distill failed")
         yield
+        if weekly is not None:
+            weekly.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await weekly
+        from luna.extensions.autoprofiles import stop_background
+
+        await stop_background()
         await shutdown(app)
 
     app = Starlette(

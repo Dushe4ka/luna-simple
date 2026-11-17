@@ -176,7 +176,8 @@ of the result). A `"notice"` entry is either `"прервано"` (level `dim`, 
 a turn ended with `cancelled`) or a run's completion notice, logged when the
 run finished with no client attached (a background run, or a turn whose client
 disconnected), so a client reopening the session sees it after the finished
-transcript. The whole conversation is shown — compaction only shortens the
+transcript, or a Luna notice (auto-profiles: a profile saved or turned off)
+that a streamed turn delivered — shown even when that turn was undone. The whole conversation is shown — compaction only shortens the
 model's context — except undone turns. An id the server has never seen is created (empty) in that `workdir`.
 
 ```json
@@ -559,6 +560,13 @@ The agent's plan (as written by its `write_todos` tool) changed. Fields:
 A short status line for the user (not part of the transcript). Fields:
 `level` (str, one of `"dim"`, `"info"`, `"ok"`, `"warn"`, `"error"`),
 `text` (str).
+
+Luna notices queued for the user (auto-profiles: a profile saved or turned
+off, possibly by another session or a background analysis) are sent by the
+next turn started with `POST /messages`, as `notice` events right before its
+`turn_done` / `error`; each is sent once and also logged, so
+`GET /sessions/{id}/messages` lists it again. A run started with
+`POST /background` leaves them queued.
 
 ```json
 {"event": "notice", "level": "info", "text": "note"}
