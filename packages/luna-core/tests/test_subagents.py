@@ -747,3 +747,81 @@ async def test_hitting_max_steps_is_reported(tmp_path, log):
     session = Session.create(log, str(tmp_path), undo=False)
     result = await runner.run(parent, session, spec, "x")
     assert result.hit_max_steps and result.steps == 1
+
+
+async def test_resume_continues_the_same_conversation(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("first"), FakeProvider.text("second")])
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS), model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("researcher", "d", "Custom role.", ("ls",))
+    one = await runner.run(parent, session, spec, "part one", dynamic=True)
+    assert "pass it as resume" in one.render() and one.session_id in one.render()
+    two = await runner.run(parent, session, "reviewer", "part two", resume=one.session_id)
+    assert two.ok and two.text == "second" and two.session_id == one.session_id
+    assert two.dynamic and two.steps == 1
+    # the resumed turn saw the first exchange and kept the original assembly
+    request = child.requests[1]
+    assert [m.text for m in request.messages if m.role == "user"] == ["part one", "part two"]
+    assert request.system.startswith("Custom role.")
+    assert len(log.children(session.id)) == 1
+
+
+async def test_resume_refuses_foreign_and_unknown_sessions(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("a")])
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS), model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    mine = Session.create(log, str(tmp_path), undo=False)
+    other = Session.create(log, str(tmp_path), undo=False)
+    done = await runner.run(parent, other, "researcher", "x")
+    for bad in (done.session_id, other.id, "nope"):
+        result = await runner.run(parent, mine, "researcher", "y", resume=bad)
+        assert not result.ok and "no subagent session" in result.error
+
+
+async def test_resume_of_a_running_subagent_is_refused(tmp_path, log):
+    gate = asyncio.Event()
+
+    @tool()
+    async def wait() -> str:
+        """Block until released."""
+        await gate.wait()
+        return "released"
+
+    child = FakeProvider([FakeProvider.call("wait", {}), FakeProvider.text("done")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child, tools=[*builtin_tools(), wait])
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("w", "d", "p", ("wait",))
+    first = asyncio.create_task(runner.run(parent, session, spec, "go"))
+    for _ in range(100):
+        if log.children(session.id):
+            break
+        await asyncio.sleep(0.01)
+    child_id = log.children(session.id)[0].id
+    refused = await runner.run(parent, session, spec, "again", resume=child_id)
+    assert not refused.ok and "still running" in refused.error
+    gate.set()
+    assert (await first).ok
+
+
+async def test_resume_in_a_worktree_continues_the_branch(tmp_path, log):
+    init_repo(tmp_path)
+    child = FakeProvider(
+        [
+            FakeProvider.call("write_file", {"file_path": "a.txt", "content": "one\n"}),
+            FakeProvider.text("wrote a"),
+            FakeProvider.call("write_file", {"file_path": "b.txt", "content": "two\n"}),
+            FakeProvider.text("wrote b"),
+        ]
+    )
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS), model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    one = await runner.run(parent, session, "general-purpose", "a", isolation="worktree")
+    two = await runner.run(
+        parent, session, "general-purpose", "b", isolation="worktree", resume=one.session_id
+    )
+    assert two.branch == one.branch and two.base == one.base
+    assert "a.txt" in two.diffstat and "b.txt" in two.diffstat
+    assert not (tmp_path / "a.txt").exists()  # the user's tree is untouched

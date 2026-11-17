@@ -28,7 +28,7 @@ from luna_core.events import (
 from luna_core.filelock import file_lock
 from luna_core.loop import Agent
 from luna_core.roles import ROLES
-from luna_core.session import Session
+from luna_core.session import Session, SessionInfo
 from luna_core.undo import _snapshot_tree
 from luna_core.workspace import Workspace
 
@@ -281,14 +281,18 @@ def _git_toplevel(root: Path) -> Path | None:
     return Path(proc.stdout.strip()).resolve()
 
 
-def create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
+def create_worktree(
+    root: Path, sub_id: str, *, branch: str | None = None, base: str | None = None
+) -> tuple[Path, str, str]:
     """Create a worktree on a new branch from the current working tree (uncommitted edits too).
 
+    With an existing ``branch`` (a resumed subagent) the worktree checks that branch
+    out instead and ``base`` is returned unchanged, so diffs cover all of its work.
     The base snapshot includes untracked, non-ignored files (``.luna/undo`` and
     ``.luna/worktrees`` excluded). ``root`` must be the git top level.
     """
     with _worktree_lock(root):
-        return _create_worktree(root, sub_id)
+        return _create_worktree(root, sub_id, branch=branch, base=base)
 
 
 def _prune_worktrees(root: Path) -> None:
@@ -308,8 +312,17 @@ def _prune_worktrees(root: Path) -> None:
             shutil.rmtree(entry, ignore_errors=True)
 
 
-def _create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
+def _create_worktree(
+    root: Path, sub_id: str, *, branch: str | None = None, base: str | None = None
+) -> tuple[Path, str, str]:
     _prune_worktrees(root)
+    path = root / ".luna" / "worktrees" / sub_id
+    if branch and base and _git(root, "rev-parse", "--verify", "-q", branch).returncode == 0:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        added = _git(root, "worktree", "add", "-q", str(path), branch)
+        if added.returncode != 0:
+            raise LunaCoreError(f"git worktree add failed: {added.stderr.strip()}")
+        return path, branch, base
     tree = _snapshot_tree(root)
     if tree is None:
         raise LunaCoreError("could not snapshot the working tree for the subagent")
@@ -327,7 +340,6 @@ def _create_worktree(root: Path, sub_id: str) -> tuple[Path, str, str]:
         raise LunaCoreError(f"git commit-tree failed: {commit.stderr.strip()}")
     base = commit.stdout.strip()
     branch = f"luna/sub/{sub_id}"
-    path = root / ".luna" / "worktrees" / sub_id
     path.parent.mkdir(parents=True, exist_ok=True)
     added = _git(root, "worktree", "add", "-q", "-b", branch, str(path), base)
     if added.returncode != 0:
@@ -422,6 +434,11 @@ class SubagentResult:
                 f"git diff --binary {self.base} {self.branch} | git apply --3way --binary "
                 "(--3way also stages the applied changes in the index)]"
             )
+        if self.session_id:
+            head += (
+                f"\n\n[subagent session {self.session_id}; "
+                "pass it as resume to continue this subagent]"
+            )
         return head
 
 
@@ -459,6 +476,7 @@ class SubagentRunner:
     skill_loader: Callable[[str], str] | None = None
     skill_names: Callable[[], Collection[str]] | None = None
     _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
+    _running: set[str] = field(default_factory=set, init=False, repr=False)
 
     def describe(self) -> str:
         """``- name: description`` lines for the tool description."""
@@ -508,6 +526,29 @@ class SubagentRunner:
                 )
             spec = found
         name = spec.name
+        resumed: SessionInfo | None = None
+        if resume:
+            resumed = session.log.info(resume)
+            if (
+                resumed is None
+                or resumed.parent_id != session.id
+                or resumed.meta.get("kind") != "subagent"
+            ):
+                return SubagentResult(
+                    name, False, "", f"no subagent session {resume!r} of this session to resume"
+                )
+            if resume in self._running:
+                return SubagentResult(
+                    name, False, "", f"subagent session {resume!r} is still running"
+                )
+            stored = resumed.meta.get("spec")
+            spec = (
+                SubagentSpec.from_dict(stored)
+                if stored
+                else self.specs.get(resumed.meta.get("agent", ""), spec)
+            )
+            name = spec.name
+            dynamic = bool(resumed.meta.get("dynamic"))
         try:
             skill_bodies = self._skill_bodies(spec)
         except Exception as exc:  # noqa: BLE001 - any loader failure is the parent's to see
@@ -544,7 +585,13 @@ class SubagentRunner:
             try:
                 if use_worktree:
                     created = asyncio.ensure_future(
-                        asyncio.to_thread(create_worktree, root, sub_id)
+                        asyncio.to_thread(
+                            create_worktree,
+                            root,
+                            sub_id,
+                            branch=resumed.meta.get("branch") if resumed else None,
+                            base=resumed.meta.get("base") if resumed else None,
+                        )
                     )
                     worktree = await asyncio.shield(created)
                     workspace = Workspace(worktree[0])
@@ -562,6 +609,7 @@ class SubagentRunner:
                     turn_id,
                     skill_bodies,
                     dynamic,
+                    resume,
                 )
             except BaseException:
                 # Cancelled or crashed (even mid-creation): still commit what the child did
@@ -584,6 +632,7 @@ class SubagentRunner:
                     ok, error = False, str(exc)
                 if diffstat:
                     branch, base = worktree[1], worktree[2]
+                    session.log.set_meta(out.child_id, branch=branch, base=base)
             return SubagentResult(
                 name,
                 ok,
@@ -622,6 +671,7 @@ class SubagentRunner:
         turn_id: str | None,
         skill_bodies: list[tuple[str, str]],
         dynamic: bool,
+        resume_id: str | None = None,
     ) -> _Outcome:
         """Run the child turn to the end and report what happened."""
         name = spec.name
@@ -651,18 +701,26 @@ class SubagentRunner:
             model_overrides=parent.model_overrides,
             name=name,
         )
-        child_id = session.log.create(
-            str(workspace.root),
-            title=f"{name}: {task[:60]}",
-            parent_id=session.id,
-            meta={
-                "kind": "subagent",
-                "agent": name,
-                "dynamic": dynamic,
-                "spec": spec.to_dict(),
-            },
-        )
-        child_session = Session(session.log, child_id, workdir=str(workspace.root), undo=False)
+        if resume_id:
+            child_id = resume_id
+            child_session = Session.open(session.log, child_id, undo=False)
+        else:
+            child_id = session.log.create(
+                str(workspace.root),
+                title=f"{name}: {task[:60]}",
+                parent_id=session.id,
+                meta={
+                    "kind": "subagent",
+                    "agent": name,
+                    "dynamic": dynamic,
+                    "spec": spec.to_dict(),
+                },
+            )
+            child_session = Session(session.log, child_id, workdir=str(workspace.root), undo=False)
+        # Marked running before any await so a concurrent resume of it is refused.
+        self._running.add(child_id)
+        before = child_session.messages()
+        cost_before = child_session.cost()
         session.adopt(child_session)
         watcher = asyncio.create_task(self._watch(cancel, child_session)) if cancel else None
         ok, error = True, ""
@@ -688,10 +746,11 @@ class SubagentRunner:
                     elif isinstance(event, Cancelled):
                         ok, error, cancelled = False, "cancelled", True
         finally:
+            self._running.discard(child_id)
             session.release(child_session)
             if watcher:
                 watcher.cancel()
-        messages = child_session.messages()
+        messages = child_session.messages()[len(before) :]
         answers = [m for m in messages if m.role == "assistant" and m.text]
         steps = sum(1 for m in messages if m.role == "assistant")
         return _Outcome(
@@ -700,7 +759,7 @@ class SubagentRunner:
             answers[-1].text if answers else "",
             child_id,
             steps,
-            child_session.cost(),
+            child_session.cost() - cost_before,
             hit_max_steps,
             cancelled,
         )
