@@ -410,18 +410,25 @@ def _done(task: asyncio.Task) -> None:
         _log.warning("background distill failed: %s", task.exception())
 
 
+def fast_target(config) -> tuple[object, str]:
+    """Return the provider and model of the ``fast`` role (raises LunaConfigError)."""
+    from luna.config.providers import build_provider, merge_providers
+    from luna.core.agent import _roles
+
+    registry = merge_providers(config.custom_providers)
+    provider, model = build_provider(config.provider, config.model, registry=registry)
+    return _roles(config, registry).get("fast", provider, model)
+
+
 async def weekly_distill(config) -> None:
     """Server start: run the analysis when a week has passed and there is something new."""
-    from luna.config.providers import LunaConfigError, build_provider, merge_providers
-    from luna.core.agent import _roles
+    from luna.config.providers import LunaConfigError
 
     try:
         auto = AutoProfiles(open_journal())
         if not auto.due_weekly():
             return
-        registry = merge_providers(config.custom_providers)
-        provider, model = build_provider(config.provider, config.model, registry=registry)
-        fast = _roles(config, registry).get("fast", provider, model)
+        fast = fast_target(config)
         await auto.distill(*fast, allow_write=config.subagents_allow_write)
     except LunaConfigError as exc:
         _log.warning("weekly distill skipped: %s", exc)
@@ -437,6 +444,7 @@ __all__ = [
     "DistillReport",
     "close_journals",
     "deliver_notices",
+    "fast_target",
     "make_on_recorded",
     "open_journal",
     "weekly_distill",

@@ -17,6 +17,7 @@ _SUBCOMMANDS = {
     "mcp",
     "skills",
     "agents",
+    "subagents",
     "init",
     "serve",
     "run",
@@ -523,6 +524,50 @@ def _positive_days(value: str) -> float:
     return days
 
 
+def _run_subagents(argv: list[str]) -> int:
+    import asyncio
+
+    from luna.config.config import load_config
+    from luna.extensions import autoprofiles
+
+    parser = argparse.ArgumentParser(prog="luna subagents")
+    parser.add_argument(
+        "cmd",
+        nargs="?",
+        default="history",
+        choices=["distill", "history", "undo", "disable", "enable"],
+    )
+    parser.add_argument("name", nargs="?")
+    args = parser.parse_args(argv)
+    journal = autoprofiles.open_journal()
+    auto = autoprofiles.AutoProfiles(journal)
+    if args.cmd == "history":
+        lines = auto.history(args.name) or ["no profile changes yet"]
+        print("\n".join(lines))
+        return 0
+    if args.cmd == "distill":
+        config = load_config()
+        report = asyncio.run(
+            auto.distill(
+                *autoprofiles.fast_target(config),
+                allow_write=config.subagents_allow_write,
+            )
+        )
+        journal.drain_notices()  # printed here; do not repeat them after the next turn
+        print("\n".join(report.lines()))
+        return 0
+    if not args.name:
+        parser.error(f"{args.cmd} needs a profile name")
+    if args.cmd == "undo":
+        text = auto.undo(args.name)
+        ok = not text.startswith(("nothing to undo", "cannot read")) and "by hand" not in text
+    else:
+        text = auto.set_disabled(args.name, args.cmd == "disable", workdir=os.getcwd())
+        ok = text.startswith(f"{args.name}: ")
+    print(text)
+    return 0 if ok else 1
+
+
 def _run_sessions(argv: list[str]) -> int:
     """``luna sessions [list|rm <id>|prune [--days N]]`` for the current folder."""
     import time
@@ -846,6 +891,7 @@ def _main(raw: list[str]) -> int:
             "mcp": _run_mcp,
             "skills": _run_skills,
             "agents": _run_agents,
+            "subagents": _run_subagents,
             "init": _run_init,
             "serve": _serve,
             "run": _run_run,

@@ -520,6 +520,16 @@ async def test_agents_lists_subagents_and_runs(env):
     assert "(no background work)" in res.text
 
 
+async def test_subagents_command_history_and_distill(env):
+    res = await run_line("/subagents", env)
+    assert "no profile changes yet" in res.text
+    res = await run_line("/subagents distill", env)
+    assert "nothing new in the journal" in res.text
+    assert env.agent.provider.requests == []
+    res = await run_line("/subagents undo", env)
+    assert res.notices[0].level == "error"
+
+
 async def test_tools_lists_real_tools(env):
     res = await run_line("/tools", env)
     assert "write_todos" in res.text and "task_status" in res.text
