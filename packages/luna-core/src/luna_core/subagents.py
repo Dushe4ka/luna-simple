@@ -471,11 +471,16 @@ def _mutating(parent, name: str) -> bool:
 
 
 def _child_tools(parent, spec: SubagentSpec) -> tuple[list[str], list[str]]:
-    """Return (tools the child gets, mutating tools dropped for lack of ``unsafe``)."""
+    """Return (tools the child gets, mutating tools dropped for lack of ``unsafe``).
+
+    Built-in writing tools (``WRITE_TOOLS``) are gated elsewhere (the loader
+    and ``resolve_spec``), so only other mutating tools such as MCP ones need
+    ``unsafe`` here.
+    """
     wanted = [t for t in spec.tools if t not in CHILD_FORBIDDEN and t in parent.tools]
     if spec.unsafe:
         return wanted, []
-    dropped = [t for t in wanted if _mutating(parent, t)]
+    dropped = [t for t in wanted if t not in WRITE_TOOLS and _mutating(parent, t)]
     return [t for t in wanted if t not in dropped], dropped
 
 

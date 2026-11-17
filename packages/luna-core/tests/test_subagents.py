@@ -1018,6 +1018,21 @@ async def test_profile_mutating_tool_needs_unsafe(tmp_path, log):
     assert log.info(result.session_id).meta["isolation"] == "worktree"
 
 
+async def test_code_built_spec_keeps_builtin_write_tools(tmp_path, log):
+    init_repo(tmp_path)
+    child = FakeProvider([FakeProvider.text("done")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    seen = []
+    spec = SubagentSpec("w", "d", "p", ("read_file", "write_file"))
+    result = await runner.run(parent, session, spec, "x", emit=seen.append)
+    assert result.ok
+    assert [t.name for t in child.requests[0].tools] == ["read_file", "write_file"]
+    assert not any(isinstance(e, Notice) and e.level == "warn" for e in seen)
+    assert log.info(result.session_id).meta["isolation"] == "worktree"
+
+
 async def test_resume_of_a_vanished_profile_is_refused(tmp_path, log):
     child = FakeProvider([FakeProvider.text("first"), FakeProvider.text("second")])
     runner = SubagentRunner(
