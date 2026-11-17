@@ -1,5 +1,6 @@
 import pytest
 from luna_core.dynamic import SubagentRequestError, resolve_spec
+from luna_core.events import ToolFinished
 from luna_core.loop import Agent
 from luna_core.policy import Policy
 from luna_core.providers.fake import FakeProvider
@@ -218,3 +219,30 @@ def test_task_schema_lists_the_new_fields():
     runner = SubagentRunner(dict(BUILTIN_SUBAGENTS))
     props = task_tool(runner).spec.parameters["properties"]
     assert {"prompt", "tools", "skills", "model", "max_steps", "context", "resume"} <= set(props)
+
+
+def _task_details(events):
+    return [e.detail for e in events if isinstance(e, ToolFinished) and e.name == "task"]
+
+
+async def test_task_detail_names_the_assembly_on_run_and_resume(tmp_path):
+    child = FakeProvider([FakeProvider.text("one"), FakeProvider.text("two")])
+    call = {"description": "audit", "prompt": "You audit.", "tools": ["grep"]}
+    agent = agent_with(
+        tmp_path, [FakeProvider.call("task", call, "t1"), FakeProvider.text("ok")], child
+    )
+    log = EventLog(tmp_path / "db" / "s.db")
+    session = Session.create(log, str(tmp_path), undo=False)
+    expected = "general-purpose (dyn): done · grep · fast"
+    events = [e async for e in agent.run(session, "go")]
+    assert _task_details(events) == [expected]
+    child_id = log.children(session.id)[0].id
+    agent.provider = FakeProvider(
+        [
+            FakeProvider.call("task", {"description": "again", "resume": child_id}, "t2"),
+            FakeProvider.text("ok"),
+        ]
+    )
+    events = [e async for e in agent.run(session, "again")]
+    assert _task_details(events) == [expected]
+    log.close()

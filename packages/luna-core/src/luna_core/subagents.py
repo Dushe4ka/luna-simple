@@ -420,6 +420,7 @@ class SubagentResult:
     hit_max_steps: bool = False
     cancelled: bool = False
     dynamic: bool = False
+    spec: SubagentSpec | None = None
 
     def render(self) -> str:
         """Text for the parent model."""
@@ -589,17 +590,21 @@ class SubagentRunner:
         try:
             skill_bodies = self._skill_bodies(spec)
         except Exception as exc:  # noqa: BLE001 - any loader failure is the parent's to see
-            return SubagentResult(name, False, "", str(exc), dynamic=dynamic)
+            return SubagentResult(name, False, "", str(exc), dynamic=dynamic, spec=spec)
         if isolation not in ISOLATION:
-            return SubagentResult(name, False, "", f"isolation must be one of {ISOLATION}")
+            return SubagentResult(
+                name, False, "", f"isolation must be one of {ISOLATION}", spec=spec
+            )
         emit = emit or (lambda event: None)
         if parent.max_cost is not None and session.cost() >= parent.max_cost:
-            return self._over_budget(name, parent.max_cost)
+            return self._over_budget(name, parent.max_cost, spec)
         root = parent.workspace.root
         top = await asyncio.to_thread(_git_toplevel, root)
         mode = isolation if isolation != "auto" else spec.isolation
         if mode == "worktree" and top is None:
-            return SubagentResult(name, False, "", "worktree isolation needs a git repository")
+            return SubagentResult(
+                name, False, "", "worktree isolation needs a git repository", spec=spec
+            )
         at_top = top is not None and top == Path(root).resolve()
         if mode == "worktree" and not at_top:
             return SubagentResult(
@@ -607,6 +612,7 @@ class SubagentRunner:
                 False,
                 "",
                 "worktree isolation needs the project root to be the git repository root",
+                spec=spec,
             )
         use_worktree = mode == "worktree" or (mode == "auto" and spec.writes and at_top)
         if self._semaphore is None:
@@ -614,7 +620,7 @@ class SubagentRunner:
         async with self._semaphore:
             # Siblings that ran while this one waited for a slot may have spent the budget.
             if parent.max_cost is not None and session.cost() >= parent.max_cost:
-                return self._over_budget(name, parent.max_cost)
+                return self._over_budget(name, parent.max_cost, spec)
             sub_id = uuid.uuid4().hex[:8]
             message = f"luna subagent {name}: {task[:60]}"
             created: asyncio.Future | None = None
@@ -684,15 +690,17 @@ class SubagentRunner:
                 hit_max_steps=out.hit_max_steps,
                 cancelled=out.cancelled,
                 dynamic=dynamic,
+                spec=spec,
             )
 
     @staticmethod
-    def _over_budget(name: str, max_cost: float) -> SubagentResult:
+    def _over_budget(name: str, max_cost: float, spec: SubagentSpec) -> SubagentResult:
         return SubagentResult(
             name,
             False,
             "",
             f"budget reached (max_cost=${max_cost:g}); no new subagent was started",
+            spec=spec,
         )
 
     async def _drive(

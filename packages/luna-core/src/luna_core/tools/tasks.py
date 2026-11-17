@@ -84,7 +84,9 @@ def task_tool(runner: SubagentRunner) -> Tool:
             resume=resume,
         )
         return ToolOutput(
-            (Text(result.render()),), not result.ok, _detail(spec, result.dynamic, result.ok)
+            (Text(result.render()),),
+            not result.ok,
+            _detail(result.spec or spec, result.dynamic, result.ok),
         )
 
     schema = {
