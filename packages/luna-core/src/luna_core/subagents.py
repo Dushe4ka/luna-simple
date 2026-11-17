@@ -11,15 +11,23 @@ import subprocess
 import threading
 import tomllib
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from luna_core.context import build_system_prompt
 from luna_core.errors import LunaCoreError
-from luna_core.events import Cancelled, NeedsApproval, Notice, ToolStarted, TurnError
+from luna_core.events import (
+    Cancelled,
+    NeedsApproval,
+    Notice,
+    ToolStarted,
+    TurnDone,
+    TurnError,
+)
 from luna_core.filelock import file_lock
 from luna_core.loop import Agent
+from luna_core.roles import ROLES
 from luna_core.session import Session
 from luna_core.undo import _snapshot_tree
 from luna_core.workspace import Workspace
@@ -395,6 +403,11 @@ class SubagentResult:
     base: str | None = None
     diffstat: str = ""
     session_id: str = ""
+    steps: int = 0
+    cost: float = 0.0
+    hit_max_steps: bool = False
+    cancelled: bool = False
+    dynamic: bool = False
 
     def render(self) -> str:
         """Text for the parent model."""
@@ -412,6 +425,29 @@ class SubagentResult:
         return head
 
 
+def child_prompt(spec: SubagentSpec, skill_bodies: list[tuple[str, str]]) -> str:
+    """Build the subagent's own system prompt: role, parent context, skills."""
+    parts = [spec.prompt.rstrip()]
+    if spec.context.strip():
+        parts.append(f"# Context from the parent agent\n\n{spec.context.strip()}")
+    parts += [f"# Skill: {name}\n\n{body.strip()}" for name, body in skill_bodies]
+    return "\n\n".join(parts)
+
+
+@dataclass
+class _Outcome:
+    """What one child turn produced."""
+
+    ok: bool
+    error: str
+    text: str
+    child_id: str
+    steps: int
+    cost: float
+    hit_max_steps: bool
+    cancelled: bool
+
+
 @dataclass
 class SubagentRunner:
     """Runs subagents for the ``task`` tool."""
@@ -419,6 +455,9 @@ class SubagentRunner:
     specs: dict[str, SubagentSpec]
     max_parallel: int = 4
     model_for: Callable[[SubagentSpec], tuple[object, str]] | None = None
+    dynamic: DynamicSettings = field(default_factory=DynamicSettings)
+    skill_loader: Callable[[str], str] | None = None
+    skill_names: Callable[[], Collection[str]] | None = None
     _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def describe(self) -> str:
@@ -428,30 +467,51 @@ class SubagentRunner:
     def _model(self, parent, spec: SubagentSpec) -> tuple[object, str]:
         if self.model_for is not None:
             return self.model_for(spec)
+        roles = getattr(parent, "roles", None)
+        if spec.model in ROLES:
+            if roles is not None:
+                return roles.get(spec.model, parent.provider, parent.model)
+            return parent.provider, parent.model
         if spec.model:
             return parent.provider, spec.model
-        if getattr(parent, "roles", None) is not None:
-            return parent.roles.get("fast", parent.provider, parent.model)
+        if roles is not None:
+            return roles.get("fast", parent.provider, parent.model)
         return parent.provider, parent.model
+
+    def _skill_bodies(self, spec: SubagentSpec) -> list[tuple[str, str]]:
+        if not spec.skills:
+            return []
+        if self.skill_loader is None:
+            raise LunaCoreError("skills are not available in this host")
+        return [(name, self.skill_loader(name)) for name in spec.skills]
 
     async def run(
         self,
         parent,
         session: Session,
-        name: str,
+        spec: str | SubagentSpec,
         task: str,
         *,
         isolation: str = "auto",
         emit: Callable[[object], None] | None = None,
         cancel: asyncio.Event | None = None,
         turn_id: str | None = None,
+        dynamic: bool = False,
+        resume: str | None = None,
     ) -> SubagentResult:
-        """Run subagent ``name`` on ``task`` and return its result."""
-        spec = self.specs.get(name)
-        if spec is None:
-            return SubagentResult(
-                name, False, "", f"unknown subagent; available: {', '.join(self.specs)}"
-            )
+        """Run subagent ``spec`` (a ready spec or a profile name) on ``task``."""
+        if isinstance(spec, str):
+            found = self.specs.get(spec)
+            if found is None:
+                return SubagentResult(
+                    spec, False, "", f"unknown subagent; available: {', '.join(self.specs)}"
+                )
+            spec = found
+        name = spec.name
+        try:
+            skill_bodies = self._skill_bodies(spec)
+        except Exception as exc:  # noqa: BLE001 - any loader failure is the parent's to see
+            return SubagentResult(name, False, "", str(exc), dynamic=dynamic)
         if isolation not in ISOLATION:
             return SubagentResult(name, False, "", f"isolation must be one of {ISOLATION}")
         emit = emit or (lambda event: None)
@@ -490,8 +550,18 @@ class SubagentRunner:
                     workspace = Workspace(worktree[0])
                 else:
                     workspace = parent.workspace
-                ok, error, text, child_id = await self._drive(
-                    parent, session, spec, task, workspace, use_worktree, emit, cancel, turn_id
+                out = await self._drive(
+                    parent,
+                    session,
+                    spec,
+                    task,
+                    workspace,
+                    use_worktree,
+                    emit,
+                    cancel,
+                    turn_id,
+                    skill_bodies,
+                    dynamic,
                 )
             except BaseException:
                 # Cancelled or crashed (even mid-creation): still commit what the child did
@@ -502,6 +572,7 @@ class SubagentRunner:
                     if worktree is not None:
                         await asyncio.to_thread(finish_worktree, root, *worktree, message)
                 raise
+            ok, error = out.ok, out.error
             branch = base = None
             diffstat = ""
             if worktree is not None:
@@ -513,7 +584,21 @@ class SubagentRunner:
                     ok, error = False, str(exc)
                 if diffstat:
                     branch, base = worktree[1], worktree[2]
-            return SubagentResult(name, ok, text, error, branch, base, diffstat, child_id)
+            return SubagentResult(
+                name,
+                ok,
+                out.text,
+                error,
+                branch,
+                base,
+                diffstat,
+                out.child_id,
+                steps=out.steps,
+                cost=out.cost,
+                hit_max_steps=out.hit_max_steps,
+                cancelled=out.cancelled,
+                dynamic=dynamic,
+            )
 
     @staticmethod
     def _over_budget(name: str, max_cost: float) -> SubagentResult:
@@ -535,18 +620,26 @@ class SubagentRunner:
         emit: Callable[[object], None],
         cancel: asyncio.Event | None,
         turn_id: str | None,
-    ) -> tuple[bool, str, str, str]:
-        """Run the child turn to the end; return ``(ok, error, answer, child_session_id)``."""
+        skill_bodies: list[tuple[str, str]],
+        dynamic: bool,
+    ) -> _Outcome:
+        """Run the child turn to the end and report what happened."""
         name = spec.name
         services = dict(parent.services)
         if not use_worktree:
             services.update(undo_journal=session.undo_journal, undo_turn_id=turn_id)
         provider, model = self._model(parent, spec)
+        wanted = [t for t in spec.tools if t not in CHILD_FORBIDDEN]
+        missing = [t for t in wanted if t not in parent.tools]
+        if missing:
+            emit(Notice("warn", f"{name}: tools not available here: {', '.join(missing)}"))
         child = Agent(
             provider,
             model,
-            tools=[parent.tools[t] for t in spec.tools if t in parent.tools],
-            system=build_system_prompt(spec.prompt, root=workspace.root, memory=[]),
+            tools=[parent.tools[t] for t in wanted if t in parent.tools],
+            system=build_system_prompt(
+                child_prompt(spec, skill_bodies), root=workspace.root, memory=[]
+            ),
             policy=parent.policy.child(workspace),
             workspace=workspace,
             sandbox=parent.sandbox,
@@ -562,12 +655,18 @@ class SubagentRunner:
             str(workspace.root),
             title=f"{name}: {task[:60]}",
             parent_id=session.id,
-            meta={"kind": "subagent", "agent": name},
+            meta={
+                "kind": "subagent",
+                "agent": name,
+                "dynamic": dynamic,
+                "spec": spec.to_dict(),
+            },
         )
         child_session = Session(session.log, child_id, workdir=str(workspace.root), undo=False)
         session.adopt(child_session)
         watcher = asyncio.create_task(self._watch(cancel, child_session)) if cancel else None
         ok, error = True, ""
+        hit_max_steps = cancelled = False
         try:
             # ``aclosing`` so a cancelled parent also closes the child turn (and its tools).
             async with contextlib.aclosing(child.run(child_session, task)) as events:
@@ -582,16 +681,29 @@ class SubagentRunner:
                         emit(NeedsApproval(request))
                     elif isinstance(event, ToolStarted):
                         emit(Notice("dim", f"{name} › {event.name} {event.preview}".rstrip()))
+                    elif isinstance(event, TurnDone):
+                        hit_max_steps = event.stop_reason == "max_steps"
                     elif isinstance(event, TurnError):
                         ok, error = False, event.message
                     elif isinstance(event, Cancelled):
-                        ok, error = False, "cancelled"
+                        ok, error, cancelled = False, "cancelled", True
         finally:
             session.release(child_session)
             if watcher:
                 watcher.cancel()
-        answers = [m for m in child_session.messages() if m.role == "assistant" and m.text]
-        return ok, error, answers[-1].text if answers else "", child_id
+        messages = child_session.messages()
+        answers = [m for m in messages if m.role == "assistant" and m.text]
+        steps = sum(1 for m in messages if m.role == "assistant")
+        return _Outcome(
+            ok,
+            error,
+            answers[-1].text if answers else "",
+            child_id,
+            steps,
+            child_session.cost(),
+            hit_max_steps,
+            cancelled,
+        )
 
     @staticmethod
     async def _watch(cancel: asyncio.Event, child: Session) -> None:

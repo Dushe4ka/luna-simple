@@ -661,3 +661,89 @@ def test_dynamic_settings_defaults_and_forbidden_set():
         "manage_skills",
         "save_skill",
     }
+
+
+async def test_runner_accepts_a_ready_spec_and_builds_the_prompt(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("audited")])
+    spec = SubagentSpec(
+        "researcher",
+        "d",
+        "You audit SQL.",
+        ("read_file", "task"),
+        skills=("sql",),
+        context="postgres 16",
+    )
+    runner = SubagentRunner(
+        {}, model_for=lambda s: (child, "m"), skill_loader=lambda n: f"BODY OF {n}"
+    )
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    result = await runner.run(parent, session, spec, "check queries", dynamic=True)
+    assert result.ok and result.text == "audited" and result.dynamic
+    request = child.requests[0]
+    assert request.system.startswith("You audit SQL.")
+    assert "# Context from the parent agent\n\npostgres 16" in request.system
+    assert "# Skill: sql\n\nBODY OF sql" in request.system
+    # ``task`` is never given to a child, even when a spec lists it
+    assert [t.name for t in request.tools] == ["read_file"]
+    meta = log.children(session.id)[0].meta
+    assert meta["dynamic"] is True and meta["spec"]["prompt"] == "You audit SQL."
+    assert result.steps == 1 and result.cost >= 0 and not result.hit_max_steps
+
+
+async def test_unknown_profile_name_still_reports_the_choices(tmp_path, log):
+    runner = SubagentRunner(dict(BUILTIN_SUBAGENTS))
+    parent = parent_agent(tmp_path, [], FakeProvider([]))
+    session = Session.create(log, str(tmp_path), undo=False)
+    result = await runner.run(parent, session, "nope", "x")
+    assert not result.ok and "available: researcher" in result.error
+
+
+async def test_missing_skill_loader_or_skill_is_an_error(tmp_path, log):
+    parent = parent_agent(tmp_path, [], FakeProvider([]))
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("r", "d", "p", skills=("sql",))
+    result = await SubagentRunner({}).run(parent, session, spec, "x")
+    assert not result.ok and "skills are not available" in result.error
+
+    def boom(name):
+        raise LookupError(f"no skill named {name!r}")
+
+    result = await SubagentRunner({}, skill_loader=boom).run(parent, session, spec, "x")
+    assert not result.ok and "no skill named 'sql'" in result.error
+
+
+async def test_profile_tool_missing_in_this_host_is_a_warning(tmp_path, log):
+    child = FakeProvider([FakeProvider.text("ok")])
+    spec = SubagentSpec("r", "d", "p", ("read_file", "mcp__gone__x"))
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    seen = []
+    result = await runner.run(parent, session, spec, "x", emit=seen.append)
+    assert result.ok
+    assert any(
+        isinstance(e, Notice) and e.level == "warn" and "mcp__gone__x" in e.text for e in seen
+    )
+
+
+async def test_role_name_as_model_uses_the_role(tmp_path, log):
+    from luna_core.roles import ModelRoles
+
+    fast = FakeProvider([FakeProvider.text("from plan role")])
+    parent = parent_agent(tmp_path, [], FakeProvider([]))
+    parent.roles = ModelRoles(plan=(fast, "plan-model"))
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("r", "d", "p", model="plan")
+    result = await SubagentRunner({}).run(parent, session, spec, "x")
+    assert result.text == "from plan role" and fast.requests[0].model == "plan-model"
+
+
+async def test_hitting_max_steps_is_reported(tmp_path, log):
+    child = FakeProvider([FakeProvider.call("ls", {}), FakeProvider.text("never")])
+    spec = SubagentSpec("r", "d", "p", ("ls",), max_steps=1)
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"))
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    result = await runner.run(parent, session, spec, "x")
+    assert result.hit_max_steps and result.steps == 1
