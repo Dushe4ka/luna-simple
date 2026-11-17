@@ -385,3 +385,29 @@ async def test_duplicate_name_in_one_analysis(auto, journal, tmp_path):
     assert len(report.saved) == 1
     assert report.rejected == [("migration-writer", "duplicate name in this analysis")]
     assert len(journal.versions("migration-writer")) == 1
+
+
+async def test_run_counts_for_one_profile_only(auto, journal, tmp_path):
+    ids = add_runs(journal, 9, workdir=tmp_path)
+    base = {
+        "description": "d",
+        "prompt": "p",
+        "tools": ["read_file"],
+        "skills": [],
+        "model": None,
+        "context": "",
+        "max_steps": 20,
+    }
+    payload = {
+        "profiles": [
+            {**base, "name": "first-one", "runs": ids[:6]},
+            {**base, "name": "second-one", "runs": ids[3:]},
+        ]
+    }
+    report = await auto.distill(
+        FakeProvider([FakeProvider.text(json.dumps(payload))]), "fast", allow_write=False
+    )
+    assert len(report.saved) == 1 and "first-one" in report.saved[0]
+    assert report.rejected == [("second-one", "only 3 runs (needs 5)")]
+    names = {r.id: r.profile_name for r in (journal.get(i) for i in ids)}
+    assert [names[i] for i in ids] == ["first-one"] * 6 + [None] * 3
