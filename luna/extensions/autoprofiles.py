@@ -8,6 +8,7 @@ that keeps the analysis to one request an hour (the API-key rule).
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import time
@@ -30,6 +31,8 @@ EVERY = 20
 _LAST_TS = "distill_last_ts"
 _LAST_ID = "distill_last_id"
 _JOURNALS: dict[str, AssemblyLog] = {}
+_TASKS: set[asyncio.Task] = set()
+_log = logging.getLogger(__name__)
 
 
 def open_journal(env: Mapping[str, str] | None = None) -> AssemblyLog:
@@ -384,6 +387,48 @@ class AutoProfiles:
         return out
 
 
+def make_on_recorded(auto: AutoProfiles, *, fast: tuple[object, str], allow_write: bool):
+    """Build the runner's ``on_recorded``: auto-disable check, then the every-``EVERY`` trigger."""
+
+    def on_recorded(record: RunRecord, session) -> None:
+        if auto._journal.versions(record.base_profile, 1):
+            auto.check_disable(record.base_profile)
+        if _TASKS or not auto.due_by_count() or auto.wait_left() > 0:
+            return
+        task = asyncio.get_running_loop().create_task(
+            auto.distill(fast[0], fast[1], allow_write=allow_write)
+        )
+        _TASKS.add(task)
+        task.add_done_callback(_done)
+
+    return on_recorded
+
+
+def _done(task: asyncio.Task) -> None:
+    _TASKS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        _log.warning("background distill failed: %s", task.exception())
+
+
+async def weekly_distill(config) -> None:
+    """Server start: run the analysis when a week has passed and there is something new."""
+    from luna.config.providers import LunaConfigError, build_provider, merge_providers
+    from luna.core.agent import _roles
+
+    try:
+        auto = AutoProfiles(open_journal())
+        if not auto.due_weekly():
+            return
+        registry = merge_providers(config.custom_providers)
+        provider, model = build_provider(config.provider, config.model, registry=registry)
+        fast = _roles(config, registry).get("fast", provider, model)
+        await auto.distill(*fast, allow_write=config.subagents_allow_write)
+    except LunaConfigError as exc:
+        _log.warning("weekly distill skipped: %s", exc)
+    except Exception:  # noqa: BLE001 - never take the server down
+        _log.exception("weekly distill failed")
+
+
 __all__ = [
     "EVERY",
     "HOUR",
@@ -392,5 +437,7 @@ __all__ = [
     "DistillReport",
     "close_journals",
     "deliver_notices",
+    "make_on_recorded",
     "open_journal",
+    "weekly_distill",
 ]

@@ -10,6 +10,7 @@ module only owns the per-session state around them.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -24,6 +25,8 @@ from luna.config.config import LunaConfig, load_config
 from luna.config.providers import LunaConfigError
 from luna.core.session_state import SessionState, SessionStateStore
 from luna.turn import engine
+
+_log = logging.getLogger(__name__)
 
 #: Run states in which a session counts as running.
 LIVE = ("queued", "running", "waiting")
@@ -184,6 +187,14 @@ class SessionRuntime:
     async def after_turn(self) -> None:
         """After a run finished: persist state and auto-reload when asked."""
         self.save()
+        from luna.extensions.autoprofiles import deliver_notices, open_journal
+
+        try:
+            deliver_notices(
+                open_journal(), lambda level, text: self.session.notify(Notice(level, text))
+            )
+        except Exception:  # noqa: BLE001 - notices must never break a finished turn
+            _log.exception("delivering notices failed")
         if self.reload_requested or self.reload_after_turn:
             self.reload_requested = self.reload_after_turn = False
             try:

@@ -181,6 +181,10 @@ async def build_agent(
         else None
     )
     try:
+        from luna.extensions.autoprofiles import AutoProfiles, make_on_recorded, open_journal
+
+        roles = _roles(config, registry)
+        journal = open_journal()
         runner = SubagentRunner(
             load_subagents(str(workdir), on_warn=on_warn),
             max_parallel=config.max_parallel,
@@ -192,9 +196,14 @@ async def build_agent(
             ),
             skill_loader=lambda name: core_skills.load_body(name, skill_dirs(workdir)),
             skill_names=lambda: [s.name for s in core_skills.discover(skill_dirs(workdir))],
+            journal=journal,
+            on_recorded=make_on_recorded(
+                AutoProfiles(journal),
+                fast=roles.get("fast", provider, model),
+                allow_write=config.subagents_allow_write,
+            ),
         )
         tools += [task_tool(runner), task_status_tool(), task_cancel_tool()]
-        roles = _roles(config, registry)
         if manager is not None:
             _merge_tools(tools, await manager.start(), on_warn)
         all_hooks = Hooks()
