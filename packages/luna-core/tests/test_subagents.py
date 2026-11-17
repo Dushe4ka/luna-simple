@@ -1,9 +1,11 @@
 import asyncio
+import json
 import subprocess
 import sys
 import time
 
 import pytest
+from luna_core.assemblies import AssemblyLog
 from luna_core.events import NeedsApproval, Notice, TurnDone
 from luna_core.loop import Agent
 from luna_core.messages import Message, ToolCall
@@ -1057,3 +1059,94 @@ async def test_resume_with_an_unreadable_assembly_is_an_error(tmp_path, log, bad
     log.set_meta(one.session_id, spec=bad)
     two = await runner.run(parent, session, "r", "b", resume=one.session_id)
     assert not two.ok and "stored subagent assembly is unreadable" in two.error
+
+
+async def test_runs_are_journaled_without_tool_output(tmp_path, log):
+    journal = AssemblyLog(tmp_path / "db" / "s.db")
+    child = FakeProvider(
+        [
+            FakeProvider.call("read_file", {"path": "secret.txt"}),
+            FakeProvider.text("the answer is 42"),
+        ]
+    )
+    (tmp_path / "secret.txt").write_text("TOP-SECRET-CONTENT")
+    seen = []
+    runner = SubagentRunner(
+        {},
+        model_for=lambda s: (child, "m"),
+        journal=journal,
+        on_recorded=lambda rec, sess: seen.append((rec, sess.id)),
+    )
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("scout", "d", "Find facts", ("read_file",), isolation="none")
+    result = await runner.run(parent, session, spec, "look " * 100, dynamic=True)
+    assert result.ok
+    (rec,) = journal.pending()
+    assert rec.child_session == result.session_id
+    assert rec.parent_session == session.id
+    assert rec.workdir == str(tmp_path)
+    assert rec.base_profile == "scout" and rec.dynamic is True
+    assert rec.spec["prompt"] == "Find facts" and rec.spec["tools"] == ["read_file"]
+    assert len(rec.task_head) == 200
+    assert rec.success and rec.steps == result.steps
+    raw = json.dumps(rec.spec, ensure_ascii=False) + rec.task_head
+    assert "TOP-SECRET-CONTENT" not in raw and "42" not in raw
+    assert seen == [(rec, session.id)]
+    journal.close()
+
+
+async def test_mutating_tools_are_journaled(tmp_path, log):
+    journal = AssemblyLog(tmp_path / "db" / "s.db")
+    child = FakeProvider([FakeProvider.text("done")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"), journal=journal)
+    parent = parent_agent(tmp_path, [], child, tools=[*builtin_tools(), mcp__db__write])
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec(
+        "db", "d", "p", ("read_file", "mcp__db__write"), unsafe=True, isolation="none"
+    )
+    await runner.run(parent, session, spec, "x")
+    assert journal.pending()[0].mutating == ("mcp__db__write",)
+    journal.close()
+
+
+async def test_refused_run_is_not_journaled(tmp_path, log):
+    journal = AssemblyLog(tmp_path / "db" / "s.db")
+    child = FakeProvider([FakeProvider.text("done")])
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"), journal=journal)
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    result = await runner.run(parent, session, "no-such-profile", "x")
+    assert not result.ok and journal.pending() == []
+    journal.close()
+
+
+async def test_journal_failure_does_not_break_the_run(tmp_path, log):
+    journal = AssemblyLog(tmp_path / "db" / "s.db")
+    journal.close()  # every write now raises sqlite3.ProgrammingError (a sqlite3.Error)
+    child = FakeProvider([FakeProvider.text("done")])
+
+    def boom(rec, sess):
+        raise RuntimeError("callback bug")
+
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"), journal=journal, on_recorded=boom)
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    spec = SubagentSpec("s", "d", "p", ("ls",), isolation="none")
+    result = await runner.run(parent, session, spec, "x")
+    assert result.ok and result.text == "done"
+
+
+async def test_callback_failure_does_not_break_the_run(tmp_path, log):
+    journal = AssemblyLog(tmp_path / "db" / "s.db")
+    child = FakeProvider([FakeProvider.text("done")])
+
+    def boom(rec, sess):
+        raise RuntimeError("callback bug")
+
+    runner = SubagentRunner({}, model_for=lambda s: (child, "m"), journal=journal, on_recorded=boom)
+    parent = parent_agent(tmp_path, [], child)
+    session = Session.create(log, str(tmp_path), undo=False)
+    result = await runner.run(parent, session, SubagentSpec("s", "d", "p", ("ls",)), "x")
+    assert result.ok and len(journal.pending()) == 1
+    journal.close()
