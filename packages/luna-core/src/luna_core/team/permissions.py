@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 
 from luna_core.policy import (
+    DEFAULT_APPROVAL,
     MUTATING_FILE_TOOLS,
     Policy,
     Rules,
@@ -63,9 +64,14 @@ class TeamPolicy(Policy):
         member: str,
         on_denied: Denied,
         file_writes: bool = False,
+        approval_tools: frozenset[str] = DEFAULT_APPROVAL,
     ) -> None:
         self.allow_rules = tuple(allow)
-        super().__init__(Rules(allow=list(self.allow_rules), deny=list(deny)), workspace=workspace)
+        super().__init__(
+            Rules(allow=list(self.allow_rules), deny=list(deny)),
+            workspace=workspace,
+            approval_tools=approval_tools,
+        )
         self.member = member
         self.on_denied = on_denied
         self.file_writes = file_writes
@@ -77,6 +83,10 @@ class TeamPolicy(Policy):
             if verdict.message.startswith(_RULE_DENY):
                 self.on_denied(self.member, tool.name, dict(args), "rule")
             return verdict
+        if verdict.action == "allow" and self._unlisted_mutation(tool, args):
+            # The base policy allows mutating tools outside the approval set
+            # without asking; during a team run they are outside the profile.
+            verdict = Verdict("ask")
         if verdict.action != "ask":
             return verdict
         if self.file_writes and tool.name in MUTATING_FILE_TOOLS:
@@ -88,6 +98,14 @@ class TeamPolicy(Policy):
             "and was not run; do the task without it or report it blocked with board_update",
         )
 
+    def _unlisted_mutation(self, tool: Tool, args: dict) -> bool:
+        """Tell whether an allowed call is a mutation that no profile rule covers."""
+        if not (tool.mutating or tool.name in self.approval_tools):
+            return False
+        rel = self._rel(args)
+        match_args = {**args, "file_path": rel} if rel and tool.name != "execute" else args
+        return self.rules.match(tool.name, match_args) != "allow"
+
     def child(self, workspace: Workspace | None = None) -> TeamPolicy:
         """Return a policy with the same profile (members do not delegate)."""
         return TeamPolicy(
@@ -97,4 +115,5 @@ class TeamPolicy(Policy):
             member=self.member,
             on_denied=self.on_denied,
             file_writes=self.file_writes,
+            approval_tools=self.approval_tools,
         )
