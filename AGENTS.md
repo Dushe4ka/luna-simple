@@ -28,6 +28,13 @@
   - `assemblies.py` — журнал сборок динамических субагентов (`sessions.db`)
   - `distill.py` — анализ журнала и проверка кандидатов в профили кодом
   - `fsperm.py` — `restrict(fd)`: права 0600 на POSIX, на Windows ничего не делает
+  - `rategate.py` — общий для процесса rate gate: токен-бакет, пауза по
+    `Retry-After` и снижение темпа при 429, медленное восстановление
+  - `team/` — режим команды: `board.py` (доска в `sessions.db`), `messages.py`,
+    `plan.py` (план и read-only лидер на роли `strong`), `permissions.py`
+    (профиль прав без вопросов), `git.py` (ветка `luna/team/<id>`, worktree
+    участников, последовательное вливание), `tools.py`, `report.py`,
+    `inhibit.py`, `runner.py` (`TeamRunner`)
 - `scripts/` — установщики и CI
   - `install.sh` / `install.ps1` — установка одной строкой (uv + `uv tool install`);
     на Windows без Git ставят PortableGit с проверкой SHA-256 в `%LOCALAPPDATA%\luna\git`
