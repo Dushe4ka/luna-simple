@@ -338,3 +338,18 @@ async def test_a_failed_member_assembly_leaves_no_worktree(repo, tmp_path):
     assert "**Итог:** ЧАСТИЧНО 0/1" in report_of(repo, rid)
     log.close()
     store.close()
+
+
+async def test_research_notes_reach_the_run_report(repo, tmp_path):
+    provider = TeamProvider({"dev": [done("the entry point is a.txt"), text("done")]})
+    runner, store, log = make_runner(tmp_path, provider)
+    rid = ready_run(
+        runner,
+        store,
+        plan_dict([{"id": "T1", "title": "look", "kind": "research", "member": "dev"}]),
+    )
+    assert await runner.run(rid) == "done"
+    report = report_of(repo, rid)
+    assert "## Заметки" in report and "the entry point is a.txt" in report
+    log.close()
+    store.close()

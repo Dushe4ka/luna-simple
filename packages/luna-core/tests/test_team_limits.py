@@ -239,3 +239,35 @@ async def test_sleep_is_held_off_unless_allowed(tmp_path, allow, held):
     assert store.events(rid, kinds=["awake"])[0].data == {"held": held}
     log.close()
     store.close()
+
+
+async def test_concurrent_members_cannot_overshoot_the_budget(repo, tmp_path):
+    def writes(prefix: str) -> list:
+        return [
+            call("write_file", {"file_path": f"{prefix}{i}.txt", "content": "x"}, f"w{i}")
+            for i in range(20)
+        ]
+
+    provider = TeamProvider({"one": writes("a"), "two": writes("b")}, delay=0.2)
+    runner, store, log = make_runner(
+        tmp_path,
+        provider,
+        settings=TeamSettings(budget=150.0, models=("member-model",), max_concurrent=2),
+        overrides={"member-model": {"input": 1_000_000, "output": 1_000_000}},
+    )
+    members = [
+        {"name": name, "prompt": "You write.", "model": "member-model"} for name in ("one", "two")
+    ]
+    tasks = [
+        {"id": "T1", "title": "first", "member": "one"},
+        {"id": "T2", "title": "second", "member": "two"},
+    ]
+    rid = ready_run(runner, store, plan_dict(tasks, members=members))
+    assert await runner.run(rid) == "stopped"
+    assert store.run(rid).stop_reason == "budget"
+    spent = sum(m.cost for m in store.members(rid))
+    step = 15.0  # one fake request of member-model
+    # Each running member may finish the step in flight plus one more (soft stop).
+    assert 150.0 <= spent <= 150.0 + 2 * 2 * step
+    log.close()
+    store.close()

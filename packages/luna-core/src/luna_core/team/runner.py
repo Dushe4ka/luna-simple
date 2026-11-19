@@ -122,7 +122,8 @@ class _RunState:
     deadline: float
     budget: float | None
     workers: dict[str, asyncio.Task] = field(default_factory=dict)
-    turns: dict[str, tuple[Agent, Session, int]] = field(default_factory=dict)
+    #: name -> (agent, session, messages before the turn, last record seq before it)
+    turns: dict[str, tuple[Agent, Session, int, int]] = field(default_factory=dict)
     lead: asyncio.Task | None = None
     inbox: list[str] = field(default_factory=list)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -164,6 +165,10 @@ class TeamRunner:
         self.gate.listeners.append(self._on_rate)
         self._pool = {t.name: t for t in host.tools}
         self._states: dict[str, _RunState] = {}
+        #: Runs whose ``run()`` is setting up git here (not in ``_states`` yet).
+        self._starting: set[str] = set()
+        #: Runs cancelled while still starting; they stop as soon as they run.
+        self._cancel_pending: set[str] = set()
         self._seed: dict[str, list[str]] = {}
 
     def close(self) -> None:
@@ -260,6 +265,7 @@ class TeamRunner:
             check_member=self.member_spec,
             model_overrides=self.host.model_overrides,
             sandbox=self.host.sandbox,
+            deny=self._deny_rules(),
         )
         previous = TeamPlan.from_dict(run.plan) if run.plan else None
         start = len(session.records())
@@ -318,28 +324,38 @@ class TeamRunner:
         run = self._run(run_id)
         if run.status not in ("planning", "awaiting_plan"):
             raise LunaCoreError(f"team {run_id} is {run.status}; only a new run can be declined")
-        self.store.update_run(
-            run_id,
-            status="finished",
-            outcome="stopped",
-            stop_reason="cancel",
-            finished=self.clock(),
-        )
-        report = build_report(self.store, run_id)
-        write_report(self.root, run_id, report)
-        self.store.log_event(
-            run_id, "team_done", outcome="stopped", headline=report.data["headline"]
-        )
+        self._end(run_id, "stopped", stop_reason="cancel")
 
     def cancel(self, run_id: str) -> bool:
-        """Stop a running team softly, or decline one that has not started."""
+        """Stop a running team softly, or end one that is not running here.
+
+        A run left ``running`` by a dead process (or accepted but never
+        started) has no loop to stop: its in-progress work is salvaged and it
+        ends «ОСТАНОВЛЕНО (отмена)» at once.
+        """
         st = self._states.get(run_id)
         if st is not None:
             self._stop(st, "cancel")
             return True
+        if run_id in self._starting:
+            self._cancel_pending.add(run_id)
+            return True
         run = self.store.run(run_id)
         if run is not None and run.status in ("planning", "awaiting_plan"):
             self.decline(run_id)
+            return True
+        if run is not None and run.status == "running":
+            git = TeamGit(self.root, run_id) if run.branch else None
+            if git is not None:
+                self._salvage_now(run_id, git, "the run was cancelled")
+                with contextlib.suppress(Exception):
+                    git.close()
+            self._idle_members(run_id)
+            diffstat = ""
+            if git is not None and run.base:
+                with contextlib.suppress(Exception):
+                    diffstat = git.diffstat(run.base)
+            self._end(run_id, "stopped", stop_reason="cancel", diffstat=diffstat)
             return True
         return False
 
@@ -369,11 +385,14 @@ class TeamRunner:
                 self.store.update_task(run_id, task.id, status="pending", attempts=0)
 
     def interrupted(self) -> list[str]:
-        """List runs of this project left ``running`` (a crash or restart), not running here."""
+        """List runs of this project left ``running`` (a crash or restart), not running here.
+
+        That includes a run accepted but never started (the process died in between).
+        """
         return [
             r.id
             for r in self.store.runs(workdir=str(self.root), status="running")
-            if r.id not in self._states and r.branch is not None
+            if r.id not in self._states and r.id not in self._starting
         ]
 
     async def run(self, run_id: str) -> str:
@@ -381,24 +400,33 @@ class TeamRunner:
         run = self._run(run_id)
         if run.status != "running":
             raise LunaCoreError(f"team {run_id} is {run.status}, not running")
-        if run_id in self._states:
+        if run_id in self._states or run_id in self._starting:
             raise LunaCoreError(f"team {run_id} is already running here")
         git = TeamGit(self.root, run_id)
         session = Session.open(self.log, run.session_id, undo=False)
         resumed = run_id in self._seed
-        if run.branch is None:
-            try:
+        self._starting.add(run_id)
+        try:
+            if run.branch is None:
                 base = await asyncio.to_thread(git.start)
-            except LunaCoreError as exc:
-                self._fail_early(run_id, exc)
-                raise
-            self.store.update_run(run_id, branch=git.branch, base=base, started=self.clock())
-        else:
-            await asyncio.to_thread(git.ensure)
-            await self._recover(run_id, git, announce=not resumed)
+                self.store.update_run(run_id, branch=git.branch, base=base, started=self.clock())
+            else:
+                await asyncio.to_thread(git.ensure)
+                await self._recover(run_id, git, announce=not resumed)
+        except Exception as exc:
+            # Never leave a run "running" that nobody runs: end it with a report.
+            self._seed.pop(run_id, None)
+            self._cancel_pending.discard(run_id)
+            await self._fail_early(run_id, exc, git)
+            raise
+        finally:
+            self._starting.discard(run_id)
         st = self._new_state(self._run(run_id), git, session)
         st.inbox.extend(self._seed.pop(run_id, []))
         self._states[run_id] = st
+        if run_id in self._cancel_pending:
+            self._cancel_pending.discard(run_id)
+            self._stop(st, "cancel")
         outcome = "error"
         try:
             with self._keep_awake(not self.settings.allow_sleep) as awake:
@@ -615,7 +643,24 @@ class TeamRunner:
         """Merge a finished task branch (one at a time), verify, and settle the task."""
         async with st.merge_lock:
             message = f"luna team {st.run_id}: {task.id} {task.title[:60]}"
-            result = await asyncio.to_thread(st.git.merge, branch, message)
+            # A restart before the merge is concluded below rolls the team branch back here.
+            before = await asyncio.to_thread(st.git.tip)
+            self.store.log_event(st.run_id, "merging", member, task=task.id, before=before)
+            ok, output = True, ""
+            try:
+                result = await asyncio.to_thread(st.git.merge, branch, message)
+                if result.status == "merged" and self.settings.verify_command:
+                    ok, output = await asyncio.to_thread(
+                        st.git.verify, self.settings.verify_command, self.settings.verify_timeout
+                    )
+            except Exception:
+                # Never leave a merge on the team branch that nobody verified.
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(st.git.undo_merge, before)
+                self.store.log_event(
+                    st.run_id, "merge_undone", member, task=task.id, before=before, undone=True
+                )
+                raise
             if result.status == "markers":
                 self.store.log_event(
                     st.run_id, "markers", member, task=task.id, files=result.detail
@@ -639,23 +684,20 @@ class TeamRunner:
                 self._task_event(st, fix, "")
                 self._set_task(st, task.id, "blocked", f"merge conflict → {fix.id}", member)
                 return
-            if result.status == "merged" and self.settings.verify_command:
-                ok, output = await asyncio.to_thread(
-                    st.git.verify, self.settings.verify_command, self.settings.verify_timeout
+            if not ok:
+                await asyncio.to_thread(st.git.undo_merge, result.before)
+                self.store.log_event(
+                    st.run_id, "verify_failed", member, task=task.id,
+                    attempt=task.attempts, output=output[-1500:],
+                )  # fmt: skip
+                self._retry_or_fail(
+                    st, task, f"verify failed after merging:\n{output[-1500:]}", member
                 )
-                if not ok:
-                    await asyncio.to_thread(st.git.undo_merge, result.before)
-                    self.store.log_event(
-                        st.run_id, "verify_failed", member, task=task.id,
-                        attempt=task.attempts, output=output[-1500:],
-                    )  # fmt: skip
-                    self._retry_or_fail(
-                        st, task, f"verify failed after merging:\n{output[-1500:]}", member
-                    )
-                    return
+                return
+            # Concluded (and verified): from here on a restart keeps the merge.
+            self.store.log_event(st.run_id, "merge", member, task=task.id, commit=result.commit)
         await asyncio.to_thread(st.git.delete_branch, branch)
         self.store.update_task(st.run_id, task.id, branch=None)
-        self.store.log_event(st.run_id, "merge", member, task=task.id, commit=result.commit)
         self._set_task(st, task.id, "done", note, member)
         if task.merge_of:
             source = self.store.task(st.run_id, task.merge_of)
@@ -779,10 +821,11 @@ class TeamRunner:
         self, st: _RunState, name: str, agent: Agent, session: Session, text: str
     ) -> _TurnResult:
         """Run one turn to its end; ``st.turns`` lets a soft stop shorten it."""
-        start = len(session.records())
+        records = session.records()
+        start = len(records)
         before = len(session.messages())
         ok, error, hit, cancelled = True, "", False, False
-        st.turns[name] = (agent, session, before)
+        st.turns[name] = (agent, session, before, records[-1].seq if records else 0)
         try:
             async with contextlib.aclosing(agent.run(session, text)) as events:
                 async for event in events:
@@ -860,8 +903,20 @@ class TeamRunner:
         return record
 
     def _spent(self, st: _RunState) -> float:
-        """Everything the run's members and lead have cost so far."""
-        return sum(m.cost for m in self.store.members(st.run_id))
+        """Everything the run's members and lead have cost so far, turns in flight included."""
+        done = sum(m.cost for m in self.store.members(st.run_id))
+        return done + sum(
+            self._cost_after(session, seq, agent.model)
+            for agent, session, _before, seq in list(st.turns.values())
+        )
+
+    def _cost_after(self, session: Session, seq: int, model: str) -> float:
+        """USD of the model calls ``session`` recorded after record ``seq``."""
+        total = Usage()
+        for rec in self.log.records(session.id, after=seq):
+            if rec.type == "assistant" and rec.payload.get("usage"):
+                total = total + Usage.from_dict(rec.payload["usage"])
+        return cost(total, catalog.lookup(model, self.host.model_overrides)) or 0.0
 
     def _max_cost(self, st: _RunState, session: Session) -> float | None:
         if st.budget is None:
@@ -885,7 +940,7 @@ class TeamRunner:
             return
         st.stopping = reason
         self.store.log_event(st.run_id, "soft_stop", reason=reason)
-        for agent, session, before in list(st.turns.values()):
+        for agent, session, before, _seq in list(st.turns.values()):
             done = sum(1 for m in session.messages()[before:] if m.role == "assistant")
             agent.max_steps = min(agent.max_steps, done + 2)
         st.changed.set()
@@ -1009,13 +1064,66 @@ class TeamRunner:
 
     # --- the end ----------------------------------------------------------
 
-    def _fail_early(self, run_id: str, exc: Exception) -> None:
-        """End a run that could not even start as ``error``, with a report."""
-        self.store.log_event(run_id, "error", message=str(exc))
-        self.store.update_run(run_id, status="finished", outcome="error", finished=self.clock())
-        report = build_report(self.store, run_id)
-        write_report(self.root, run_id, report)
-        self.store.log_event(run_id, "team_done", outcome="error", headline=report.data["headline"])
+    async def _fail_early(self, run_id: str, exc: Exception, git: TeamGit) -> None:
+        """End a run that could not even start (or recover) as ``error``, with a report."""
+        self.store.log_event(run_id, "error", message=str(exc) or type(exc).__name__)
+        run = self._run(run_id)
+        if run.branch is not None:
+            with contextlib.suppress(Exception):
+                await self._salvage(run_id, git, "the run failed")
+        self._idle_members(run_id)
+        self._end(run_id, "error")
+
+    def _end(
+        self,
+        run_id: str,
+        outcome: str,
+        *,
+        stop_reason: str | None = None,
+        diffstat: str = "",
+        changes: Iterable[str] = (),
+    ) -> Path:
+        """Mark the run finished, write its report and announce ``team_done``."""
+        self.store.update_run(
+            run_id, status="finished", outcome=outcome, stop_reason=stop_reason,
+            finished=self.clock(),
+        )  # fmt: skip
+        report = build_report(
+            self.store,
+            run_id,
+            diffstat=diffstat,
+            profile_changes=changes,
+            notes_dir=self.root / ".luna" / "teams" / run_id / "notes",
+        )
+        path = write_report(self.root, run_id, report)
+        self.store.log_event(
+            run_id, "team_done", outcome=outcome, headline=report.data["headline"],
+            report=str(path),
+        )  # fmt: skip
+        return path
+
+    def _idle_members(self, run_id: str) -> None:
+        for member in self.store.members(run_id):
+            if member.status == "working":
+                self.store.update_member(run_id, member.name, status="idle")
+
+    def _salvage_now(self, run_id: str, git: TeamGit, note: str) -> list[str]:
+        """:meth:`_salvage` without a loop (a cancel of a run nobody runs here)."""
+        moved = []
+        for task in self.store.tasks(run_id):
+            if task.status != "in_progress":
+                continue
+            branch = task.branch
+            if task.worktree and branch:
+                with contextlib.suppress(Exception):
+                    git.salvage(Path(task.worktree), branch)
+            keep = bool(branch) and git.has_branch(branch)
+            self.store.update_task(
+                run_id, task.id, status="pending", worktree=None,
+                branch=branch if keep else None, note=note,
+            )  # fmt: skip
+            moved.append(task.id)
+        return moved
 
     async def _salvage(self, run_id: str, git: TeamGit, note: str) -> list[str]:
         """Commit and drop worktrees of tasks still in progress; put those tasks back."""
@@ -1036,14 +1144,30 @@ class TeamRunner:
         return moved
 
     async def _recover(self, run_id: str, git: TeamGit, *, announce: bool) -> None:
-        """After a restart: in-progress tasks back to pending, members idle, note it."""
+        """After a restart: undo an unverified merge, in-progress tasks back, members idle."""
         at = time.strftime("%H:%M", time.localtime(self.clock()))
+        await self._undo_open_merge(run_id, git)
         moved = await self._salvage(run_id, git, f"прервано в {at}, продолжено")
-        for member in self.store.members(run_id):
-            if member.status == "working":
-                self.store.update_member(run_id, member.name, status="idle")
+        self._idle_members(run_id)
         if announce:
             self.store.log_event(run_id, "interrupted", at=at, tasks=moved)
+
+    async def _undo_open_merge(self, run_id: str, git: TeamGit) -> None:
+        """Roll back a merge the process died in (before it was verified and concluded)."""
+        open_merges: dict[str, str] = {}
+        kinds = ["merging", "merge", "verify_failed", "conflict", "markers", "merge_undone"]
+        for event in self.store.events(run_id, kinds=kinds):
+            task = str(event.data.get("task", ""))
+            if event.kind == "merging":
+                open_merges[task] = str(event.data.get("before", ""))
+            else:
+                open_merges.pop(task, None)
+        for task, before in open_merges.items():
+            undone = bool(before) and await asyncio.to_thread(git.tip) != before
+            if undone:
+                await asyncio.to_thread(git.undo_merge, before)
+            # Close it, so a later restart does not roll back newer merges.
+            self.store.log_event(run_id, "merge_undone", task=task, before=before, undone=undone)
 
     @staticmethod
     async def _abort(st: _RunState) -> None:
@@ -1073,9 +1197,5 @@ class TeamRunner:
         if self.host.after_run is not None:
             with contextlib.suppress(Exception):
                 changes = list(await self.host.after_run(st.run_id))
-        report = build_report(self.store, st.run_id, diffstat=diffstat, profile_changes=changes)
-        path = write_report(self.root, st.run_id, report)
-        self.store.log_event(
-            st.run_id, "team_done", outcome=outcome, headline=report.data["headline"],
-            report=str(path),
-        )  # fmt: skip
+        reason = st.stopping if outcome == "stopped" else None
+        self._end(st.run_id, outcome, stop_reason=reason, diffstat=diffstat, changes=changes)
