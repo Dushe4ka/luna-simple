@@ -465,46 +465,58 @@ class TeamRunner:
             if task.merge_of:
                 source = self.store.task(st.run_id, task.merge_of)
                 merge = source.branch if source else None
-            tree = await asyncio.to_thread(
-                st.git.member_tree, task.id, task.attempts, branch=task.branch, merge=merge
-            )
-            self.store.update_task(st.run_id, task.id, branch=tree.branch, worktree=str(tree.path))
-            workspace = Workspace(tree.path)
-        else:
-            workspace = Workspace(st.git.integration)
-        ctx = TeamContext(
-            self.store,
-            self.mailbox,
-            st.run_id,
-            member.name,
-            task_id=task.id,
-            stopping=lambda: st.stopping is not None,
-            on_change=st.changed.set,
-        )
-        session = self._member_session(st, member.name, task, workspace)
-        agent = self._member_agent(st, spec, workspace, ctx, session, code=code)
+            # Under the merge lock: never fork from a merge that verify may still roll back.
+            async with st.merge_lock:
+                tree = await asyncio.to_thread(
+                    st.git.member_tree, task.id, task.attempts, branch=task.branch, merge=merge
+                )
+        finished = False
+        branch = None
         try:
-            result = await self._drive(st, member.name, agent, session, self._task_text(task))
-        except Exception:
             if tree is not None:
+                self.store.update_task(
+                    st.run_id, task.id, branch=tree.branch, worktree=str(tree.path)
+                )
+                workspace = Workspace(tree.path)
+            else:
+                workspace = Workspace(st.git.integration)
+            ctx = TeamContext(
+                self.store,
+                self.mailbox,
+                st.run_id,
+                member.name,
+                task_id=task.id,
+                stopping=lambda: st.stopping is not None,
+                on_change=st.changed.set,
+            )
+            session = self._member_session(st, member.name, task, workspace)
+            agent = self._member_agent(st, spec, workspace, ctx, session, code=code)
+            result = await self._drive(st, member.name, agent, session, self._task_text(task))
+            self.store.update_member(
+                st.run_id, member.name, add_steps=result.steps, add_cost=result.cost
+            )
+            self._journal(st, plan_member, spec, session, task, result)
+            status, note = self._outcome(ctx, task, spec, result)
+            if tree is not None:
+                stat, commits = await asyncio.to_thread(
+                    st.git.finish, tree, f"luna team {st.run_id} {task.id}: {task.title[:60]}"
+                )
+                finished = True
+                branch = tree.branch if stat else None
+                task = self.store.update_task(
+                    st.run_id,
+                    task.id,
+                    worktree=None,
+                    branch=branch,
+                    commits=[*task.commits, *commits],
+                )
+        except Exception:
+            # A cancel (process going away) is not caught: its worktree stays for recovery.
+            if tree is not None and not finished:
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(st.git.salvage, tree.path, tree.branch)
                 self.store.update_task(st.run_id, task.id, worktree=None)
             raise
-        self.store.update_member(
-            st.run_id, member.name, add_steps=result.steps, add_cost=result.cost
-        )
-        self._journal(st, plan_member, spec, session, task, result)
-        status, note = self._outcome(ctx, task, spec, result)
-        branch = None
-        if tree is not None:
-            stat, commits = await asyncio.to_thread(
-                st.git.finish, tree, f"luna team {st.run_id} {task.id}: {task.title[:60]}"
-            )
-            branch = tree.branch if stat else None
-            task = self.store.update_task(
-                st.run_id, task.id, worktree=None, branch=branch, commits=[*task.commits, *commits]
-            )
         if st.stopping and status != "done":
             kept = f"; work kept on {branch}" if branch else ""
             self._set_task(st, task.id, "pending", f"stopped ({st.stopping}){kept}", member.name)

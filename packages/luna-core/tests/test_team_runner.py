@@ -1,5 +1,6 @@
 """The team runner: members, merges, the lead and the report."""
 
+import asyncio
 import subprocess
 
 import pytest
@@ -241,6 +242,99 @@ async def test_a_member_that_reports_failed_leaves_a_partial_run(repo, tmp_path)
     rid = ready_run(runner, store, plan_dict([{"id": "T1", "title": "call api", "member": "dev"}]))
     assert await runner.run(rid) == "partial"
     assert store.task(rid, "T1").note == "cannot reach the api"
+    assert "**Итог:** ЧАСТИЧНО 0/1" in report_of(repo, rid)
+    log.close()
+    store.close()
+
+
+async def test_no_member_tree_forks_from_a_merge_under_verification(repo, tmp_path):
+    # ops finishes a research task only once T1's verify has started (the verify
+    # command touches ``mark`` and then sleeps), so ops claims T2 right inside
+    # the merge→verify→undo window of T1's rejected merge.
+    mark = tmp_path / "verify-started"
+    verify = f"touch '{mark}'; sleep 0.5; {VERIFY}"
+
+    async def before(who, request):
+        if who == "ops" and len(provider.requests["ops"]) == 1:
+            for _ in range(1000):
+                if mark.exists():
+                    return
+                await asyncio.sleep(0.01)
+
+    provider = TeamProvider(
+        {
+            "dev": [
+                call("write_file", {"file_path": "bad.txt", "content": "x\n"}, "w1"),
+                done("first try"),
+                text("done"),
+                call("delete", {"file_path": "bad.txt"}, "d1"),
+                done("removed it"),
+                text("done"),
+            ],
+            "ops": [
+                text("looked around"),
+                call("write_file", {"file_path": "c.txt", "content": "c\n"}, "w2"),
+                done("wrote c"),
+                text("done"),
+            ],
+        },
+        before=before,
+    )
+    settings = TeamSettings(verify_command=verify, max_attempts=2, max_concurrent=2)
+    runner, store, log = make_runner(tmp_path, provider, settings=settings)
+    rid = ready_run(
+        runner,
+        store,
+        plan_dict(
+            [
+                {"id": "T0", "title": "look", "kind": "research", "member": "ops"},
+                {"id": "T1", "title": "tidy", "member": "dev"},
+                {"id": "T2", "title": "write c", "member": "ops"},
+            ],
+            members=[
+                {"name": "dev", "prompt": "You edit."},
+                {"name": "ops", "prompt": "You edit."},
+            ],
+        ),
+    )
+    assert await runner.run(rid) == "done"
+    assert mark.exists()
+    assert [e.data["task"] for e in store.events(rid, kinds=["verify_failed"])] == ["T1"]
+    commits = store.task(rid, "T2").commits
+    assert commits
+    for commit in commits:
+        probe = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}:bad.txt"], cwd=repo, capture_output=True
+        )
+        assert probe.returncode != 0
+    assert git(repo, "show", f"luna/team/{rid}:c.txt") == "c\n"
+    log.close()
+    store.close()
+
+
+async def test_a_failed_member_assembly_leaves_no_worktree(repo, tmp_path):
+    def broken_loader(name):
+        raise RuntimeError(f"cannot load skill {name}")
+
+    provider = TeamProvider({})
+    runner, store, log = make_runner(tmp_path, provider)
+    runner.host.skill_names = ("x",)
+    runner.host.skill_loader = broken_loader
+    rid = ready_run(
+        runner,
+        store,
+        plan_dict(
+            [{"id": "T1", "title": "write", "kind": "code", "member": "dev"}],
+            members=[{"name": "dev", "prompt": "You write code.", "skills": ["x"]}],
+        ),
+    )
+    assert await runner.run(rid) == "partial"
+    task = store.task(rid, "T1")
+    assert task.status == "failed" and "cannot load skill x" in task.note
+    assert task.worktree is None
+    assert list((repo / ".luna" / "worktrees").glob("team-*-T1-*")) == []
+    assert "dev" not in provider.requests
+    assert store.run(rid).status == "finished"
     assert "**Итог:** ЧАСТИЧНО 0/1" in report_of(repo, rid)
     log.close()
     store.close()
