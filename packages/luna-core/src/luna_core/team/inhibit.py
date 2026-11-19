@@ -49,20 +49,15 @@ def keep_awake(
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
     kernel32: object | None = None,
 ) -> Iterator[bool]:
-    """Hold off system sleep inside the block; yield whether that worked."""
+    """Hold off system sleep inside the block; yield whether that worked.
+
+    Never raises: any failure to take the inhibition yields ``False``.
+    """
     if not enabled:
         yield False
         return
     if platform == "win32":
-        k32 = kernel32 if kernel32 is not None else _kernel32()
-        if k32 is None:
-            yield False
-            return
-        k32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        try:
-            yield True
-        finally:
-            k32.SetThreadExecutionState(ES_CONTINUOUS)
+        yield from _windows_awake(kernel32)
         return
     argv = _argv(platform, which)
     if argv is None:
@@ -76,7 +71,13 @@ def keep_awake(
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    except OSError:
+    except Exception:
+        yield False
+        return
+    if proc.poll() is not None:
+        # Spawned but already gone (e.g. no D-Bus for systemd-inhibit).
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
         yield False
         return
     try:
@@ -85,3 +86,23 @@ def keep_awake(
         with contextlib.suppress(Exception):
             kill_tree(proc.pid)
             proc.wait(timeout=5)
+
+
+def _windows_awake(kernel32: object | None) -> Iterator[bool]:
+    k32 = kernel32 if kernel32 is not None else _kernel32()
+    if k32 is None:
+        yield False
+        return
+    try:
+        ok = k32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    except Exception:
+        yield False
+        return
+    if not ok:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        with contextlib.suppress(Exception):
+            k32.SetThreadExecutionState(ES_CONTINUOUS)

@@ -12,14 +12,22 @@ class FakeProc:
         self.pid = 4242
         self.waited = False
 
+    def poll(self):
+        return None
+
     def wait(self, timeout=None):
         self.waited = True
         return 0
 
 
-def spawner(started):
+class ExitedProc(FakeProc):
+    def poll(self):
+        return 1
+
+
+def spawner(started, proc_cls=FakeProc):
     def popen(argv, **kwargs):
-        proc = FakeProc(argv, **kwargs)
+        proc = proc_cls(argv, **kwargs)
         started.append(proc)
         return proc
 
@@ -60,6 +68,24 @@ def test_a_failing_spawn_is_not_fatal():
         assert held is False
 
 
+def test_a_spawn_raising_a_non_os_error_yields_false():
+    def broken(argv, **kwargs):
+        raise ValueError("bad argv")
+
+    with keep_awake(platform="darwin", which=lambda name: "/x", popen=broken) as held:
+        assert held is False
+
+
+def test_an_already_exited_inhibitor_yields_false(monkeypatch):
+    monkeypatch.setattr(inhibit, "kill_tree", lambda pid: None)
+    started = []
+    with keep_awake(
+        platform="linux", which=lambda name: f"/bin/{name}", popen=spawner(started, ExitedProc)
+    ) as held:
+        assert held is False
+    assert started[0].waited
+
+
 def test_windows_sets_and_clears_the_execution_state():
     calls = []
 
@@ -74,3 +100,25 @@ def test_windows_sets_and_clears_the_execution_state():
         inhibit.ES_CONTINUOUS | inhibit.ES_SYSTEM_REQUIRED,
         inhibit.ES_CONTINUOUS,
     ]
+
+
+def test_windows_failed_set_yields_false_and_skips_the_clear():
+    calls = []
+
+    class Kernel32:
+        def SetThreadExecutionState(self, flags):  # noqa: N802 - Win32 name
+            calls.append(flags)
+            return 0
+
+    with keep_awake(platform="win32", kernel32=Kernel32()) as held:
+        assert held is False
+    assert calls == [inhibit.ES_CONTINUOUS | inhibit.ES_SYSTEM_REQUIRED]
+
+
+def test_windows_raising_set_yields_false():
+    class Kernel32:
+        def SetThreadExecutionState(self, flags):  # noqa: N802 - Win32 name
+            raise OSError("win32 call failed")
+
+    with keep_awake(platform="win32", kernel32=Kernel32()) as held:
+        assert held is False
