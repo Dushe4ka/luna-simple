@@ -343,6 +343,36 @@ class TeamRunner:
             return True
         return False
 
+    async def resume(self, run_id: str) -> str:
+        """Continue a finished run: failed and stuck tasks go back to the board."""
+        run = self._run(run_id)
+        if run.status != "finished" or run.branch is None:
+            raise LunaCoreError(f"team {run_id} cannot be resumed (it is {run.status})")
+        tasks = self.store.tasks(run_id)
+        open_fixes = {
+            t.merge_of for t in tasks if t.merge_of and t.status not in ("done", "failed")
+        }
+        for task in tasks:
+            if task.status == "failed" or (task.status == "blocked" and task.id not in open_fixes):
+                self.store.update_task(run_id, task.id, status="pending", attempts=0)
+        report = self.root / ".luna" / "teams" / run_id / "report.md"
+        previous = report.read_text(encoding="utf-8") if report.is_file() else ""
+        self.store.update_run(
+            run_id, status="running", outcome=None, stop_reason=None, finished=None,
+            started=self.clock(),
+        )  # fmt: skip
+        self.store.log_event(run_id, "resumed")
+        self._seed[run_id] = [f"Resumed by the user. The previous report:\n{previous[:6000]}"]
+        return await self.run(run_id)
+
+    def interrupted(self) -> list[str]:
+        """List runs of this project left ``running`` (a crash or restart), not running here."""
+        return [
+            r.id
+            for r in self.store.runs(workdir=str(self.root), status="running")
+            if r.id not in self._states and r.branch is not None
+        ]
+
     async def run(self, run_id: str) -> str:
         """Run an accepted team to the end and return its outcome."""
         run = self._run(run_id)
@@ -352,11 +382,17 @@ class TeamRunner:
             raise LunaCoreError(f"team {run_id} is already running here")
         git = TeamGit(self.root, run_id)
         session = Session.open(self.log, run.session_id, undo=False)
+        resumed = run_id in self._seed
         if run.branch is None:
-            base = await asyncio.to_thread(git.start)
+            try:
+                base = await asyncio.to_thread(git.start)
+            except LunaCoreError as exc:
+                self._fail_early(run_id, exc)
+                raise
             self.store.update_run(run_id, branch=git.branch, base=base, started=self.clock())
         else:
             await asyncio.to_thread(git.ensure)
+            await self._recover(run_id, git, announce=not resumed)
         st = self._new_state(self._run(run_id), git, session)
         st.inbox.extend(self._seed.pop(run_id, []))
         self._states[run_id] = st
@@ -970,6 +1006,42 @@ class TeamRunner:
 
     # --- the end ----------------------------------------------------------
 
+    def _fail_early(self, run_id: str, exc: Exception) -> None:
+        """End a run that could not even start as ``error``, with a report."""
+        self.store.log_event(run_id, "error", message=str(exc))
+        self.store.update_run(run_id, status="finished", outcome="error", finished=self.clock())
+        report = build_report(self.store, run_id)
+        write_report(self.root, run_id, report)
+        self.store.log_event(run_id, "team_done", outcome="error", headline=report.data["headline"])
+
+    async def _salvage(self, run_id: str, git: TeamGit, note: str) -> list[str]:
+        """Commit and drop worktrees of tasks still in progress; put those tasks back."""
+        moved = []
+        for task in self.store.tasks(run_id):
+            if task.status != "in_progress":
+                continue
+            branch = task.branch
+            if task.worktree and branch:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(git.salvage, Path(task.worktree), branch)
+            keep = bool(branch) and await asyncio.to_thread(git.has_branch, branch)
+            self.store.update_task(
+                run_id, task.id, status="pending", worktree=None,
+                branch=branch if keep else None, note=note,
+            )  # fmt: skip
+            moved.append(task.id)
+        return moved
+
+    async def _recover(self, run_id: str, git: TeamGit, *, announce: bool) -> None:
+        """After a restart: in-progress tasks back to pending, members idle, note it."""
+        at = time.strftime("%H:%M", time.localtime(self.clock()))
+        moved = await self._salvage(run_id, git, f"прервано в {at}, продолжено")
+        for member in self.store.members(run_id):
+            if member.status == "working":
+                self.store.update_member(run_id, member.name, status="idle")
+        if announce:
+            self.store.log_event(run_id, "interrupted", at=at, tasks=moved)
+
     @staticmethod
     async def _abort(st: _RunState) -> None:
         tasks = [*st.workers.values(), *([st.lead] if st.lead else [])]
@@ -978,6 +1050,8 @@ class TeamRunner:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _finish(self, st: _RunState, outcome: str) -> None:
+        if outcome == "error":
+            await self._salvage(st.run_id, st.git, "the run failed")
         run = self._run(st.run_id)
         self.store.update_run(
             st.run_id,
