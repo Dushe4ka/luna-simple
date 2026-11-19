@@ -72,6 +72,11 @@ add or split tasks, hire (within the limits) or retire members, reassign stuck t
 answer questions. Only you may broadcast. If nothing needs you, end your turn at once \
 without calling tools. You never change files yourself."""
 
+STALL_NOTE = (
+    "The board has not changed for several wakes. Stop discussing: assign, split, reassign "
+    "or retire now, or end your turn and let the run finish."
+)
+
 
 @dataclass
 class TeamHost:
@@ -326,6 +331,18 @@ class TeamRunner:
             run_id, "team_done", outcome="stopped", headline=report.data["headline"]
         )
 
+    def cancel(self, run_id: str) -> bool:
+        """Stop a running team softly, or decline one that has not started."""
+        st = self._states.get(run_id)
+        if st is not None:
+            self._stop(st, "cancel")
+            return True
+        run = self.store.run(run_id)
+        if run is not None and run.status in ("planning", "awaiting_plan"):
+            self.decline(run_id)
+            return True
+        return False
+
     async def run(self, run_id: str) -> str:
         """Run an accepted team to the end and return its outcome."""
         run = self._run(run_id)
@@ -371,6 +388,7 @@ class TeamRunner:
     async def _loop(self, st: _RunState) -> str:
         while True:
             st.changed.clear()
+            self._check_limits(st)
             if not st.stopping:
                 self._dispatch(st)
                 self._maybe_wake_lead(st)
@@ -496,6 +514,7 @@ class TeamRunner:
                 st.run_id, member.name, add_steps=result.steps, add_cost=result.cost
             )
             self._journal(st, plan_member, spec, session, task, result)
+            self._check_limits(st)
             status, note = self._outcome(ctx, task, spec, result)
             if tree is not None:
                 stat, commits = await asyncio.to_thread(
@@ -810,6 +829,44 @@ class TeamRunner:
             return None
         return session.cost() + max(0.0, st.budget - self._spent(st))
 
+    # --- limits -----------------------------------------------------------
+
+    def _check_limits(self, st: _RunState) -> None:
+        """Soft-stop the run once the wall clock or the budget runs out."""
+        if st.stopping:
+            return
+        if self.clock() >= st.deadline:
+            self._stop(st, "time")
+        elif st.budget is not None and self._spent(st) >= st.budget:
+            self._stop(st, "budget")
+
+    def _stop(self, st: _RunState, reason: str) -> None:
+        """No new tasks; running turns get the step in flight plus one more to save work."""
+        if st.stopping:
+            return
+        st.stopping = reason
+        self.store.log_event(st.run_id, "soft_stop", reason=reason)
+        for agent, session, before in list(st.turns.values()):
+            done = sum(1 for m in session.messages()[before:] if m.role == "assistant")
+            agent.max_steps = min(agent.max_steps, done + 2)
+        st.changed.set()
+
+    def _stall_check(self, st: _RunState) -> str:
+        """Return ``""``, ``"warn"`` or ``"stop"`` at every lead wake (a stop stalls the run)."""
+        mark = self.store.fingerprint(st.run_id)
+        st.idle_wakes = st.idle_wakes + 1 if mark == st.last_print else 0
+        st.last_print = mark
+        limit = self.settings.stall_wakes
+        if st.idle_wakes >= 2 * limit:
+            st.stalled = True
+            self.store.log_event(st.run_id, "stalled", LEAD)
+            self._stop(st, "stall")
+            return "stop"
+        if st.idle_wakes == limit:
+            self.store.log_event(st.run_id, "stall_warn", LEAD)
+            return "warn"
+        return ""
+
     # --- the lead ---------------------------------------------------------
 
     def _lead_has_work(self, st: _RunState) -> bool:
@@ -820,7 +877,12 @@ class TeamRunner:
     def _maybe_wake_lead(self, st: _RunState) -> None:
         if st.lead is not None or not self._lead_has_work(st):
             return
+        verdict = self._stall_check(st)
+        if verdict == "stop":
+            return
         lines, st.inbox = st.inbox, []
+        if verdict == "warn":
+            lines.append(STALL_NOTE)
         st.lead = asyncio.create_task(self._wake_lead(st, lines), name=f"team-{st.run_id}-lead")
 
     async def _wake_lead(self, st: _RunState, lines: list[str]) -> None:
