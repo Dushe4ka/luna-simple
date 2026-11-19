@@ -348,13 +348,7 @@ class TeamRunner:
         run = self._run(run_id)
         if run.status != "finished" or run.branch is None:
             raise LunaCoreError(f"team {run_id} cannot be resumed (it is {run.status})")
-        tasks = self.store.tasks(run_id)
-        open_fixes = {
-            t.merge_of for t in tasks if t.merge_of and t.status not in ("done", "failed")
-        }
-        for task in tasks:
-            if task.status == "failed" or (task.status == "blocked" and task.id not in open_fixes):
-                self.store.update_task(run_id, task.id, status="pending", attempts=0)
+        self._reopen(run_id)
         report = self.root / ".luna" / "teams" / run_id / "report.md"
         previous = report.read_text(encoding="utf-8") if report.is_file() else ""
         self.store.update_run(
@@ -364,6 +358,15 @@ class TeamRunner:
         self.store.log_event(run_id, "resumed")
         self._seed[run_id] = [f"Resumed by the user. The previous report:\n{previous[:6000]}"]
         return await self.run(run_id)
+
+    def _reopen(self, run_id: str) -> None:
+        """Put failed and stuck tasks back on the board for a resume."""
+        tasks = self.store.tasks(run_id)
+        # A resolve task that is not done still owns its blocked source task.
+        open_fixes = {t.merge_of for t in tasks if t.merge_of and t.status != "done"}
+        for task in tasks:
+            if task.status == "failed" or (task.status == "blocked" and task.id not in open_fixes):
+                self.store.update_task(run_id, task.id, status="pending", attempts=0)
 
     def interrupted(self) -> list[str]:
         """List runs of this project left ``running`` (a crash or restart), not running here."""

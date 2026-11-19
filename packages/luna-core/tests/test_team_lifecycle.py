@@ -157,3 +157,17 @@ async def test_a_run_outside_git_fails_with_a_report(tmp_path):
     assert "**Итог:** ОШИБКА" in report and "git repository" in report
     log.close()
     store.close()
+
+
+async def test_resume_keeps_a_source_blocked_while_its_resolve_task_is_not_done(repo, tmp_path):
+    runner, store, log = make_runner(tmp_path, TeamProvider({}))
+    rid = ready_run(runner, store, plan_dict(ONE))
+    store.add_task(rid, title="resolve", kind="code", merge_of="T1", task_id="T3")
+    store.update_task(rid, "T1", status="blocked", branch="luna/team/x/T1")
+    store.update_task(rid, "T3", status="failed")
+    store.update_run(rid, status="finished", outcome="partial", branch=f"luna/team/{rid}")
+    runner._reopen(rid)
+    assert store.task(rid, "T3").status == "pending"
+    assert store.task(rid, "T1").status == "blocked"
+    log.close()
+    store.close()
