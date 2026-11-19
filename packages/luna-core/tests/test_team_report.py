@@ -93,3 +93,20 @@ def test_quiet_run_says_so(store):
     md = build_report(store, rid).markdown
     assert "Всё сделано." in md and "Ничего." in md and "Нет." in md
     assert "## Ветка" not in md and "## Профили субагентов" not in md
+
+
+def test_research_notes_go_into_the_report(store, tmp_path):
+    rid = finished(store, "done")
+    store.add_task(rid, title="look around", kind="research")
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    note = "# T1: look around\n\nThe CLI lives in cli.py.\n"
+    (notes / "T1.md").write_text(note, encoding="utf-8")
+    (notes / "T2.md").write_text("x" * 5000, encoding="utf-8")
+    report = build_report(store, rid, notes_dir=notes)
+    assert "## Заметки" in report.markdown
+    assert "The CLI lives in cli.py." in report.markdown
+    assert "x" * 2000 in report.markdown and "x" * 2001 not in report.markdown
+    assert [n["task"] for n in report.data["notes"]] == ["T1", "T2"]
+    assert "## Заметки" not in build_report(store, rid).markdown
+    assert "## Заметки" not in build_report(store, rid, notes_dir=tmp_path / "none").markdown

@@ -11,7 +11,7 @@ from luna_core.context import build_system_prompt
 from luna_core.errors import LunaCoreError
 from luna_core.events import TurnError
 from luna_core.loop import Agent
-from luna_core.policy import Policy, UnsafeRule, check_rule_safe
+from luna_core.policy import Policy, Rules, UnsafeRule, check_rule_safe
 from luna_core.providers.base import Provider
 from luna_core.sandbox import Sandbox
 from luna_core.session import Session
@@ -357,6 +357,7 @@ class Planner:
         check_member: Callable[[PlanMember], object] | None = None,
         model_overrides: dict | None = None,
         sandbox: Sandbox | None = None,
+        deny: Iterable[str] = (),
     ) -> None:
         self.provider = provider
         self.model = model
@@ -368,6 +369,8 @@ class Planner:
         self.check_member = check_member
         self.model_overrides = model_overrides
         self.sandbox = sandbox
+        #: ``deny`` rules of ``permissions.toml``: they hold while planning too.
+        self.deny = list(deny)
 
     @staticmethod
     def _request(task: str, feedback: str | None, previous: TeamPlan | None) -> str:
@@ -411,7 +414,7 @@ class Planner:
             self.model,
             tools=tools,
             system=build_system_prompt(LEAD_PLAN_PROMPT, root=self.workspace.root),
-            policy=Policy(workspace=self.workspace, plan_mode=True),
+            policy=Policy(Rules(deny=list(self.deny)), workspace=self.workspace, plan_mode=True),
             workspace=self.workspace,
             sandbox=self.sandbox,
             max_steps=self.max_steps,

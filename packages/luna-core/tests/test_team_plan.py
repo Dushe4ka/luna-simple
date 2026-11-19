@@ -174,3 +174,17 @@ async def test_no_plan_is_an_error(tmp_path, session):
     provider = FakeProvider([FakeProvider.text("I refuse")])
     with pytest.raises(PlanError, match="without submitting"):
         await planner(tmp_path, provider).plan(session, "x")
+
+
+async def test_deny_rules_hold_while_planning(tmp_path, session):
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    provider = FakeProvider(
+        [
+            FakeProvider.call("read_file", {"file_path": ".env"}, "c1"),
+            FakeProvider.call("submit_plan", GOOD, "c2"),
+            FakeProvider.text("plan submitted"),
+        ]
+    )
+    await planner(tmp_path, provider, deny=["read_file:.env"]).plan(session, "x")
+    found = results(session)
+    assert found["c1"][0] is True and "SECRET" not in found["c1"][1]

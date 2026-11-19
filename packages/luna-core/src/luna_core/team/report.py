@@ -26,8 +26,10 @@ STATUS_TITLES = {
 }
 PROBLEM_KINDS = frozenset(
     {"team_denied", "verify_failed", "conflict", "markers", "interrupted", "provider_error",
-     "stall_warn", "stalled", "lead_out_of_steps", "error"}
+     "stall_warn", "stalled", "lead_out_of_steps", "merge_undone", "error"}
 )  # fmt: skip
+#: How much of each research note the report quotes (characters).
+NOTE_LIMIT = 2000
 
 
 @dataclass(frozen=True)
@@ -84,7 +86,27 @@ def _problem(event: TeamEvent) -> str:
         return "… застой: доска так и не изменилась, запуск остановлен"
     if event.kind == "lead_out_of_steps":
         return "… у лидера кончились шаги"
+    if event.kind == "merge_undone":
+        undone = "откачено, " if d.get("undone", True) else ""
+        return f"↺ {d.get('task')}: вливание прервано до проверки — {undone}задача повторяется"
     return f"✗ {_line(d.get('message', ''))}"
+
+
+def read_notes(notes_dir: str | Path | None) -> list[dict]:
+    """Read the research notes in ``notes_dir`` (``<task>.md``), each cut to ``NOTE_LIMIT``."""
+    if notes_dir is None or not Path(notes_dir).is_dir():
+        return []
+    notes = []
+    for path in sorted(Path(notes_dir).glob("*.md")):
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        title, _, body = raw.partition("\n") if raw.startswith("# ") else ("", "", raw)
+        body = body.strip()
+        cut = body[:NOTE_LIMIT] + ("…" if len(body) > NOTE_LIMIT else "")
+        notes.append({"task": path.stem, "title": title[2:].strip() or path.stem, "text": cut})
+    return notes
 
 
 def build_report(
@@ -93,8 +115,9 @@ def build_report(
     *,
     diffstat: str = "",
     profile_changes: Iterable[str] = (),
+    notes_dir: str | Path | None = None,
 ) -> Report:
-    """Render the report of a run from the board and its events."""
+    """Render the report of a run from the board, its events and its research notes."""
     run = store.run(run_id)
     if run is None:
         raise KeyError(f"no team run {run_id}")
@@ -105,6 +128,7 @@ def build_report(
     problems = [_problem(e) for e in events if e.kind in PROBLEM_KINDS]
     decisions = [_line(e.data.get("text", "")) for e in events if e.kind == "decision"]
     changes = [_line(c) for c in profile_changes]
+    notes = read_notes(notes_dir)
     cost = sum(m.cost for m in members)
     duration = ((run.finished or time.time()) - run.started) if run.started else 0.0
     merge = f"git merge --no-ff {run.branch}" if run.branch else ""
@@ -127,6 +151,10 @@ def build_report(
             )
     else:
         lines.append("Задач нет.")
+    if notes:
+        lines += ["", "## Заметки"]
+        for note in notes:
+            lines += ["", f"### {_line(note['title'])}", "", note["text"] or "—"]
     undone = [t for t in tasks if t.status != "done"]
     lines += ["", "## Не сделано", ""]
     lines += [
@@ -177,6 +205,7 @@ def build_report(
         "problems": problems,
         "decisions": decisions,
         "profile_changes": changes,
+        "notes": notes,
     }
     return Report("\n".join(lines) + "\n", data)
 
