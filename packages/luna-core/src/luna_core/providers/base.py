@@ -53,11 +53,16 @@ class Provider(Protocol):
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    """Retry transient failures that happen before any output arrived."""
+    """Retry transient failures that happen before any output arrived.
+
+    ``rate_limit=False`` leaves 429s to the caller (a rate gate that must see
+    and pace every HTTP attempt); other retryable errors are still retried.
+    """
 
     attempts: int = 3
     base_delay: float = 1.0
     max_delay: float = 30.0
+    rate_limit: bool = True
 
 
 async def with_retries(
@@ -80,6 +85,8 @@ async def with_retries(
             return
         except ProviderError as exc:
             if started or not exc.retryable or attempt + 1 >= policy.attempts:
+                raise
+            if exc.kind == "rate_limit" and not policy.rate_limit:
                 raise
             delay = exc.retry_after or min(policy.max_delay, policy.base_delay * 2**attempt)
             attempt += 1

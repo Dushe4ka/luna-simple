@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import dataclasses
 import time
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from luna_core.errors import ProviderError
 from luna_core.events import ModelEvent
-from luna_core.providers.base import ModelRequest, Provider
+from luna_core.providers.base import ModelRequest, Provider, RetryPolicy
 
 #: Starting rate when nothing is configured (requests per minute).
 DEFAULT_RPM = 30.0
@@ -23,6 +26,8 @@ DEFAULT_RPM = 30.0
 MIN_RPM = 1.0
 #: Pause after a 429 that carries no ``Retry-After`` (seconds).
 DEFAULT_BACKOFF = 10.0
+#: The longest pause a single 429 may impose, whatever its ``Retry-After`` (seconds).
+MAX_BACKOFF = 300.0
 #: Quiet time after the last 429 before the rate starts climbing back (seconds).
 RECOVER_AFTER = 600.0
 #: While recovering, the rate climbs by this share of the target per quiet minute.
@@ -126,6 +131,7 @@ class RateGate:
         now = self._clock()
         self._refill(now)
         wait = retry_after if retry_after and retry_after > 0 else DEFAULT_BACKOFF
+        wait = min(wait, MAX_BACKOFF)
         self._blocked_until = max(self._blocked_until, now + wait)
         self._recover_from = now + RECOVER_AFTER
         self._set_rate(max(MIN_RPM, self._rate / 2))
@@ -137,10 +143,15 @@ class GatedProvider:
     A 429 before any output penalizes the gate and is retried (up to
     ``attempts`` requests in all); a 429 after output started, or the last
     one, propagates. Other errors pass through untouched.
+
+    The inner provider must not retry a 429 on its own, or each logical
+    attempt would send several HTTP requests past the gate: a provider with
+    a :class:`RetryPolicy` is used through a shallow copy whose policy leaves
+    429s to the gate (the caller's provider object keeps its own policy).
     """
 
     def __init__(self, inner: Provider, gate: RateGate, *, attempts: int = 5) -> None:
-        self.inner = inner
+        self.inner = _without_rate_limit_retries(inner)
         self.gate = gate
         self.attempts = attempts
         self.name = inner.name
@@ -161,6 +172,29 @@ class GatedProvider:
                 self.gate.penalize(exc.retry_after)
                 if started or attempt == self.attempts:
                     raise
+
+
+# One copy per provider object, so state such as a cached OAuth token is
+# shared by every gated use instead of being fetched again for each turn.
+_CLONES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _without_rate_limit_retries(provider: Provider) -> Provider:
+    """Return ``provider``, or a shallow copy of it that does not retry 429s itself."""
+    policy = getattr(provider, "retry", None)
+    if not isinstance(policy, RetryPolicy) or not policy.rate_limit:
+        return provider
+    try:
+        cached = _CLONES.get(provider)
+    except TypeError:  # not weak-referenceable
+        cached = None
+    if cached is not None and cached[0] is policy:
+        return cached[1]
+    clone = copy.copy(provider)
+    clone.retry = dataclasses.replace(policy, rate_limit=False)
+    with contextlib.suppress(TypeError):
+        _CLONES[provider] = (policy, clone)
+    return clone
 
 
 _SHARED: RateGate | None = None

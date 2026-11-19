@@ -120,3 +120,79 @@ def test_gated_wraps_once():
 def test_rpm_must_be_positive():
     with pytest.raises(ValueError):
         RateGate(0)
+
+
+class CountingGate(RateGate):
+    """A gate that counts the tokens it hands out."""
+
+    def __init__(self, clock: Clock) -> None:
+        super().__init__(30.0, clock=clock, sleep=clock.sleep)
+        self.acquired = 0
+
+    async def acquire(self) -> None:
+        self.acquired += 1
+        await super().acquire()
+
+
+def _always_429():
+    import httpx
+
+    hits: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits.append(1)
+        return httpx.Response(429, json={"error": {"message": "slow down"}})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), hits
+
+
+async def test_every_provider_request_passes_the_gate():
+    from luna_core.providers.base import RetryPolicy
+    from luna_core.providers.openai_chat import OpenAIChat
+
+    client, hits = _always_429()
+    clock = Clock()
+    g = CountingGate(clock)
+    inner = OpenAIChat(api_key="k", client=client, retry=RetryPolicy(attempts=3, base_delay=0))
+    provider = GatedProvider(inner, g, attempts=5)
+    with pytest.raises(ProviderError) as info:
+        async for _ in provider.stream(REQUEST):
+            pass
+    assert info.value.kind == "rate_limit"
+    # The provider's own retry policy no longer multiplies 429s (it was 5 x 3 = 15).
+    assert len(hits) == 5
+    assert g.acquired == len(hits)
+    # Ordinary sessions keep their provider's own retry behaviour.
+    assert inner.retry.rate_limit is True
+    await client.aclose()
+
+
+async def test_an_ungated_provider_still_retries_429_itself():
+    from luna_core.providers.base import RetryPolicy
+    from luna_core.providers.openai_chat import OpenAIChat
+
+    client, hits = _always_429()
+    inner = OpenAIChat(api_key="k", client=client, retry=RetryPolicy(attempts=3, base_delay=0))
+    with pytest.raises(ProviderError):
+        async for _ in inner.stream(REQUEST):
+            pass
+    assert len(hits) == 3
+    await client.aclose()
+
+
+async def test_a_huge_retry_after_is_capped():
+    g, clock = gate(30)
+    g.penalize(86_400.0)
+    await g.acquire()
+    assert clock.slept[0] == pytest.approx(rategate.MAX_BACKOFF)
+    assert rategate.MAX_BACKOFF <= 300
+
+
+def test_gating_one_provider_twice_shares_one_copy():
+    from luna_core.providers.openai_chat import OpenAIChat
+
+    g, _clock = gate()
+    inner = OpenAIChat(api_key="k")
+    first, second = GatedProvider(inner, g), GatedProvider(inner, g)
+    assert first.inner is second.inner and first.inner is not inner
+    assert first.inner.retry.rate_limit is False and inner.retry.rate_limit is True
