@@ -14,6 +14,7 @@ from pathlib import Path
 
 from luna_core.hooks import POINTS
 from luna_core.paths import user_config_dir
+from luna_core.roles import ROLES
 
 from luna.config.providers import (
     DEFAULT_PROVIDER,
@@ -114,7 +115,7 @@ def _apply_toml(data: dict, into: dict, *, project: bool = False) -> None:
     if "name" in model:
         into["model"] = model["name"]
     roles = dict(into.get("roles", {}))
-    for role in ("fast", "plan", "vision", "summarize"):
+    for role in ROLES:
         if role in model:
             roles[role] = str(model[role])
     if roles:

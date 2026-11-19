@@ -176,3 +176,35 @@ async def test_side_question_images_without_vision_set_a_notice(tmp_path, sessio
     [e async for e in agent.run(session, "main question")]
     answer = await agent.side_question(session, "what is this?", images=[Image("image/png", "AAA")])
     assert answer.text == "sure, text only" and "images" in answer.notice
+
+
+def test_strong_role_falls_back_to_plan_then_default():
+    main, other = FakeProvider([]), FakeProvider([])
+    assert ModelRoles().get("strong", main, "big") == (main, "big")
+    assert ModelRoles(plan="thinker").get("strong", main, "big") == (main, "thinker")
+    assert ModelRoles(plan="thinker", strong="genius").get("strong", main, "big") == (
+        main,
+        "genius",
+    )
+    assert ModelRoles(strong=(other, "far")).get("strong", main, "big") == (other, "far")
+
+
+def test_strong_is_never_used_for_ordinary_turns():
+    main = FakeProvider([])
+    roles = ModelRoles(strong="genius")
+    assert roles.for_turn(main, "big", images=False, plan=False) == (main, "big", None)
+    assert roles.for_turn(main, "big", images=False, plan=True) == (main, "big", None)
+
+
+def test_dynamic_subagents_may_ask_for_the_strong_role():
+    from luna_core.dynamic import resolve_spec
+    from luna_core.subagents import BUILTIN_SUBAGENTS, DynamicSettings
+
+    spec, dynamic = resolve_spec(
+        BUILTIN_SUBAGENTS["researcher"],
+        {"model": "strong"},
+        parent_tools={"read_file": object()},
+        skills=(),
+        settings=DynamicSettings(),
+    )
+    assert dynamic and spec.model == "strong"

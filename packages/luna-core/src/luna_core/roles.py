@@ -8,17 +8,23 @@ from luna_core import catalog
 from luna_core.providers.base import Provider
 
 RoleTarget = str | tuple[Provider, str]
-ROLES = ("fast", "plan", "vision", "summarize")
+ROLES = ("fast", "plan", "vision", "summarize", "strong")
+#: A role that is not set borrows another role's model before the default one.
+_FALLBACK = {"strong": "plan"}
 
 
 @dataclass
 class ModelRoles:
-    """Optional per-role models; unset roles fall back to the default model."""
+    """Optional per-role models; unset roles fall back to the default model.
+
+    ``strong`` (the team lead) falls back to ``plan`` first.
+    """
 
     fast: RoleTarget | None = None
     plan: RoleTarget | None = None
     vision: RoleTarget | None = None
     summarize: RoleTarget | None = None
+    strong: RoleTarget | None = None
 
     def get(self, role: str, provider: Provider, model: str) -> tuple[Provider, str]:
         """Return the provider and model for ``role``."""
@@ -26,6 +32,9 @@ class ModelRoles:
             raise ValueError(f"unknown role {role!r}; expected one of {ROLES}")
         target = getattr(self, role)
         if target is None:
+            fallback = _FALLBACK.get(role)
+            if fallback is not None:
+                return self.get(fallback, provider, model)
             return provider, model
         if isinstance(target, tuple):
             return target
