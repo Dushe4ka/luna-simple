@@ -105,9 +105,22 @@ class TeamGit:
         )
 
     def ensure(self) -> None:
-        """Re-attach the integration worktree (after a restart or a close)."""
+        """Re-attach the integration worktree (after a restart or a close) and clean it.
+
+        A process that died mid-merge or mid-verify can leave a half merge or
+        dirty files there; the next merge would then look like a conflict.
+        """
         with _worktree_lock(self.root):
             self._attach()
+        _git(self.integration, "merge", "--abort")
+        self._clean()
+
+    def _clean(self) -> None:
+        """Drop uncommitted changes in the integration worktree (verify may leave some)."""
+        if not _git(self.integration, "status", "--porcelain").stdout.strip():
+            return
+        self._ok(_git(self.integration, "reset", "--hard", "-q", self.branch), "git reset")
+        _git(self.integration, "clean", "-fdq")
 
     def tip(self) -> str:
         """Return the team branch's current commit."""
@@ -160,11 +173,15 @@ class TeamGit:
 
     def markers(self, branch: str) -> list[str]:
         """Files changed on ``branch`` that still hold conflict markers."""
-        changed = _git(self.root, "diff", "--name-only", f"{self.branch}...{branch}").stdout
-        names = [n for n in changed.splitlines() if n]
+        # ``-z`` / ``quotepath=off``: names with non-ASCII bytes are not quoted.
+        changed = _git(self.root, "diff", "-z", "--name-only", f"{self.branch}...{branch}").stdout
+        names = [n for n in changed.split("\0") if n]
         if not names:
             return []
-        found = _git(self.root, "grep", "-l", "-E", _MARKERS, branch, "--", *names).stdout
+        found = _git(
+            self.root, "-c", "core.quotepath=off", "grep", "-l", "-E", _MARKERS, branch,
+            "--", *names,
+        ).stdout  # fmt: skip
         return sorted({line.split(":", 1)[1] for line in found.splitlines() if ":" in line})
 
     def merge(self, branch: str, message: str) -> MergeResult:
@@ -172,6 +189,7 @@ class TeamGit:
         marked = self.markers(branch)
         if marked:
             return MergeResult("markers", ", ".join(marked))
+        self._clean()
         before = self.tip()
         proc = _git(
             self.integration, "-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-verify",
