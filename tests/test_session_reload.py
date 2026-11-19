@@ -155,3 +155,20 @@ async def test_auto_reload_rereads_custom_commands(tmp_path, monkeypatch):
     monkeypatch.setattr(session, "render_turn", fake_render)
     code, out, _ = await _run(tmp_path, ["install it", "/commands", "/exit"], rebuild=rebuild)
     assert code == 0 and "/fresh" in out
+
+
+async def test_a_changed_subagents_toml_reloads_after_the_turn(tmp_path, monkeypatch):
+    from luna.core import session
+
+    async def fake_render(*a, **k):
+        f = tmp_path / ".luna" / "subagents.toml"
+        f.parent.mkdir(exist_ok=True)
+        f.write_text('[subagent.new]\nprompt = "p"\n')
+        return TurnSummary()
+
+    async def rebuild():
+        return _Bundle(None, 1)
+
+    monkeypatch.setattr(session, "render_turn", fake_render)
+    code, out, first = await _run(tmp_path, ["save a profile", "/exit"], rebuild=rebuild)
+    assert code == 0 and "auto-reloaded" in out and first.closed

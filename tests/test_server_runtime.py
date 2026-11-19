@@ -147,3 +147,28 @@ async def test_a_failed_auto_reload_is_an_out_of_turn_notice(tmp_path):
         {"event": "notice", "level": "error", "text": "auto-reload failed: bad mcp.json"}
     ]
     assert rt.reload_after_turn is False
+
+
+async def test_a_changed_subagents_toml_rebuilds_after_the_turn(tmp_path):
+    calls = []
+
+    async def build(runtime):
+        calls.append(1)
+        return _Bundle()
+
+    rt = await _registry(tmp_path, [], build=build).get("t1", str(tmp_path))
+    await rt.bundle()
+    seen = []
+    rt.listen(seen.append)
+    await rt.after_turn()
+    assert len(calls) == 1 and seen == []
+    f = tmp_path / ".luna" / "subagents.toml"
+    f.parent.mkdir()
+    f.write_text('[subagent.new]\nprompt = "p"\n')
+    await rt.after_turn()
+    assert len(calls) == 2
+    assert seen == [
+        {"event": "notice", "level": "info", "text": "auto-reloaded — new capabilities are live"}
+    ]
+    await rt.after_turn()
+    assert len(calls) == 2

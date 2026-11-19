@@ -69,6 +69,8 @@ class SessionRuntime:
         self._build = build
         self._bundle = None
         self._bundle_lock = asyncio.Lock()
+        #: fingerprint of the subagent files the current bundle was built from
+        self._subagents_stamp: tuple | None = None
         self.lock = asyncio.Lock()
         self.background = BackgroundTasks()
         #: Set by ``reload_after`` on a message (``/init``): rebuild after that turn.
@@ -93,7 +95,9 @@ class SessionRuntime:
         """Return the session's agent bundle, built on first use."""
         async with self._bundle_lock:
             if self._bundle is None:
+                stamp = self._stamp()
                 self._bundle = await self._build(self)
+                self._subagents_stamp = stamp
             return self._bundle
 
     def config(self) -> LunaConfig:
@@ -111,8 +115,10 @@ class SessionRuntime:
     async def rebuild(self) -> None:
         """Rebuild the agent (raises on a bad config; the old one stays then)."""
         async with self._bundle_lock:
+            stamp = self._stamp()
             new = await self._build(self)
             old, self._bundle = self._bundle, new
+            self._subagents_stamp = stamp
         if old is not None:
             await old.aclose()
 
@@ -184,6 +190,10 @@ class SessionRuntime:
     async def after_turn(self) -> None:
         """After a run finished: persist state and auto-reload when asked."""
         self.save()
+        if self._subagents_changed():
+            # an auto profile was saved, disabled or undone (or the file edited):
+            # the task tool's list of subagents is built with the agent
+            self.reload_requested = True
         if self.reload_requested or self.reload_after_turn:
             self.reload_requested = self.reload_after_turn = False
             try:
@@ -192,6 +202,16 @@ class SessionRuntime:
                 self.session.notify(Notice("error", f"auto-reload failed: {exc}"))
             else:
                 self.session.notify(Notice("info", "auto-reloaded — new capabilities are live"))
+
+    def _stamp(self) -> tuple:
+        from luna.extensions.subagents import subagent_stamp
+
+        return subagent_stamp(self.workdir)
+
+    def _subagents_changed(self) -> bool:
+        if self._bundle is None or self._subagents_stamp is None:
+            return False
+        return self._stamp() != self._subagents_stamp
 
     async def aclose(self) -> None:
         """Stop background tasks and close the agent's resources."""

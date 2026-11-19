@@ -266,7 +266,7 @@ class EventLog:
             )
 
     def delete(self, session_id: str) -> bool:
-        """Delete a session, its events and its subagent/background runs, atomically.
+        """Delete a session, its events, subagent/background runs and journal rows, atomically.
 
         Children are deleted recursively, except forks (``meta.kind ==
         "fork"``): a fork is a conversation of its own, so it is kept and
@@ -291,9 +291,19 @@ class EventLog:
                     elif child not in doomed:
                         doomed.append(child)
                 i += 1
+            journal = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'subagent_runs'"
+            ).fetchone()
             for sid in reversed(doomed):
                 conn.execute("DELETE FROM events WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                if journal:
+                    # the assembly journal (luna_core.assemblies) keeps what the
+                    # parent wrote; a deleted conversation takes it along
+                    conn.execute(
+                        "DELETE FROM subagent_runs WHERE parent_session = ? OR child_session = ?",
+                        (sid, sid),
+                    )
         return True
 
     def prune(self, older_than_days: float, workdir: str | None = None) -> int:

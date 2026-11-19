@@ -452,3 +452,42 @@ def test_a_failed_commit_rolls_back_and_leaves_no_open_transaction(log, tmp_path
         assert log.append(sid, "note", {}) == 1
     finally:
         log._conn = real
+
+
+def test_delete_forgets_the_assembly_journal_rows(tmp_path):
+    from luna_core.assemblies import AssemblyLog
+
+    path = tmp_path / "s.db"
+    log = EventLog(path)
+    journal = AssemblyLog(path)
+    parent = log.create("/w")
+    child = log.create("/w", parent_id=parent)
+    other = log.create("/w")
+
+    def run(parent_id, child_id):
+        journal.record(
+            workdir="/w",
+            parent_session=parent_id,
+            child_session=child_id,
+            base_profile="gp",
+            dynamic=True,
+            spec={"prompt": "secret"},
+            task="t",
+            ok=True,
+            cancelled=False,
+            hit_max_steps=False,
+            steps=1,
+            cost=0.0,
+        )
+
+    run(parent, child)
+    run(other, "c2")
+    assert log.delete(parent)
+    assert [r.parent_session for r in journal.pending()] == [other]
+    journal.close()
+    log.close()
+
+
+def test_delete_without_a_journal_table_still_works(log):
+    sid = log.create("/w")
+    assert log.delete(sid)

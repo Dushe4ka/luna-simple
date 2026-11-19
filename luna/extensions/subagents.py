@@ -17,6 +17,19 @@ def subagent_files(workdir: str = ".", *, env: Mapping[str, str] | None = None) 
     return [config_dir(env) / "subagents.toml", Path(workdir) / ".luna" / "subagents.toml"]
 
 
+def subagent_stamp(workdir: str = ".", *, env: Mapping[str, str] | None = None) -> tuple:
+    """Return a cheap fingerprint of the subagent files (changes on save or removal)."""
+    out = []
+    for path in subagent_files(workdir, env=env):
+        try:
+            st = path.stat()
+        except OSError:
+            out.append(None)
+        else:
+            out.append((st.st_mtime_ns, st.st_size))
+    return tuple(out)
+
+
 def load_subagents(
     workdir: str = ".",
     *,

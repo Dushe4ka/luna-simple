@@ -33,7 +33,7 @@ from rich.text import Text
 from luna.config.config import LunaConfig
 from luna.core.session_state import SessionState, SessionStateStore
 from luna.core.store import make_title
-from luna.extensions.subagents import subagent_summaries
+from luna.extensions.subagents import subagent_stamp, subagent_summaries
 from luna.repl import usercmd
 from luna.repl.commands import HELP as SLASH_COMMANDS
 from luna.repl.commands import CommandContext, dispatch, swap_bundle
@@ -380,6 +380,7 @@ async def run_repl(
     if session.has_user_messages:
         print_recap(session, console)
     _print_notices(console)
+    stamp = subagent_stamp(session.workdir)
     while True:
         try:
             label = "luna (plan) › " if plan_state[0] else "luna › "
@@ -426,5 +427,9 @@ async def run_repl(
                 highlight=False,
             )
         _print_notices(console)
-        if (result.reload or reload_after) and rebuild is not None:
+        # an auto profile saved/disabled/undone during the turn: rebuild so the
+        # task tool sees it (the subagent list is built with the agent)
+        changed = subagent_stamp(session.workdir) != stamp
+        if (result.reload or reload_after or changed) and rebuild is not None:
+            stamp = subagent_stamp(session.workdir)
             await _rebuild_bundle(ctx, console)

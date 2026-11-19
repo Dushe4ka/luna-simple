@@ -8,6 +8,7 @@ that keeps the analysis to one request an hour (the API-key rule).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import os
@@ -20,6 +21,7 @@ from pathlib import Path
 import tomlkit
 from luna_core.assemblies import AssemblyLog, ProfileVersion, RunRecord
 from luna_core.distill import DistillError, Verdict, check_candidate, propose, should_disable
+from luna_core.filelock import file_lock
 from luna_core.subagents import BUILTIN_SUBAGENTS
 from tomlkit.exceptions import ParseError
 from tomlkit.items import Table
@@ -110,12 +112,34 @@ def _read_doc(path: Path) -> tomlkit.TOMLDocument:
     return doc
 
 
+def _target(path: Path) -> Path:
+    """Return the real file behind ``path`` (a dotfiles symlink is followed, not replaced)."""
+    return path.resolve() if path.is_symlink() else path
+
+
+@contextlib.contextmanager
+def _editing(path: Path):
+    """Hold the cross-process lock of ``path`` for one read-modify-write.
+
+    The server's background analysis and a ``luna subagents`` command in
+    another process may edit the same file; without the lock one would
+    overwrite the other's change.
+    """
+    target = _target(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(target.with_name(f".{target.name}.lock")):
+        yield
+
+
 def _write_doc(path: Path, doc: tomlkit.TOMLDocument) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    target = _target(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
-        os.replace(tmp, path)
+        with contextlib.suppress(OSError):
+            os.chmod(tmp, target.stat().st_mode)  # keep the user's permissions
+        os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -291,12 +315,15 @@ class AutoProfiles:
 
     def _save(self, verdict: Verdict, path: Path, runs: Mapping[int, RunRecord]) -> None:
         name = verdict.candidate.name
-        doc = _read_doc(path)
-        prev = _plain(_profiles(doc).get(name))
-        version = int(prev.get("version", 1)) + 1 if prev else 1
-        data = _profile_data(verdict, version, runs)
-        _set_profile(doc, name, data)
-        _write_doc(path, doc)
+        with _editing(path):
+            doc = _read_doc(path)
+            prev = _plain(_profiles(doc).get(name))
+            if prev is not None and prev.get("auto") is not True:
+                raise _FileError(f"{name!r} became a hand-written profile in {path}")
+            version = int(prev.get("version", 1)) + 1 if prev else 1
+            data = _profile_data(verdict, version, runs)
+            _set_profile(doc, name, data)
+            _write_doc(path, doc)
         self._journal.add_version(
             name=name,
             path=str(path),
@@ -316,20 +343,21 @@ class AutoProfiles:
         if not latest:
             return None
         path = Path(latest[0].path)
-        try:
-            doc = _read_doc(path)
-        except _FileError:
-            return None
-        current = _plain(_profiles(doc).get(name))
-        if not current or current.get("auto") is not True or current.get("disabled") is True:
-            return None
         recent = self._recent_runs(name, path)
         if not should_disable(recent):
             return None
+        with _editing(path):
+            try:
+                doc = _read_doc(path)
+            except _FileError:
+                return None
+            current = _plain(_profiles(doc).get(name))
+            if not current or current.get("auto") is not True or current.get("disabled") is True:
+                return None
+            data = dict(current, disabled=True)
+            _set_profile(doc, name, data)
+            _write_doc(path, doc)
         window = recent[:10]
-        data = dict(current, disabled=True)
-        _set_profile(doc, name, data)
-        _write_doc(path, doc)
         self._journal.add_version(
             name=name,
             path=str(path),
@@ -368,20 +396,23 @@ class AutoProfiles:
     def set_disabled(self, name: str, disabled: bool, *, workdir: str) -> str:
         """Turn a profile from a subagents.toml off or back on."""
         for path in (self.project_file(workdir), self.user_file()):
-            try:
-                doc = _read_doc(path)
-            except _FileError as exc:
-                return str(exc)
-            current = _plain(_profiles(doc).get(name))
-            if current is None:
+            if not path.exists():
                 continue
-            data = dict(current)
-            if disabled:
-                data["disabled"] = True
-            else:
-                data.pop("disabled", None)
-            _set_profile(doc, name, data)
-            _write_doc(path, doc)
+            with _editing(path):
+                try:
+                    doc = _read_doc(path)
+                except _FileError as exc:
+                    return str(exc)
+                current = _plain(_profiles(doc).get(name))
+                if current is None:
+                    continue
+                data = dict(current)
+                if disabled:
+                    data["disabled"] = True
+                else:
+                    data.pop("disabled", None)
+                _set_profile(doc, name, data)
+                _write_doc(path, doc)
             self._journal.add_version(
                 name=name,
                 path=str(path),
@@ -405,15 +436,16 @@ class AutoProfiles:
         if target is None:
             return f"nothing to undo for {name}"
         path = Path(target.path)
-        try:
-            doc = _read_doc(path)
-        except _FileError as exc:
-            return str(exc)
-        current = _plain(_profiles(doc).get(name))
-        if current != target.spec:
-            return f"{name} was edited by hand after that change; nothing was undone"
-        _set_profile(doc, name, target.prev)
-        _write_doc(path, doc)
+        with _editing(path):
+            try:
+                doc = _read_doc(path)
+            except _FileError as exc:
+                return str(exc)
+            current = _plain(_profiles(doc).get(name))
+            if current != target.spec:
+                return f"{name} was edited by hand after that change; nothing was undone"
+            _set_profile(doc, name, target.prev)
+            _write_doc(path, doc)
         self._journal.set_undone(target.id)
         restored = int(target.prev.get("version", 1)) if target.prev else 0
         self._journal.add_version(

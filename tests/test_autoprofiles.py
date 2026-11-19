@@ -1,8 +1,12 @@
 """Auto-profiles: distill flow, files, versions, undo, disable, hour gate."""
 
 import asyncio
+import contextlib
 import json
+import stat
+import sys
 import tomllib
+from pathlib import Path
 
 import pytest
 from luna_core.assemblies import AssemblyLog
@@ -485,3 +489,44 @@ async def test_update_starts_a_fresh_window(auto, journal, clock, tmp_path):
     assert report.saved  # v2
     static_runs(journal, 1, workdir=tmp_path, ok=lambda i: False)
     assert auto.check_disable("migration-writer") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks and POSIX modes")
+def test_symlinked_file_stays_a_symlink_and_keeps_its_mode(auto, tmp_path):
+    real = tmp_path / "dotfiles" / "subagents.toml"
+    real.parent.mkdir()
+    real.write_text('[subagent.mine]\nprompt = "p"\n')
+    real.chmod(0o640)
+    link = tmp_path / ".luna" / "subagents.toml"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    assert "disabled" in auto.set_disabled("mine", True, workdir=str(tmp_path))
+    assert link.is_symlink()
+    assert table(real, "mine")["disabled"] is True
+    assert stat.S_IMODE(real.stat().st_mode) == 0o640
+
+
+def test_every_file_edit_holds_the_cross_process_lock(auto, journal, tmp_path, monkeypatch):
+    from luna.extensions import autoprofiles
+
+    f = tmp_path / ".luna" / "subagents.toml"
+    f.parent.mkdir()
+    f.write_text('[subagent.mine]\nprompt = "p"\n')
+    held = []
+    real_write = autoprofiles._write_doc
+
+    @contextlib.contextmanager
+    def fake_lock(path):
+        held.append(Path(path))
+        yield
+        held.pop()
+
+    def checked_write(path, doc):
+        assert held, "subagents.toml written without the lock"
+        real_write(path, doc)
+
+    monkeypatch.setattr(autoprofiles, "file_lock", fake_lock)
+    monkeypatch.setattr(autoprofiles, "_write_doc", checked_write)
+    auto.set_disabled("mine", True, workdir=str(tmp_path))
+    auto.undo("mine")
+    assert table(f, "mine") == {"prompt": "p"}
