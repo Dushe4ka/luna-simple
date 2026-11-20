@@ -347,6 +347,10 @@ class TeamRunner:
         if run is not None and run.status == "running":
             git = TeamGit(self.root, run_id) if run.branch else None
             if git is not None:
+                # The dead process may have left an unverified merge on the team branch.
+                with contextlib.suppress(Exception):
+                    git.ensure()
+                    self._undo_open_merge(run_id, git)
                 self._salvage_now(run_id, git, "the run was cancelled")
                 with contextlib.suppress(Exception):
                     git.close()
@@ -655,11 +659,14 @@ class TeamRunner:
                     )
             except Exception:
                 # Never leave a merge on the team branch that nobody verified.
-                with contextlib.suppress(Exception):
+                try:
                     await asyncio.to_thread(st.git.undo_merge, before)
-                self.store.log_event(
-                    st.run_id, "merge_undone", member, task=task.id, before=before, undone=True
-                )
+                except Exception:
+                    pass  # the `merging` record stays open: a restart retries the rollback
+                else:
+                    self.store.log_event(
+                        st.run_id, "merge_undone", member, task=task.id, before=before, undone=True
+                    )
                 raise
             if result.status == "markers":
                 self.store.log_event(
@@ -1146,13 +1153,13 @@ class TeamRunner:
     async def _recover(self, run_id: str, git: TeamGit, *, announce: bool) -> None:
         """After a restart: undo an unverified merge, in-progress tasks back, members idle."""
         at = time.strftime("%H:%M", time.localtime(self.clock()))
-        await self._undo_open_merge(run_id, git)
+        await asyncio.to_thread(self._undo_open_merge, run_id, git)
         moved = await self._salvage(run_id, git, f"прервано в {at}, продолжено")
         self._idle_members(run_id)
         if announce:
             self.store.log_event(run_id, "interrupted", at=at, tasks=moved)
 
-    async def _undo_open_merge(self, run_id: str, git: TeamGit) -> None:
+    def _undo_open_merge(self, run_id: str, git: TeamGit) -> None:
         """Roll back a merge the process died in (before it was verified and concluded)."""
         open_merges: dict[str, str] = {}
         kinds = ["merging", "merge", "verify_failed", "conflict", "markers", "merge_undone"]
@@ -1163,9 +1170,9 @@ class TeamRunner:
             else:
                 open_merges.pop(task, None)
         for task, before in open_merges.items():
-            undone = bool(before) and await asyncio.to_thread(git.tip) != before
+            undone = bool(before) and git.tip() != before
             if undone:
-                await asyncio.to_thread(git.undo_merge, before)
+                git.undo_merge(before)
             # Close it, so a later restart does not roll back newer merges.
             self.store.log_event(run_id, "merge_undone", task=task, before=before, undone=undone)
 

@@ -321,6 +321,52 @@ async def test_a_restart_during_verify_rolls_the_unverified_merge_back(repo, tmp
     store2.close()
 
 
+async def test_cancel_after_a_restart_during_verify_rolls_the_merge_back(repo, tmp_path):
+    started, ended = tmp_path / "started", tmp_path / "ended"
+    slow = f'touch "{started}" && sleep 1 && touch "{ended}"'
+    first = TeamProvider(
+        {
+            "dev": [
+                call("write_file", {"file_path": "b.txt", "content": "b\n"}, "w1"),
+                done("wrote b"),
+                text("done"),
+            ]
+        }
+    )
+    runner, store, log = make_runner(tmp_path, first, settings=TeamSettings(verify_command=slow))
+    rid = ready_run(runner, store, plan_dict(ONE))
+    running = asyncio.create_task(runner.run(rid))
+    for _ in range(1000):
+        if started.exists():
+            break
+        await asyncio.sleep(0.01)
+    assert started.exists()
+    assert git(repo, "show", f"luna/team/{rid}:b.txt") == "b\n"
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    for _ in range(500):
+        if ended.exists():
+            break
+        await asyncio.sleep(0.01)
+    log.close()
+    store.close()
+
+    runner2, store2, log2 = make_runner(tmp_path, TeamProvider({}))
+    assert runner2.interrupted() == [rid]
+    assert runner2.cancel(rid) is True
+    run = store2.run(rid)
+    assert (run.status, run.outcome, run.stop_reason) == ("finished", "stopped", "cancel")
+    probe = subprocess.run(
+        ["git", "cat-file", "-e", f"luna/team/{rid}:b.txt"], cwd=repo, check=False
+    )
+    assert probe.returncode != 0  # the unverified merge is not on the team branch
+    assert len(store2.events(rid, kinds=["merge_undone"])) == 1
+    assert report_of(repo, rid)
+    log2.close()
+    store2.close()
+
+
 async def test_the_planner_obeys_deny_rules(repo, tmp_path):
     from luna_core.policy import Rules
     from team_kit import result_of
