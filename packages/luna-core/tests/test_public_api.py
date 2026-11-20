@@ -10,6 +10,7 @@ EXPECTED = {
     "DockerSandbox", "Compactor", "ModelRoles", "SubagentSpec", "SubagentRunner", "task_tool",
     "BackgroundTasks", "AgentManager", "Usage", "LunaCoreError", "ProviderError", "ToolError",
     "providers", "__version__", "DynamicSettings", "resolve_spec", "AssemblyLog", "RunRecord",
+    "RateGate", "TeamRunner", "TeamHost", "TeamSettings", "TeamStore",
 }  # fmt: skip
 
 
@@ -27,3 +28,13 @@ def test_every_public_callable_has_a_docstring():
         if callable(getattr(luna_core, n)) and not (getattr(luna_core, n).__doc__ or "").strip()
     ]
     assert missing == []
+
+
+def test_team_package_exports():
+    from luna_core import team
+
+    assert set(team.__all__) == {
+        "Mailbox", "PlanError", "TeamHost", "TeamPlan", "TeamRunner", "TeamSettings",
+        "TeamStore", "build_report", "keep_awake",
+    }  # fmt: skip
+    assert luna_core.TeamRunner is team.TeamRunner

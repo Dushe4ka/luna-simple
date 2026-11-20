@@ -29,10 +29,12 @@ from luna_core.hooks import HookResult, Hooks
 from luna_core.loop import Agent, PathLocks, SideAnswer
 from luna_core.messages import Image, Message, Text, Thinking, ToolCall, ToolResult, image_from_file
 from luna_core.policy import Decision, Policy, Rules
+from luna_core.rategate import RateGate
 from luna_core.roles import ModelRoles
 from luna_core.sandbox import DockerSandbox, LocalSandbox
 from luna_core.session import EventLog, Session
 from luna_core.subagents import DynamicSettings, SubagentRunner, SubagentSpec, task_tool
+from luna_core.team import TeamHost, TeamRunner, TeamSettings, TeamStore
 from luna_core.tools import Tool, ToolContext, ToolOutput, builtin_tools, tool
 from luna_core.usage import Usage
 from luna_core.workspace import Workspace
@@ -45,9 +47,11 @@ __all__ = [
     "Compacted", "Compactor", "Decision", "DockerSandbox", "DynamicSettings", "EventLog",
     "HookResult", "Hooks",
     "Image", "LocalSandbox", "LunaCoreError", "Message", "ModelRoles", "NeedsApproval", "Notice",
-    "PathLocks", "Policy", "ProviderError", "ReloadRequested", "Rules", "RunRecord", "Session",
+    "PathLocks", "Policy", "ProviderError", "RateGate", "ReloadRequested", "Rules", "RunRecord",
+    "Session",
     "SideAnswer",
     "SubagentRunner", "SubagentSpec", "Text", "TextDelta", "Thinking", "ThinkingDelta",
+    "TeamHost", "TeamRunner", "TeamSettings", "TeamStore",
     "TodosUpdated", "Tool", "ToolCall", "ToolContext", "ToolError", "ToolFinished", "ToolOutput",
     "ToolResult", "ToolStarted", "TurnDone", "TurnError", "TurnStarted", "Usage", "UsageUpdate",
     "Workspace", "__version__", "builtin_tools", "image_from_file", "providers", "resolve_spec",

@@ -452,3 +452,11 @@ def test_bad_project_max_steps_is_ignored_with_a_warning(tmp_path, value):
     cfg = load_config({}, env=env, cwd=str(tmp_path))
     assert cfg.subagents_max_steps == 20
     assert any(".luna.toml" in w and "max_steps" in w for w in cfg.warnings)
+
+
+def test_strong_role_is_read_from_the_model_table(tmp_path):
+    (tmp_path / ".luna.toml").write_text(
+        '[model]\nname = "m"\nplan = "p"\nstrong = "anthropic:big"\n'
+    )
+    cfg = load_config(cwd=str(tmp_path), env={})
+    assert cfg.roles == {"plan": "p", "strong": "anthropic:big"}
